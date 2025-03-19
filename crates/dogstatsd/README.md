@@ -7,7 +7,7 @@ This project is in beta and possible frequent changes should be expected. It's p
 
 - No UDS support
 - Uses `ustr`, so prone to memory leaks
-- Arbitrary constraints in https://github.com/DataDog/libdatadog/blob/main/dogstatsd/src/constants.rs
+- Arbitrary constraints in [src/constants.rs](src/constants.rs)
 
 ## Additional Notes
 
