@@ -1,0 +1,15 @@
+# Copyright 2025-Present Datadog, Inc. https://www.datadoghq.com/
+# SPDX-License-Identifier: Apache-2.0
+
+[workspace]
+resolver = "2"
+members = [
+  "crates/*",
+]
+
+[workspace.package]
+rust-version = "1.85"
+edition = "2021"
+license = "Apache-2.0"
+homepage = "https://github.com/DataDog/serverless-components"
+repository = "https://github.com/DataDog/serverless-components"
