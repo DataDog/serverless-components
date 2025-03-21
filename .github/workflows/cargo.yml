@@ -1,0 +1,83 @@
+name: Cargo
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+
+jobs:
+  setup:
+    name: Setup
+    runs-on: ${{ inputs.runner }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions-rust-lang/setup-rust-toolchain@9399c7bb15d4c7d47b27263d024f0a4978346ba4 # v1.11.0
+        with:
+          cache: false
+      - uses: mozilla-actions/sccache-action@65101d47ea8028ed0c98a1cdea8dd9182e9b5133 #v0.0.8
+
+  check:
+    name: Check
+    needs: setup
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install Protoc Binary
+        shell: bash
+        run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
+      - shell: bash
+        run: cargo check --workspace
+
+  format:
+    name: Format
+    needs: setup
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - shell: bash
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    needs: setup
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install Protoc Binary
+        shell: bash
+        run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
+      - shell: bash
+        run: cargo clippy --workspace --all-features
+
+  build:
+    name: Build
+    needs: setup
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install Protoc Binary
+        shell: bash
+        run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
+      - shell: bash
+        run: cargo build --all
+
+  test:
+    name: Test
+    needs: setup
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: taiki-e/install-action@351cce3d3afa3dbd66bbe6d30df1d481b1448522 # v2.49.32
+        with:
+          tool: nextest@0.9
+      - name: Install Protoc Binary
+        shell: bash
+        run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
+      - shell: bash
+        run: cargo nextest run --workspace

@@ -1,0 +1,16 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  cargo:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, windows-2022]
+    uses: ./.github/workflows/cargo.yml
+    with:
+      runner: ${{matrix.runner}}
