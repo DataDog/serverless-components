@@ -130,6 +130,13 @@ impl SortedTags {
         tags_as_vec
     }
 
+    pub fn find_all(&self, tag_key: &str) -> Vec<&Ustr> {
+        self.values
+            .iter()
+            .filter_map(|(k, v)| if k == tag_key { Some(v) } else { None })
+            .collect()
+    }
+
     pub(crate) fn to_resources(&self) -> Vec<datadog::Resource> {
         let mut resources = Vec::with_capacity(constants::MAX_TAGS);
         for (key, val) in &self.values {
@@ -583,6 +590,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn parse_tag_no_value() {
         let result = parse("datadog.tracer.flush_triggered:1|c|#lang:go,lang_version:go1.22.10,_dd.origin:lambda,runtime-id:d66f501c-d09b-4d0d-970f-515235c4eb56,v1.65.1,service:aws.lambda,reason:scheduled");
         assert!(result.is_ok());
@@ -596,6 +604,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn parse_tag_multi_column() {
         let result = parse("datadog.tracer.flush_triggered:1|c|#lang:go:and:something:else");
         assert!(result.is_ok());
@@ -606,6 +615,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn parse_tracer_metric() {
         let input = "datadog.tracer.flush_duration:0.785551|ms|#lang:go,lang_version:go1.23.2,env:redacted_env,_dd.origin:lambda,runtime-id:redacted_runtime,tracer_version:v1.70.1,service:redacted_service,env:redacted_env,service:redacted_service,version:redacted_version";
         let expected_error = "ms".to_string();
@@ -617,6 +627,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn parse_metric_timestamp() {
         // Important to test that we round down to the nearest 10 seconds
         // for our buckets
@@ -626,6 +637,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn parse_metric_no_timestamp() {
         // *wince* this could be a race condition
         // we round the timestamp down to a 10s bucket and I want to test now
@@ -652,5 +664,14 @@ mod tests {
         let first_element = tags.values.first().unwrap();
         assert_eq!(first_element.0, Ustr::from("a"));
         assert_eq!(first_element.1, Ustr::from("a1"));
+    }
+
+    #[test]
+    fn sorted_tags_find_all() {
+        let tags = SortedTags::parse("a,a:1,b:2,c:3").unwrap();
+        assert_eq!(tags.find_all("a"), vec![&Ustr::from(""), &Ustr::from("1")]);
+        assert_eq!(tags.find_all("b"), vec![&Ustr::from("2")]);
+        assert_eq!(tags.find_all("c"), vec![&Ustr::from("3")]);
+        assert_eq!(tags.find_all("d"), Vec::<&Ustr>::new());
     }
 }
