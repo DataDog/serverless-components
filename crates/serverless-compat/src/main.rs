@@ -16,7 +16,7 @@ use tokio::{
 };
 use tracing_subscriber::EnvFilter;
 
-use datadog_trace_mini_agent::{
+use trace_agent::{
     aggregator::TraceAggregator,
     config, env_verifier, mini_agent, stats_flusher, stats_processor,
     trace_flusher::{self, TraceFlusher},
