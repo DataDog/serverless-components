@@ -743,7 +743,7 @@ dependencies = [
 
 [[package]]
 name = "datadog-serverless-compat"
-version = "0.12.0"
+version = "0.1.0"
 dependencies = [
  "datadog-trace-protobuf",
  "datadog-trace-utils",
