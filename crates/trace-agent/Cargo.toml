@@ -1,6 +1,5 @@
 [package]
 name = "trace-agent"
-description = "A subset of the trace agent that is shipped alongside tracers in serverless environments"
 version = "0.1.0"
 license.workspace = true
 edition.workspace = true
