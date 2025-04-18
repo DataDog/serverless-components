@@ -12,3 +12,9 @@ edition = "2021"
 license = "Apache-2.0"
 homepage = "https://github.com/DataDog/serverless-components"
 repository = "https://github.com/DataDog/serverless-components"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
