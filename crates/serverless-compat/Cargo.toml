@@ -1,0 +1,22 @@
+[package]
+name = "datadog-serverless-compat"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Binary to run trace-agent and dogstatsd servers in Serverless environments"
+
+[dependencies]
+log = "0.4"
+env_logger = "0.10.0"
+trace-agent = { path = "../trace-agent" }
+datadog-trace-protobuf = { git = "https://github.com/DataDog/libdatadog/", rev = "3dab0bed2e144ce78c10a2378d1aff8fb5974f7d" }
+datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "3dab0bed2e144ce78c10a2378d1aff8fb5974f7d" }
+dogstatsd = { path = "../dogstatsd", default-features = false }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"]}
+tokio-util = { version = "0.7", default-features = false }
+tracing = { version = "0.1", default-features = false }
+tracing-core = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry", "fmt", "env-filter", "tracing-log"] }
+
+[[bin]]
+name = "datadog-serverless-compat"
