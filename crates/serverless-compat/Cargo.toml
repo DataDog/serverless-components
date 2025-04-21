@@ -3,6 +3,7 @@ name = "datadog-serverless-compat"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+description = "Binary to run trace-agent and dogstatsd servers in Serverless environments"
 
 [dependencies]
 log = "0.4"
