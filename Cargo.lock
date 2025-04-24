@@ -745,8 +745,8 @@ dependencies = [
 name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
- "datadog-trace-protobuf",
- "datadog-trace-utils",
+ "datadog-trace-protobuf 17.0.0 (git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d)",
+ "datadog-trace-utils 17.0.0 (git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d)",
  "dogstatsd",
  "env_logger",
  "log",
@@ -764,18 +764,27 @@ version = "17.0.0"
 source = "git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d#3dab0bed2e144ce78c10a2378d1aff8fb5974f7d"
 dependencies = [
  "anyhow",
- "datadog-trace-protobuf",
+ "datadog-trace-protobuf 17.0.0 (git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d)",
+]
+
+[[package]]
+name = "datadog-trace-normalization"
+version = "17.0.0"
+source = "git+https://github.com/DataDog/libdatadog/#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+dependencies = [
+ "anyhow",
+ "datadog-trace-protobuf 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
 ]
 
 [[package]]
 name = "datadog-trace-obfuscation"
 version = "17.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d#3dab0bed2e144ce78c10a2378d1aff8fb5974f7d"
+source = "git+https://github.com/DataDog/libdatadog/#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
 dependencies = [
  "anyhow",
- "datadog-trace-protobuf",
- "datadog-trace-utils",
- "ddcommon",
+ "datadog-trace-protobuf 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
+ "datadog-trace-utils 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
+ "ddcommon 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
  "log",
  "percent-encoding",
  "regex",
@@ -795,23 +804,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-trace-protobuf"
+version = "17.0.0"
+source = "git+https://github.com/DataDog/libdatadog/#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+dependencies = [
+ "prost 0.13.5",
+ "serde",
+ "serde_bytes",
+]
+
+[[package]]
 name = "datadog-trace-utils"
 version = "17.0.0"
 source = "git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d#3dab0bed2e144ce78c10a2378d1aff8fb5974f7d"
 dependencies = [
  "anyhow",
  "bytes",
- "cargo-platform",
- "cargo_metadata",
- "datadog-trace-normalization",
- "datadog-trace-protobuf",
- "ddcommon",
- "flate2",
+ "datadog-trace-normalization 17.0.0 (git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d)",
+ "datadog-trace-protobuf 17.0.0 (git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d)",
+ "ddcommon 17.0.0 (git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d)",
  "futures",
  "http-body-util",
- "httpmock",
  "hyper 1.6.0",
- "hyper-http-proxy",
  "log",
  "prost 0.11.9",
  "rand 0.8.5",
@@ -820,8 +834,38 @@ dependencies = [
  "rmpv",
  "serde",
  "serde_json",
+ "tinybytes 17.0.0 (git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d)",
+ "tokio",
+]
+
+[[package]]
+name = "datadog-trace-utils"
+version = "17.0.0"
+source = "git+https://github.com/DataDog/libdatadog/#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "cargo-platform",
+ "cargo_metadata",
+ "datadog-trace-normalization 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
+ "datadog-trace-protobuf 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
+ "ddcommon 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
+ "flate2",
+ "futures",
+ "http-body-util",
+ "httpmock",
+ "hyper 1.6.0",
+ "hyper-http-proxy",
+ "log",
+ "prost 0.13.5",
+ "rand 0.8.5",
+ "rmp",
+ "rmp-serde",
+ "rmpv",
+ "serde",
+ "serde_json",
  "testcontainers",
- "tinybytes",
+ "tinybytes 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
  "tokio",
  "urlencoding",
  "zstd",
@@ -831,6 +875,43 @@ dependencies = [
 name = "ddcommon"
 version = "17.0.0"
 source = "git+https://github.com/DataDog/libdatadog/?rev=3dab0bed2e144ce78c10a2378d1aff8fb5974f7d#3dab0bed2e144ce78c10a2378d1aff8fb5974f7d"
+dependencies = [
+ "anyhow",
+ "cc",
+ "const_format",
+ "futures",
+ "futures-core",
+ "futures-util",
+ "hex",
+ "http 1.3.1",
+ "http-body 1.0.1",
+ "http-body-util",
+ "hyper 1.6.0",
+ "hyper-rustls",
+ "hyper-util",
+ "libc",
+ "log",
+ "memfd",
+ "nix",
+ "pin-project",
+ "rand 0.8.5",
+ "regex",
+ "rmp",
+ "rmp-serde",
+ "rustls",
+ "rustls-native-certs 0.8.1",
+ "serde",
+ "static_assertions",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "ddcommon"
+version = "17.0.0"
+source = "git+https://github.com/DataDog/libdatadog/#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
 dependencies = [
  "anyhow",
  "cc",
@@ -3677,6 +3758,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinybytes"
+version = "17.0.0"
+source = "git+https://github.com/DataDog/libdatadog/#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "tinystr"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3831,11 +3920,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "datadog-trace-normalization",
+ "datadog-trace-normalization 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
  "datadog-trace-obfuscation",
- "datadog-trace-protobuf",
- "datadog-trace-utils",
- "ddcommon",
+ "datadog-trace-protobuf 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
+ "datadog-trace-utils 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
+ "ddcommon 17.0.0 (git+https://github.com/DataDog/libdatadog/)",
  "duplicate",
  "http-body-util",
  "hyper 1.6.0",
