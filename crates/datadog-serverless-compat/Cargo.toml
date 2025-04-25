@@ -8,7 +8,7 @@ description = "Binary to run trace-agent and dogstatsd servers in Serverless env
 [dependencies]
 log = "0.4"
 env_logger = "0.10.0"
-trace-agent = { path = "../trace-agent" }
+datadog-trace-agent = { path = "../datadog-trace-agent" }
 datadog-trace-protobuf = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae" }
 datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae" }
 dogstatsd = { path = "../dogstatsd", default-features = false }

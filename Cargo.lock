@@ -745,6 +745,7 @@ dependencies = [
 name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
+ "datadog-trace-agent",
  "datadog-trace-protobuf",
  "datadog-trace-utils",
  "dogstatsd",
@@ -752,10 +753,34 @@ dependencies = [
  "log",
  "tokio",
  "tokio-util",
- "trace-agent",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "datadog-trace-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "datadog-trace-normalization",
+ "datadog-trace-obfuscation",
+ "datadog-trace-protobuf",
+ "datadog-trace-utils",
+ "ddcommon",
+ "duplicate",
+ "http-body-util",
+ "hyper 1.6.0",
+ "hyper-util",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -3792,31 +3817,6 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
-
-[[package]]
-name = "trace-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "datadog-trace-normalization",
- "datadog-trace-obfuscation",
- "datadog-trace-protobuf",
- "datadog-trace-utils",
- "ddcommon",
- "duplicate",
- "http-body-util",
- "hyper 1.6.0",
- "hyper-util",
- "rmp-serde",
- "serde",
- "serde_json",
- "serial_test",
- "tempfile",
- "tokio",
- "tower",
- "tracing",
-]
 
 [[package]]
 name = "tracing"
