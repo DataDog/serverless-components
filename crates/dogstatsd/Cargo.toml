@@ -24,6 +24,9 @@ tokio-util = { version = "0.7.11", default-features = false }
 tracing = { version = "0.1.40", default-features = false }
 regex = { version = "1.10.6", default-features = false }
 zstd = { version = "0.13.3", default-features = false }
+rustls = { version = "0.23.18", default-features = false, features = ["fips"], optional = true }
+rustls-native-certs = { version = "0.8.1", optional = true }
+
 
 [dev-dependencies]
 mockito = { version = "1.5.0", default-features = false }
@@ -32,4 +35,4 @@ tracing-test = { version = "0.2.5", default-features = false }
 
 [features]
 default = [ "reqwest/rustls-tls" ]
-fips = [ "reqwest/rustls-tls-no-provider" ]
+fips = [ "reqwest/rustls-tls-no-provider", "rustls", "rustls-native-certs" ]

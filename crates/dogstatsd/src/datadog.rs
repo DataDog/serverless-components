@@ -3,6 +3,7 @@
 
 //!Types to serialize data into the Datadog API
 
+use crate::fips::create_reqwest_client_builder;
 use crate::flusher::ShippingError;
 use datadog_protos::metrics::SketchPayload;
 use derive_more::{Display, Into};
@@ -12,6 +13,7 @@ use reqwest;
 use reqwest::{Client, Response};
 use serde::{Serialize, Serializer};
 use serde_json;
+use std::error::Error;
 use std::io::Write;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -285,12 +287,12 @@ pub enum RetryStrategy {
     LinearBackoff(u64, u64), // attempts, delay
 }
 
-fn build_client(https_proxy: Option<String>, timeout: Duration) -> Result<Client, reqwest::Error> {
-    let mut builder = Client::builder().timeout(timeout);
+fn build_client(https_proxy: Option<String>, timeout: Duration) -> Result<Client, Box<dyn Error>> {
+    let mut builder = create_reqwest_client_builder()?.timeout(timeout);
     if let Some(proxy) = https_proxy {
         builder = builder.proxy(reqwest::Proxy::https(proxy)?);
     }
-    builder.build()
+    Ok(builder.build()?)
 }
 
 #[derive(Debug, Serialize, Clone, Copy)]
