@@ -8,7 +8,9 @@ use tracing::debug;
 /// Otherwise, it uses reqwest's default rustls TLS implementation.
 #[cfg(not(feature = "fips"))]
 pub fn create_reqwest_client_builder() -> Result<ClientBuilder, Box<dyn Error>> {
-    // Just return the default builder with rustls TLS
+    // Just return the default builder with rustls TLS. This is the one place we should be okay
+    // to call reqwest::Client::builder().
+    #[allow(clippy::disallowed_methods)]
     Ok(reqwest::Client::builder().use_rustls_tls())
 }
 
@@ -55,5 +57,7 @@ pub fn create_reqwest_client_builder() -> Result<ClientBuilder, Box<dyn Error>> 
     }
     debug!("Client builder is configured with FIPS.");
 
+    // This is the one place that it is okay to call reqwest::Client::builder().
+    #[allow(clippy::disallowed_methods)]
     Ok(reqwest::Client::builder().use_preconfigured_tls(config))
 }
