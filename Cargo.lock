@@ -774,6 +774,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-serverless-fips"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rustls",
+ "rustls-native-certs 0.8.1",
+ "tracing",
+]
+
+[[package]]
 name = "datadog-trace-agent"
 version = "0.1.0"
 dependencies = [
@@ -1025,6 +1035,7 @@ name = "dogstatsd"
 version = "0.1.0"
 dependencies = [
  "datadog-protos",
+ "datadog-serverless-fips",
  "ddsketch-agent",
  "derive_more",
  "fnv",
@@ -1034,8 +1045,6 @@ dependencies = [
  "protobuf",
  "regex",
  "reqwest",
- "rustls",
- "rustls-native-certs 0.8.1",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

@@ -3,9 +3,9 @@
 
 //!Types to serialize data into the Datadog API
 
-use crate::fips::create_reqwest_client_builder;
 use crate::flusher::ShippingError;
 use datadog_protos::metrics::SketchPayload;
+use datadog_serverless_fips::reqwest_adapter::create_reqwest_client_builder;
 use derive_more::{Display, Into};
 use protobuf::Message;
 use regex::Regex;
