@@ -55,9 +55,9 @@ jobs:
       - shell: bash
         run: |
           if [[ "${{ inputs.runner }}" == "windows-2022" ]]; then
-            # we don't technially support the datadog-serverless-fips module on
-            # windows right now anyway, so let's set this so that the windows
-            # build doesn't fail.
+            # we don't technially support the datadog-fips crate on windows
+            # right now anyway, so let's set this so that the windows build
+            # doesn't fail.
             export AWS_LC_FIPS_SYS_NO_ASM=1
           fi
           cargo clippy --workspace --all-features
