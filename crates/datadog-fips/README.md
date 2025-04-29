@@ -1,7 +1,6 @@
 # Datadog FIPS for Serverless
 
-A package to support FIPS builds for serverless tools. Currently tested with
-the datadog-lambda-extension, but it may be useful in other environments.
+Crate which provides utils to build FIPS compliant components.
 
 Please add the following to your `clippy.toml`:
 
