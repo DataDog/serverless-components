@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error};
 
+#[derive(Clone)]
 pub struct Flusher {
     dd_api: DdApi,
     aggregator: Arc<Mutex<Aggregator>>,
