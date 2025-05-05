@@ -88,3 +88,14 @@ jobs:
         run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
       - shell: bash
         run: cargo nextest run --workspace
+
+  license:
+    # License check only needs to be run once, not once per architecture
+    if: ${{ inputs.runner == 'ubuntu-24.04' }}
+    name: License
+    needs: setup
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: cargo install dd-rust-license-tool
+      - run: dd-rust-license-tool check
