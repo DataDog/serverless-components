@@ -1,0 +1,41 @@
+Component,Origin,License,Copyright
+anyhow,https://github.com/dtolnay/anyhow,MIT OR Apache License 2.0,David Tolnay <dtolnay@gmail.com>
+async-trait,https://github.com/dtolnay/async-trait,MIT OR Apache License 2.0,David Tolnay <dtolnay@gmail.com>
+datadog-protos,https://github.com/DataDog/saluki/,Apache License 2.0,"Copyright 2024-present Datadog, Inc."
+datadog-trace-normalization,https://github.com/DataDog/libdatadog/tree/main/datadog-trace-normalization,Apache License 2.0,"Copyright 2024-present Datadog, Inc."
+datadog-trace-obfuscation,https://github.com/DataDog/libdatadog/tree/main/datadog-trace-obfuscation,Apache License 2.0,"Copyright 2024-present Datadog, Inc."
+datadog-trace-protobuf,https://github.com/DataDog/libdatadog/tree/main/datadog-trace-protobuf,Apache License 2.0,"Copyright 2024-present Datadog, Inc."
+datadog-trace-utils,https://github.com/DataDog/libdatadog/tree/main/datadog-trace-utils,Apache License 2.0,"Copyright 2024-present Datadog, Inc."
+ddcommon,https://github.com/DataDog/libdatadog/tree/main/ddcommon,Apache License 2.0,"Copyright 2024-present Datadog, Inc."
+ddsketch-agent,https://github.com/DataDog/saluki/,Apache License 2.0,"Copyright 2024-present Datadog, Inc."
+derive_more,https://github.com/JelteF/derive_more,MIT,Copyright (c) 2016 Jelte Fennema
+duplicate,https://github.com/Emoun/duplicate,MIT OR Apache License 2.0,Copyright (c) 2022 Emad Jacob Maroun
+env_logger,https://github.com/rust-cli/env_logger,MIT OR Apache License 2.0,Copyright (c) Individual contributors
+fnv,https://github.com/servo/rust-fnv,MIT OR Apache License 2.0,Copyright (c) 2017 Contributors
+hashbrown,https://github.com/rust-lang/hashbrown/tree/master,MIT OR Apache License 2.0,Copyright (c) 2016 Amanieu d'Antras
+http-body-util,https://github.com/hyperium/http-body/tree/master/http-body-util,MIT,Copyright (c) 2019-2025 Sean McArthur & Hyper Contributors
+hyper,https://github.com/hyperium/hyper,MIT,Copyright (c) 2014-2025 Sean McArthur
+hyper-util,https://github.com/hyperium/hyper-util,MIT,Copyright (c) 2023-2025 Sean McArthur
+log,https://github.com/rust-lang/log,MIT,Copyright (c) 2014 The Rust Project Developers
+mockito,https://github.com/lipanski/mockito,MIT,Copyright (c) 2016 Florin Lipan
+proptest,https://github.com/proptest-rs/proptest,MIT OR Apache License 2.0,Copyright (c) 2025 FullContact, Inc
+protobuf,https://github.com/stepancheg/rust-protobuf,MIT,Copyright (c) 2019 Stepan Koltsov
+regex,https://github.com/rust-lang/regex,MIT OR Apache License 2.0,Copyright (c) 2014 The Rust Project Developers
+reqwest,https://github.com/seanmonstar/reqwest,MIT OR Apache License 2.0,Copyright (c) 2016-2025 Sean McArthur
+rmp-serde,https://github.com/3Hren/msgpack-rust/tree/master/rmp-serde,MIT,Copyright (c) 2017 Evgeny Safronov
+rustls,https://github.com/rustls/rustls,MIT OR Apache License 2.0 OR ISC,Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
+rustls-native-certs,https://github.com/rustls/rustls-native-certs,MIT OR Apache License 2.0 OR ISC,Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
+serde,https://github.com/serde-rs/serde,MIT OR Apache License 2.0,"Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>"
+serde_json,https://github.com/serde-rs/json,MIT OR Apache License 2.0,"Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>"
+serial_test,https://github.com/palfrey/serial_test,MIT,Copyright (c) 2018 Tom Parker-Shemilt
+tempfile,https://github.com/Stebalien/tempfile,MIT OR Apache License 2.0,Copyright (c) 2015 Steven Allen
+thiserror,https://github.com/dtolnay/thiserror,Apache License 2.0,David Tolnay <dtolnay@gmail.com>
+tokio,https://github.com/tokio-rs/tokio,MIT,Copyright (c) Tokio Contributors
+tokio-util,https://github.com/tokio-rs/tokio/tree/master/tokio-util,MIT, Copyright (c) Tokio Contributors
+tower,https://github.com/tower-rs/tower,MIT,Copyright (c) 2019 Tower Contributors
+tracing,https://github.com/tokio-rs/tracing/tree/master/tracing,MIT,Copyright (c) 2019 Tokio Contributors
+tracing-core,https://github.com/tokio-rs/tracing/tree/master/tracing-core,Copyright (c) 2019 Tokio Contributors
+tracing-subscriber,https://github.com/tokio-rs/tracing/tree/master/tracing-subscriber,MIT,Copyright (c) 2019 Tokio Contributors
+tracing-test,https://github.com/tokio-rs/tracing/tree/master/tracing-test,MIT,Copyright (c) 2019 Tokio Contributors
+ustr,https://github.com/anderslanglands/ustr,BSD-2-Clause,Copyright (c) 2019 Anders Langlands
+zstd,https://github.com/gyscos/zstd-rs,MIT,Copyright (c) 2016 Alexandre Bury
