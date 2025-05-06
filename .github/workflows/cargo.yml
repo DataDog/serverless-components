@@ -88,7 +88,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl && sudo apt-get install -y musl-tools
           cargo build --release -p datadog-serverless-compat --target x86_64-unknown-linux-musl
       - if: ${{ inputs.runner == 'windows-2022' }}
         shell: bash
