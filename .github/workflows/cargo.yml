@@ -76,23 +76,9 @@ jobs:
 
   build-datadog-serverless-compat:
     name: Build Datadog Serverless Compat
-    if: ${{ inputs.runner != 'ubuntu-24.04-arm' }}
-    needs: setup
-    runs-on: ${{ inputs.runner }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Install Protoc Binary
-        shell: bash
-        run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
-      - if: ${{ inputs.runner == 'ubuntu-24.04' }}
-        shell: bash
-        run: |
-          sudo apt-get update
-          rustup target add x86_64-unknown-linux-musl && sudo apt-get install -y musl-tools
-          cargo build --release -p datadog-serverless-compat --target x86_64-unknown-linux-musl
-      - if: ${{ inputs.runner == 'windows-2022' }}
-        shell: bash
-        run: cargo build --release -p datadog-serverless-compat
+    uses: ./.github/workflows/build-datadog-serverless-compat.yml
+    with:
+      runner: ${{ inputs.runner }}
 
   test:
     name: Test
