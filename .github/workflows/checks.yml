@@ -9,6 +9,7 @@ on:
 jobs:
   cargo:
     strategy:
+      fail-fast: false
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm, windows-2022]
     uses: ./.github/workflows/cargo.yml
