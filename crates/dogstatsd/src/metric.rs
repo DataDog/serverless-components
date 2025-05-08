@@ -268,7 +268,10 @@ pub fn parse(input: &str) -> Result<Metric, ParseError> {
             .unwrap_or_default();
         // let Metric::new() handle bucketing the timestamp
         let parsed_timestamp: i64 = match caps.name("timestamp") {
-            Some(ts) => timestamp_to_bucket(ts.as_str().parse().unwrap_or(now)),
+            Some(ts) => {
+                let sec = ts.as_str().parse::<f64>().unwrap_or(now as f64).round() as i64;
+                timestamp_to_bucket(sec)
+            }
             None => timestamp_to_bucket(now),
         };
         let metric_value = match t {
@@ -621,6 +624,13 @@ mod tests {
         // Important to test that we round down to the nearest 10 seconds
         // for our buckets
         let input = "page.views:15|c|#env:dev|T1656581409";
+        let metric = parse(input).unwrap();
+        assert_eq!(metric.timestamp, 1656581400);
+    }
+
+    #[test]
+    fn parse_decimal_metric_timestamp() {
+        let input = "page.views:15|c|#env:dev|T1656581409.123";
         let metric = parse(input).unwrap();
         assert_eq!(metric.timestamp, 1656581400);
     }
