@@ -34,7 +34,7 @@ impl BufferReader {
                 // TODO(astuyve) this should be dynamic
                 // Max buffer size is configurable in Go Agent and the default is 8KB
                 // https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
-                let mut buf = [0; 8192];
+                let mut buf = vec![0; 8192 * 1024]; // increased the buffer to 8MB (8KB * 1024), using Vec<u8> to allocate on heap
 
                 #[allow(clippy::expect_used)]
                 let (amt, src) = socket
