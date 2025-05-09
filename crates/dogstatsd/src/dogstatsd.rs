@@ -43,6 +43,7 @@ impl BufferReader {
 
                     if amt < buf.len() {
                         // Full message received
+                        debug!("=== Full message received, read {} bytes ===", amt);
                         return Ok((buf[..amt].to_owned(), src));
                     }
 
