@@ -53,7 +53,14 @@ jobs:
         shell: bash
         run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
       - shell: bash
-        run: cargo clippy --workspace --all-features
+        run: |
+          if [[ "${{ inputs.runner }}" == "windows-2022" ]]; then
+            # we don't technially support the datadog-fips crate on windows
+            # right now anyway, so let's set this so that the windows build
+            # doesn't fail.
+            export AWS_LC_FIPS_SYS_NO_ASM=1
+          fi
+          cargo clippy --workspace --all-features
 
   build:
     name: Build
@@ -66,6 +73,12 @@ jobs:
         run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
       - shell: bash
         run: cargo build --all
+
+  build-datadog-serverless-compat:
+    name: Build Datadog Serverless Compat
+    uses: ./.github/workflows/build-datadog-serverless-compat.yml
+    with:
+      runner: ${{ inputs.runner }}
 
   test:
     name: Test

@@ -1,0 +1,32 @@
+[package]
+name = "datadog-trace-agent"
+version = "0.1.0"
+license.workspace = true
+edition.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+anyhow = "1.0"
+hyper = { version = "1.6", features = ["http1", "client", "server"] }
+hyper-util = {version = "0.1", features = ["service"] }
+tower = { version = "0.5.2", features = ["util"]  }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"]}
+async-trait = "0.1.64"
+tracing = { version = "0.1", default-features = false }
+serde = { version = "1.0.145", features = ["derive"] }
+serde_json = "1.0"
+ddcommon = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae" }
+datadog-trace-protobuf = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae" }
+datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae", features = ["mini_agent"] }
+datadog-trace-normalization = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae" }
+datadog-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae" }
+
+[dev-dependencies]
+rmp-serde = "1.1.1"
+serial_test = "2.0.0"
+duplicate = "0.4.1"
+tempfile = "3.3.0"
+datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae", features=["test-utils"] }
