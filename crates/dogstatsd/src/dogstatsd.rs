@@ -31,17 +31,35 @@ impl BufferReader {
     async fn read(&self) -> std::io::Result<(Vec<u8>, SocketAddr)> {
         match self {
             BufferReader::UdpSocketReader(socket) => {
-                // TODO(astuyve) this should be dynamic
                 // Max buffer size is configurable in Go Agent and the default is 8KB
                 // https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
-                let mut buf = vec![0; 8192 * 1024]; // increased the buffer to 8MB (8KB * 1024), using Vec<u8> to allocate on heap
+                let mut current_size = 8192;    // Start at 8 KB
+                let max_size = 65535;           // Max safe UDP datagram size
+                let mut buf = vec![0; current_size];
 
-                #[allow(clippy::expect_used)]
-                let (amt, src) = socket
-                    .recv_from(&mut buf)
-                    .await
-                    .expect("didn't receive data");
-                Ok((buf[..amt].to_owned(), src))
+                loop {
+                    let result = socket.recv_from(&mut buf).await;
+                    let (amt, src) = result.expect("didn't receive data");
+
+                    if amt < buf.len() {
+                        // Full message received
+                        return Ok((buf[..amt].to_owned(), src));
+                    }
+
+                    if current_size >= max_size {
+                        // at max size — data may be truncated
+                        debug!(
+                            "=== UDP datagram may have been truncated: received {} bytes (max buffer size reached) ===",
+                            amt
+                        );
+                        return Ok((buf[..amt].to_vec(), src));
+                    }
+
+                    // Grow buffer and retry
+                    current_size = std::cmp::min(current_size * 2, max_size);
+                    buf = vec![0u8; current_size];
+                    debug!("=== Increased buffer size to {} bytes ===", current_size);
+                }
             }
             BufferReader::MirrorReader(data, socket) => Ok((data.clone(), *socket)),
         }
