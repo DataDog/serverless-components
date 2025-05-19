@@ -96,6 +96,14 @@ impl TraceProcessor for ServerlessTraceProcessor {
             }
         };
 
+        // double check content length is < max request content length in case transfer encoding is used
+        if body_size > config.max_request_content_length{
+            return log_and_create_http_response(
+                &format!("Error processing traces: Payload too large"),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            );
+        }
+
         let payload = match trace_utils::collect_pb_trace_chunks(
             traces,
             &tracer_header_tags,
