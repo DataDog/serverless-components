@@ -74,7 +74,7 @@ pub fn verify_request_content_length(
                     "Transfer-Encoding header is present: {:?}",
                     transfer_encoding_header
                 );
-                return None
+                return None;
             }
             return Some(log_and_create_http_response(
                 &format!(
@@ -143,7 +143,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::LENGTH_REQUIRED);
         assert_eq!(
             get_response_body_as_string(response).await,
-            "{\"message\":\"Test Prefix: Missing Content-Length and Transfer-Encoding header\"}".to_string()
+            "{\"message\":\"Test Prefix: Missing Content-Length and Transfer-Encoding header\"}"
+                .to_string()
         );
     }
 
