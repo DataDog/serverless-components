@@ -97,8 +97,10 @@ impl TraceFlusher for ServerlessTraceFlusher {
         }
         debug!("Flushing {} traces", traces.len());
 
-        // Process and send coalesced traces
-        for coalesced_traces in trace_utils::coalesce_send_data(&traces) {
+        // Since we return the original traces on error, we need to clone them before coalescing
+        let traces_clone = traces.clone();
+
+        for coalesced_traces in trace_utils::coalesce_send_data(traces) {
             match coalesced_traces
                 .send_proxy(self.config.proxy_url.as_deref())
                 .await
