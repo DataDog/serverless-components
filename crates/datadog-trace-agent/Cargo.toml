@@ -23,7 +23,6 @@ datadog-trace-protobuf = { git = "https://github.com/DataDog/libdatadog/", rev =
 datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae", features = ["mini_agent"] }
 datadog-trace-normalization = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae" }
 datadog-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog/", rev = "d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae" }
-bytes = "1.10.1"
 
 [dev-dependencies]
 rmp-serde = "1.1.1"
