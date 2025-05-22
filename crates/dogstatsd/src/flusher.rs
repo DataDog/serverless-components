@@ -38,8 +38,32 @@ impl Flusher {
         }
     }
 
-    pub async fn flush(&mut self) {
-        let (all_series, all_distributions) = {
+    pub async fn flush(
+        &mut self,
+    ) -> Option<(
+        Vec<crate::datadog::Series>,
+        Vec<datadog_protos::metrics::SketchPayload>,
+    )> {
+        self.flush_with_retries(None, None).await
+    }
+
+    pub async fn flush_with_retries(
+        &mut self,
+        retry_series: Option<Vec<crate::datadog::Series>>,
+        retry_sketches: Option<Vec<datadog_protos::metrics::SketchPayload>>,
+    ) -> Option<(
+        Vec<crate::datadog::Series>,
+        Vec<datadog_protos::metrics::SketchPayload>,
+    )> {
+        let (all_series, all_distributions) = if retry_series.is_some() || retry_sketches.is_some()
+        {
+            // Use the provided metrics for retry
+            (
+                retry_series.unwrap_or_default(),
+                retry_sketches.unwrap_or_default(),
+            )
+        } else {
+            // Collect new metrics from the aggregator
             #[allow(clippy::expect_used)]
             let mut aggregator = self.aggregator.lock().expect("lock poisoned");
             (
@@ -53,35 +77,68 @@ impl Flusher {
 
         debug!("Flushing {n_series} series and {n_distributions} distributions");
 
+        // Save copies for potential error returns
+        let all_series_copy = all_series.clone();
+        let all_distributions_copy = all_distributions.clone();
+
         let dd_api_clone = self.dd_api.clone();
         let series_handle = tokio::spawn(async move {
+            let mut failed = Vec::new();
+            let mut had_shipping_error = false;
             for a_batch in all_series {
-                let continue_shipping =
+                let (continue_shipping, should_retry) =
                     should_try_next_batch(dd_api_clone.ship_series(&a_batch).await).await;
+                if should_retry {
+                    failed.push(a_batch);
+                    had_shipping_error = true;
+                }
                 if !continue_shipping {
                     break;
                 }
             }
+            (failed, had_shipping_error)
         });
+
         let dd_api_clone = self.dd_api.clone();
         let distributions_handle = tokio::spawn(async move {
+            let mut failed = Vec::new();
+            let mut had_shipping_error = false;
             for a_batch in all_distributions {
-                let continue_shipping =
+                let (continue_shipping, should_retry) =
                     should_try_next_batch(dd_api_clone.ship_distributions(&a_batch).await).await;
+                if should_retry {
+                    failed.push(a_batch);
+                    had_shipping_error = true;
+                }
                 if !continue_shipping {
                     break;
                 }
             }
+            (failed, had_shipping_error)
         });
 
         match tokio::try_join!(series_handle, distributions_handle) {
-            Ok(_) => {
-                debug!("Successfully flushed {n_series} series and {n_distributions} distributions")
+            Ok(((series_failed, series_had_error), (sketches_failed, sketches_had_error))) => {
+                if series_failed.is_empty() && sketches_failed.is_empty() {
+                    debug!("Successfully flushed {n_series} series and {n_distributions} distributions");
+                    None // Return None to indicate success
+                } else if series_had_error || sketches_had_error {
+                    // Only return the metrics if there was an actual shipping error
+                    error!("Failed to flush some metrics due to shipping errors: {} series and {} sketches", 
+                        series_failed.len(), sketches_failed.len());
+                    // Return the failed metrics for potential retry
+                    Some((series_failed, sketches_failed))
+                } else {
+                    debug!("Some metrics were not sent but no errors occurred");
+                    None // No shipping errors, so don't return metrics for retry
+                }
             }
             Err(err) => {
-                error!("Failed to flush metrics{err}")
+                error!("Failed to flush metrics: {err}");
+                // Return all metrics in case of join error for potential retry
+                Some((all_series_copy, all_distributions_copy))
             }
-        };
+        }
     }
 }
 
@@ -90,26 +147,45 @@ pub enum ShippingError {
     Destination(Option<StatusCode>, String),
 }
 
-async fn should_try_next_batch(resp: Result<Response, ShippingError>) -> bool {
+/// Returns a tuple (continue_to_next_batch, should_retry_this_batch)
+async fn should_try_next_batch(resp: Result<Response, ShippingError>) -> (bool, bool) {
     match resp {
         Ok(resp_payload) => match resp_payload.status() {
-            StatusCode::ACCEPTED => true,
+            StatusCode::ACCEPTED => (true, false), // Success, continue to next batch, no need to retry
             unexpected_status_code => {
+                // Check if the status code indicates a permanent error (4xx) or a temporary error (5xx)
+                let is_permanent_error =
+                    unexpected_status_code.as_u16() >= 400 && unexpected_status_code.as_u16() < 500;
+
                 error!(
                     "{}: Failed to push to API: {:?}",
                     unexpected_status_code,
                     resp_payload.text().await.unwrap_or_default()
                 );
-                true
+
+                if is_permanent_error {
+                    (true, false) // Permanent error, continue to next batch but don't retry
+                } else {
+                    (false, true) // Temporary error, don't continue to next batch and mark for retry
+                }
             }
         },
         Err(ShippingError::Payload(msg)) => {
             error!("Failed to prepare payload. Data dropped: {}", msg);
-            true
+            (true, false) // Payload error, continue to next batch but don't retry (data is malformed)
         }
         Err(ShippingError::Destination(sc, msg)) => {
+            // Check if status code indicates a permanent error
+            let is_permanent_error =
+                sc.map_or(false, |code| code.as_u16() >= 400 && code.as_u16() < 500);
+
             error!("Error shipping data: {:?} {}", sc, msg);
-            false
+
+            if is_permanent_error {
+                (false, false) // Permanent destination error, don't continue and don't retry
+            } else {
+                (false, true) // Temporary error, don't continue and mark for retry
+            }
         }
     }
 }
