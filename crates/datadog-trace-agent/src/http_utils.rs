@@ -9,6 +9,7 @@ use hyper::{
 };
 use serde_json::json;
 use tracing::{debug, error};
+use log;
 
 /// Does two things:
 /// 1. Logs the given message. A success status code (within 200-299) will cause an info log to be
@@ -70,7 +71,7 @@ pub fn verify_request_content_length(
         Some(res) => res,
         None => {
             if let Some(transfer_encoding_header) = header_map.get(header::TRANSFER_ENCODING) {
-                println!(
+                log::debug!(
                     "Transfer-Encoding header is present: {:?}",
                     transfer_encoding_header
                 );
