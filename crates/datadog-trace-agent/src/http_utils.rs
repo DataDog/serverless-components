@@ -7,7 +7,6 @@ use hyper::{
     http::{self, HeaderMap},
     Response, StatusCode,
 };
-use log;
 use serde_json::json;
 use tracing::{debug, error};
 
@@ -71,7 +70,7 @@ pub fn verify_request_content_length(
         Some(res) => res,
         None => {
             if let Some(transfer_encoding_header) = header_map.get(header::TRANSFER_ENCODING) {
-                log::debug!(
+                debug!(
                     "Transfer-Encoding header is present: {:?}",
                     transfer_encoding_header
                 );
