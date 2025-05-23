@@ -7,9 +7,9 @@ use hyper::{
     http::{self, HeaderMap},
     Response, StatusCode,
 };
+use log;
 use serde_json::json;
 use tracing::{debug, error};
-use log;
 
 /// Does two things:
 /// 1. Logs the given message. A success status code (within 200-299) will cause an info log to be
