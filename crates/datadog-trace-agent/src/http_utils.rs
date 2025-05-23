@@ -56,8 +56,8 @@ pub fn log_and_create_traces_success_http_response(
         .body(hyper_migration::Body::from(body))
 }
 
-/// Takes a request's header map, and verifies that the "content-length" header is present, valid,
-/// and less than the given max_content_length.
+/// Takes a request's header map, and verifies that the "content-length" and/or "Transfer-Encoding" header
+/// is present, valid, and less than the given max_content_length.
 ///
 /// Will return None if no issues are found. Otherwise logs an error (with the given prefix) and
 /// returns and HTTP Response with the appropriate error status code.
@@ -69,8 +69,17 @@ pub fn verify_request_content_length(
     let content_length_header = match header_map.get(header::CONTENT_LENGTH) {
         Some(res) => res,
         None => {
+            if let Some(transfer_encoding_header) = header_map.get(header::TRANSFER_ENCODING) {
+                debug!(
+                    "Transfer-Encoding header is present: {:?}",
+                    transfer_encoding_header
+                );
+                return None;
+            }
             return Some(log_and_create_http_response(
-                &format!("{error_message_prefix}: Missing Content-Length header"),
+                &format!(
+                    "{error_message_prefix}: Missing Content-Length and Transfer-Encoding header"
+                ),
                 StatusCode::LENGTH_REQUIRED,
             ));
         }
@@ -134,7 +143,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::LENGTH_REQUIRED);
         assert_eq!(
             get_response_body_as_string(response).await,
-            "{\"message\":\"Test Prefix: Missing Content-Length header\"}".to_string()
+            "{\"message\":\"Test Prefix: Missing Content-Length and Transfer-Encoding header\"}"
+                .to_string()
         );
     }
 
