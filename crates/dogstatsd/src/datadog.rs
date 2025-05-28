@@ -164,6 +164,7 @@ impl DdApi {
 
     /// Ship a serialized series to the API, blocking
     pub async fn ship_series(&self, series: &Series) -> Result<Response, ShippingError> {
+        debug!("=== shipping serialized series to endpoint: {} ===", &self.metrics_intake_url_prefix);
         let url = format!("{}/api/v2/series", &self.metrics_intake_url_prefix);
         let safe_body = serde_json::to_vec(&series)
             .map_err(|e| ShippingError::Payload(format!("Failed to serialize series: {e}")))?;
@@ -175,6 +176,7 @@ impl DdApi {
         &self,
         sketches: &SketchPayload,
     ) -> Result<Response, ShippingError> {
+        debug!("=== shipping distributions to endpoint: {} ===", &self.metrics_intake_url_prefix);
         let url = format!("{}/api/beta/sketches", &self.metrics_intake_url_prefix);
         let safe_body = sketches
             .write_to_bytes()
@@ -199,6 +201,7 @@ impl DdApi {
         body: Vec<u8>,
         content_type: &str,
     ) -> Result<Response, ShippingError> {
+        debug!("=== shipping data to endpoint: {} ===", &self.metrics_intake_url_prefix);
         let client = &self
             .client
             .as_ref()
@@ -228,6 +231,7 @@ impl DdApi {
 
         let elapsed = start.elapsed();
         debug!("Request to {} took {}ms", url, elapsed.as_millis());
+        debug!("=== completed shipping data to endpoint: {} ===", &self.metrics_intake_url_prefix);
         resp
     }
 
