@@ -13,6 +13,15 @@ pub struct Flusher {
     aggregator: Arc<Mutex<Aggregator>>,
 }
 
+impl Clone for Flusher {
+    fn clone(&self) -> Self {
+        Flusher {
+            dd_api: self.dd_api.clone(),
+            aggregator: Arc::clone(&self.aggregator),
+        }
+    }
+}
+
 pub struct FlusherConfig {
     pub api_key: String,
     pub aggregator: Arc<Mutex<Aggregator>>,
