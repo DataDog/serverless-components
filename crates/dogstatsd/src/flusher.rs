@@ -66,39 +66,26 @@ impl Flusher {
         self.flush_metrics(series, sketches).await
     }
 
-    /// Flush explicitly provided metrics
+    // /// Flush explicitly provided metrics
+    // pub async fn flush_metrics(
+    //     &mut self,
+    //     series: Vec<crate::datadog::Series>,
+    //     sketches: Vec<datadog_protos::metrics::SketchPayload>,
+    // ) -> Option<(
+    //     Vec<crate::datadog::Series>,
+    //     Vec<datadog_protos::metrics::SketchPayload>,
+    // )> {
+    //     self.flush_with_retries(series, sketches, None, None).await
+    // }
+
     pub async fn flush_metrics(
         &mut self,
-        series: Vec<crate::datadog::Series>,
-        sketches: Vec<datadog_protos::metrics::SketchPayload>,
+        all_series: Vec<crate::datadog::Series>,
+        all_distributions: Vec<datadog_protos::metrics::SketchPayload>,
     ) -> Option<(
         Vec<crate::datadog::Series>,
         Vec<datadog_protos::metrics::SketchPayload>,
     )> {
-        self.flush_with_retries(series, sketches, None, None).await
-    }
-
-    pub async fn flush_with_retries(
-        &mut self,
-        series: Vec<crate::datadog::Series>,
-        sketches: Vec<datadog_protos::metrics::SketchPayload>,
-        retry_series: Option<Vec<crate::datadog::Series>>,
-        retry_sketches: Option<Vec<datadog_protos::metrics::SketchPayload>>,
-    ) -> Option<(
-        Vec<crate::datadog::Series>,
-        Vec<datadog_protos::metrics::SketchPayload>,
-    )> {
-        let (all_series, all_distributions) = if retry_series.is_some() || retry_sketches.is_some()
-        {
-            // Use the provided metrics for retry
-            (
-                retry_series.unwrap_or_default(),
-                retry_sketches.unwrap_or_default(),
-            )
-        } else {
-            (series, sketches)
-        };
-
         let n_series = all_series.len();
         let n_distributions = all_distributions.len();
 
