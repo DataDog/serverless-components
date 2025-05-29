@@ -47,17 +47,41 @@ impl Flusher {
         }
     }
 
+    /// Flush metrics from the aggregator
     pub async fn flush(
         &mut self,
     ) -> Option<(
         Vec<crate::datadog::Series>,
         Vec<datadog_protos::metrics::SketchPayload>,
     )> {
-        self.flush_with_retries(None, None).await
+        // Collect metrics from the aggregator
+        let (series, sketches) = {
+            #[allow(clippy::expect_used)]
+            let mut aggregator = self.aggregator.lock().expect("lock poisoned");
+            (
+                aggregator.consume_metrics(),
+                aggregator.consume_distributions(),
+            )
+        };
+        self.flush_metrics(series, sketches).await
+    }
+
+    /// Flush explicitly provided metrics
+    pub async fn flush_metrics(
+        &mut self,
+        series: Vec<crate::datadog::Series>,
+        sketches: Vec<datadog_protos::metrics::SketchPayload>,
+    ) -> Option<(
+        Vec<crate::datadog::Series>,
+        Vec<datadog_protos::metrics::SketchPayload>,
+    )> {
+        self.flush_with_retries(series, sketches, None, None).await
     }
 
     pub async fn flush_with_retries(
         &mut self,
+        series: Vec<crate::datadog::Series>,
+        sketches: Vec<datadog_protos::metrics::SketchPayload>,
         retry_series: Option<Vec<crate::datadog::Series>>,
         retry_sketches: Option<Vec<datadog_protos::metrics::SketchPayload>>,
     ) -> Option<(
@@ -72,13 +96,7 @@ impl Flusher {
                 retry_sketches.unwrap_or_default(),
             )
         } else {
-            // Collect new metrics from the aggregator
-            #[allow(clippy::expect_used)]
-            let mut aggregator = self.aggregator.lock().expect("lock poisoned");
-            (
-                aggregator.consume_metrics(),
-                aggregator.consume_distributions(),
-            )
+            (series, sketches)
         };
 
         let n_series = all_series.len();
