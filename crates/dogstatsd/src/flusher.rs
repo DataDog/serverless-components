@@ -54,8 +54,7 @@ impl Flusher {
         Vec<crate::datadog::Series>,
         Vec<datadog_protos::metrics::SketchPayload>,
     )> {
-        // Collect metrics from the aggregator
-        let (series, sketches) = {
+        let (series, distributions) = {
             #[allow(clippy::expect_used)]
             let mut aggregator = self.aggregator.lock().expect("lock poisoned");
             (
@@ -63,7 +62,7 @@ impl Flusher {
                 aggregator.consume_distributions(),
             )
         };
-        self.flush_metrics(series, sketches).await
+        self.flush_metrics(series, distributions).await
     }
 
     /// Flush given batch of metrics
