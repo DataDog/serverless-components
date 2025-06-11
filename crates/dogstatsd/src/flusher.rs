@@ -6,16 +6,27 @@ use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::pin::Pin;
+use std::future::Future;
 use tracing::{debug, error};
+use std::sync::OnceLock;
+
+pub type ApiKeyFactory = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Flusher {
-    dd_api: DdApi,
+    // Accept a future so the API keyresolution is deferred until the flush happens
+    api_key_factory: ApiKeyFactory,
+    metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
+    https_proxy: Option<String>,
+    timeout: Duration,
+    retry_strategy: RetryStrategy,
     aggregator: Arc<Mutex<Aggregator>>,
+    dd_api: Arc<OnceLock<DdApi>>,
 }
 
 pub struct FlusherConfig {
-    pub api_key: String,
+    pub api_key_factory: ApiKeyFactory,
     pub aggregator: Arc<Mutex<Aggregator>>,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     pub https_proxy: Option<String>,
@@ -26,17 +37,36 @@ pub struct FlusherConfig {
 #[allow(clippy::await_holding_lock)]
 impl Flusher {
     pub fn new(config: FlusherConfig) -> Self {
-        let dd_api = DdApi::new(
-            config.api_key,
-            config.metrics_intake_url_prefix,
-            config.https_proxy,
-            config.timeout,
-            config.retry_strategy,
-        );
         Flusher {
-            dd_api,
+            api_key_factory: config.api_key_factory,
+            metrics_intake_url_prefix: config.metrics_intake_url_prefix,
+            https_proxy: config.https_proxy,
+            timeout: config.timeout,
+            retry_strategy: config.retry_strategy,
             aggregator: config.aggregator,
+            dd_api: Arc::new(OnceLock::new()),
         }
+    }
+
+    async fn get_dd_api(&mut self) -> &DdApi {
+        if let Some(dd_api) = self.dd_api.get() {
+            return dd_api;
+        }
+        
+        let api_key = (self.api_key_factory)().await;
+        
+        // Initialize the OnceLock with a new DdApi instance
+        // If another thread initialized it while we were getting the API key,
+        // we'll get that instance instead
+        self.dd_api.get_or_init(|| {
+            DdApi::new(
+                api_key,
+                self.metrics_intake_url_prefix.clone(),
+                self.https_proxy.clone(),
+                self.timeout,
+                self.retry_strategy.clone(),
+            )
+        })
     }
 
     /// Flush metrics from the aggregator
@@ -75,13 +105,16 @@ impl Flusher {
         let series_copy = series.clone();
         let distributions_copy = distributions.clone();
 
-        let dd_api_clone = self.dd_api.clone();
+        let dd_api = self.get_dd_api().await;
+
+        let dd_api_clone = dd_api.clone();
         let series_handle = tokio::spawn(async move {
             let mut failed = Vec::new();
             let mut had_shipping_error = false;
             for a_batch in series {
-                let (continue_shipping, should_retry) =
-                    should_try_next_batch(dd_api_clone.ship_series(&a_batch).await).await;
+                let (continue_shipping, should_retry) = {
+                    should_try_next_batch(dd_api_clone.ship_series(&a_batch).await).await
+                };
                 if should_retry {
                     failed.push(a_batch);
                     had_shipping_error = true;
@@ -93,13 +126,14 @@ impl Flusher {
             (failed, had_shipping_error)
         });
 
-        let dd_api_clone = self.dd_api.clone();
+        let dd_api_clone = dd_api.clone();
         let distributions_handle = tokio::spawn(async move {
             let mut failed = Vec::new();
             let mut had_shipping_error = false;
             for a_batch in distributions {
-                let (continue_shipping, should_retry) =
-                    should_try_next_batch(dd_api_clone.ship_distributions(&a_batch).await).await;
+                let (continue_shipping, should_retry) = {
+                    should_try_next_batch(dd_api_clone.ship_distributions(&a_batch).await).await
+                };
                 if should_retry {
                     failed.push(a_batch);
                     had_shipping_error = true;
