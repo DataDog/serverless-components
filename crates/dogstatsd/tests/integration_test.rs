@@ -7,7 +7,7 @@ use dogstatsd::{
     constants::CONTEXTS,
     datadog::{DdDdUrl, MetricsIntakeUrlPrefix, MetricsIntakeUrlPrefixOverride},
     dogstatsd::{DogStatsD, DogStatsDConfig},
-    flusher::{Flusher, FlusherConfig, ApiKeyFactory},
+    flusher::{ApiKeyFactory, Flusher, FlusherConfig},
 };
 use mockito::Server;
 use std::sync::{Arc, Mutex};
@@ -40,11 +40,8 @@ async fn dogstatsd_server_ships_series() {
 
     let _ = start_dogstatsd(&metrics_aggr).await;
 
-    let api_key_factory: ApiKeyFactory = Arc::new(|| {
-        Box::pin(async move {
-            "mock-api-key".to_string()
-        })
-    });
+    let api_key_factory: ApiKeyFactory =
+        Arc::new(|| Box::pin(async move { "mock-api-key".to_string() }));
 
     let mut metrics_flusher = Flusher::new(FlusherConfig {
         api_key_factory,

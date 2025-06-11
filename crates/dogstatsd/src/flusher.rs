@@ -4,14 +4,15 @@
 use crate::aggregator::Aggregator;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::pin::Pin;
-use std::future::Future;
 use tracing::{debug, error};
-use std::sync::OnceLock;
 
-pub type ApiKeyFactory = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+pub type ApiKeyFactory =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Flusher {
@@ -52,9 +53,9 @@ impl Flusher {
         if let Some(dd_api) = self.dd_api.get() {
             return dd_api;
         }
-        
+
         let api_key = (self.api_key_factory)().await;
-        
+
         // Initialize the OnceLock with a new DdApi instance
         // If another thread initialized it while we were getting the API key,
         // we'll get that instance instead
@@ -112,9 +113,8 @@ impl Flusher {
             let mut failed = Vec::new();
             let mut had_shipping_error = false;
             for a_batch in series {
-                let (continue_shipping, should_retry) = {
-                    should_try_next_batch(dd_api_clone.ship_series(&a_batch).await).await
-                };
+                let (continue_shipping, should_retry) =
+                    { should_try_next_batch(dd_api_clone.ship_series(&a_batch).await).await };
                 if should_retry {
                     failed.push(a_batch);
                     had_shipping_error = true;
