@@ -15,7 +15,7 @@ pub type ApiKeyFactory =
 
 #[derive(Clone)]
 pub struct Flusher {
-    // Accept a future so the API keyresolution is deferred until the flush happens
+    // Accept a future so the API key resolution is deferred until the flush happens
     api_key_factory: ApiKeyFactory,
     metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     https_proxy: Option<String>,

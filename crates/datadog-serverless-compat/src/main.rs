@@ -204,8 +204,8 @@ async fn start_dogstatsd(
             #[allow(clippy::expect_used)]
             let metrics_flusher = Flusher::new(FlusherConfig {
                 api_key_factory: Arc::new(move || {
-                    let key = dd_api_key.clone();
-                    Box::pin(async move { key })
+                    let api_key = dd_api_key.clone();
+                    Box::pin(async move { api_key })
                 }),
                 aggregator: Arc::clone(&metrics_aggr),
                 metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
