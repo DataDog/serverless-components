@@ -6,7 +6,6 @@ use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error};
@@ -23,7 +22,7 @@ pub struct Flusher {
     timeout: Duration,
     retry_strategy: RetryStrategy,
     aggregator: Arc<Mutex<Aggregator>>,
-    dd_api: Arc<OnceLock<DdApi>>,
+    dd_api: Option<DdApi>,
 }
 
 pub struct FlusherConfig {
@@ -45,29 +44,23 @@ impl Flusher {
             timeout: config.timeout,
             retry_strategy: config.retry_strategy,
             aggregator: config.aggregator,
-            dd_api: Arc::new(OnceLock::new()),
+            dd_api: None,
         }
     }
 
     async fn get_dd_api(&mut self) -> &DdApi {
-        if let Some(dd_api) = self.dd_api.get() {
-            return dd_api;
-        }
-
-        let api_key = (self.api_key_factory)().await;
-
-        // Initialize the OnceLock with a new DdApi instance
-        // If another thread initialized it while we were getting the API key,
-        // we'll get that instance instead
-        self.dd_api.get_or_init(|| {
-            DdApi::new(
+        if self.dd_api.is_none() {
+            let api_key = (self.api_key_factory)().await;
+            self.dd_api = Some(DdApi::new(
                 api_key,
                 self.metrics_intake_url_prefix.clone(),
                 self.https_proxy.clone(),
                 self.timeout,
                 self.retry_strategy.clone(),
-            )
-        })
+            ));
+        }
+
+        self.dd_api.as_ref().unwrap()
     }
 
     /// Flush metrics from the aggregator
