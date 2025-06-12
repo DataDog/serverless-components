@@ -60,7 +60,7 @@ impl Flusher {
             ));
         }
 
-        self.dd_api.as_ref().unwrap()
+        self.dd_api.as_ref().expect("dd_api should be initialized by this point")
     }
 
     /// Flush metrics from the aggregator
