@@ -107,7 +107,7 @@ impl Flusher {
             let mut had_shipping_error = false;
             for a_batch in series {
                 let (continue_shipping, should_retry) =
-                    { should_try_next_batch(dd_api_clone.ship_series(&a_batch).await).await };
+                    should_try_next_batch(dd_api_clone.ship_series(&a_batch).await).await;
                 if should_retry {
                     failed.push(a_batch);
                     had_shipping_error = true;
@@ -124,9 +124,8 @@ impl Flusher {
             let mut failed = Vec::new();
             let mut had_shipping_error = false;
             for a_batch in distributions {
-                let (continue_shipping, should_retry) = {
-                    should_try_next_batch(dd_api_clone.ship_distributions(&a_batch).await).await
-                };
+                let (continue_shipping, should_retry) =
+                    should_try_next_batch(dd_api_clone.ship_distributions(&a_batch).await).await;
                 if should_retry {
                     failed.push(a_batch);
                     had_shipping_error = true;
