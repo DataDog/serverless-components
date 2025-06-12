@@ -60,6 +60,7 @@ impl Flusher {
             ));
         }
 
+        #[allow(clippy::expect_used)]
         self.dd_api
             .as_ref()
             .expect("dd_api should be initialized by this point")
