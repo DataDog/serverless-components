@@ -4,18 +4,29 @@
 use crate::aggregator::Aggregator;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error};
 
+pub type ApiKeyFactory =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Flusher {
-    dd_api: DdApi,
+    // Accept a future so the API key resolution is deferred until the flush happens
+    api_key_factory: ApiKeyFactory,
+    metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
+    https_proxy: Option<String>,
+    timeout: Duration,
+    retry_strategy: RetryStrategy,
     aggregator: Arc<Mutex<Aggregator>>,
+    dd_api: Option<DdApi>,
 }
 
 pub struct FlusherConfig {
-    pub api_key: String,
+    pub api_key_factory: ApiKeyFactory,
     pub aggregator: Arc<Mutex<Aggregator>>,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     pub https_proxy: Option<String>,
@@ -26,17 +37,33 @@ pub struct FlusherConfig {
 #[allow(clippy::await_holding_lock)]
 impl Flusher {
     pub fn new(config: FlusherConfig) -> Self {
-        let dd_api = DdApi::new(
-            config.api_key,
-            config.metrics_intake_url_prefix,
-            config.https_proxy,
-            config.timeout,
-            config.retry_strategy,
-        );
         Flusher {
-            dd_api,
+            api_key_factory: config.api_key_factory,
+            metrics_intake_url_prefix: config.metrics_intake_url_prefix,
+            https_proxy: config.https_proxy,
+            timeout: config.timeout,
+            retry_strategy: config.retry_strategy,
             aggregator: config.aggregator,
+            dd_api: None,
         }
+    }
+
+    async fn get_dd_api(&mut self) -> &DdApi {
+        if self.dd_api.is_none() {
+            let api_key = (self.api_key_factory)().await;
+            self.dd_api = Some(DdApi::new(
+                api_key,
+                self.metrics_intake_url_prefix.clone(),
+                self.https_proxy.clone(),
+                self.timeout,
+                self.retry_strategy.clone(),
+            ));
+        }
+
+        #[allow(clippy::expect_used)]
+        self.dd_api
+            .as_ref()
+            .expect("dd_api should be initialized by this point")
     }
 
     /// Flush metrics from the aggregator
@@ -75,7 +102,9 @@ impl Flusher {
         let series_copy = series.clone();
         let distributions_copy = distributions.clone();
 
-        let dd_api_clone = self.dd_api.clone();
+        let dd_api = self.get_dd_api().await;
+
+        let dd_api_clone = dd_api.clone();
         let series_handle = tokio::spawn(async move {
             let mut failed = Vec::new();
             let mut had_shipping_error = false;
@@ -93,7 +122,7 @@ impl Flusher {
             (failed, had_shipping_error)
         });
 
-        let dd_api_clone = self.dd_api.clone();
+        let dd_api_clone = dd_api.clone();
         let distributions_handle = tokio::spawn(async move {
             let mut failed = Vec::new();
             let mut had_shipping_error = false;
