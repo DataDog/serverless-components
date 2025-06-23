@@ -9,9 +9,33 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error};
+use tokio::sync::OnceCell;
 
-pub type ApiKeyFactory =
+pub type ApiKeyFactoryFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+
+#[derive(Clone)]
+pub struct ApiKeyFactory {
+    resolve_key_fn: ApiKeyFactoryFn,
+    api_key: Arc<OnceCell<String>>,
+}
+
+impl ApiKeyFactory {
+    pub fn new(resolve_key_fn: ApiKeyFactoryFn) -> Self {
+        Self {
+            resolve_key_fn,
+            api_key: Arc::new(OnceCell::new()),
+        }
+    }
+
+    pub async fn get_api_key(&self) -> &str {
+        self.api_key
+        .get_or_init(async || {
+            (self.resolve_key_fn)().await
+        })
+        .await
+    }
+}
 
 #[derive(Clone)]
 pub struct Flusher {
@@ -50,9 +74,9 @@ impl Flusher {
 
     async fn get_dd_api(&mut self) -> &DdApi {
         if self.dd_api.is_none() {
-            let api_key = (self.api_key_factory)().await;
+            let api_key = self.api_key_factory.get_api_key().await;
             self.dd_api = Some(DdApi::new(
-                api_key,
+                api_key.to_string(),
                 self.metrics_intake_url_prefix.clone(),
                 self.https_proxy.clone(),
                 self.timeout,
@@ -60,10 +84,7 @@ impl Flusher {
             ));
         }
 
-        #[allow(clippy::expect_used)]
-        self.dd_api
-            .as_ref()
-            .expect("dd_api should be initialized by this point")
+        self.dd_api.as_ref().unwrap()
     }
 
     /// Flush metrics from the aggregator
