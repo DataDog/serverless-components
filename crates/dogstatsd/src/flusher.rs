@@ -38,7 +38,7 @@ impl ApiKeyFactory {
 #[derive(Clone)]
 pub struct Flusher {
     // Accept a future so the API key resolution is deferred until the flush happens
-    api_key_factory: ApiKeyFactory,
+    api_key_factory: Arc<ApiKeyFactory>,
     metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     https_proxy: Option<String>,
     timeout: Duration,
@@ -48,7 +48,7 @@ pub struct Flusher {
 }
 
 pub struct FlusherConfig {
-    pub api_key_factory: ApiKeyFactory,
+    pub api_key_factory: Arc<ApiKeyFactory>,
     pub aggregator: Arc<Mutex<Aggregator>>,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     pub https_proxy: Option<String>,
@@ -60,7 +60,7 @@ pub struct FlusherConfig {
 impl Flusher {
     pub fn new(config: FlusherConfig) -> Self {
         Flusher {
-            api_key_factory: config.api_key_factory,
+            api_key_factory: Arc::clone(&config.api_key_factory),
             metrics_intake_url_prefix: config.metrics_intake_url_prefix,
             https_proxy: config.https_proxy,
             timeout: config.timeout,
