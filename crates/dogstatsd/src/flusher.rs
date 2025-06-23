@@ -30,10 +30,8 @@ impl ApiKeyFactory {
 
     pub async fn get_api_key(&self) -> &str {
         self.api_key
-        .get_or_init(async || {
-            (self.resolve_key_fn)().await
-        })
-        .await
+            .get_or_init(|| async { (self.resolve_key_fn)().await })
+            .await
     }
 }
 
