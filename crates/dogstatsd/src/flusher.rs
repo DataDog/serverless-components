@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error};
 use tokio::sync::OnceCell;
+use std::fmt::{Debug};
 
 pub type ApiKeyFactoryFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
@@ -32,6 +33,12 @@ impl ApiKeyFactory {
         self.api_key
             .get_or_init(|| async { (self.resolve_key_fn)().await })
             .await
+    }
+}
+
+impl Debug for ApiKeyFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ApiKeyFactory")
     }
 }
 
