@@ -55,17 +55,17 @@ pub mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn new_from_resolver() {
-        let api_key_factory = Arc::new(ApiKeyFactory::new_from_resolver(Arc::new(move || {
-            let api_key = "mock-api-key".to_string();
-            Box::pin(async move { api_key })
-        })));
+    async fn test_new() {
+        let api_key_factory = ApiKeyFactory::new("mock-api-key");
         assert_eq!(api_key_factory.get_api_key().await, "mock-api-key");
     }
 
     #[tokio::test]
-    async fn new() {
-        let api_key_factory = ApiKeyFactory::new("mock-api-key");
+    async fn test_new_from_resolver() {
+        let api_key_factory = Arc::new(ApiKeyFactory::new_from_resolver(Arc::new(move || {
+            let api_key = "mock-api-key".to_string();
+            Box::pin(async move { api_key })
+        })));
         assert_eq!(api_key_factory.get_api_key().await, "mock-api-key");
     }
 }
