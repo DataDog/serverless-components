@@ -204,7 +204,7 @@ async fn start_dogstatsd(
         Some(dd_api_key) => {
             #[allow(clippy::expect_used)]
             let metrics_flusher = Flusher::new(FlusherConfig {
-                api_key_factory: Arc::new(ApiKeyFactory::new_from_static_key(&dd_api_key)),
+                api_key_factory: Arc::new(ApiKeyFactory::new(&dd_api_key)),
                 aggregator: Arc::clone(&metrics_aggr),
                 metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
                     Some(Site::new(dd_site).expect("Failed to parse site")),

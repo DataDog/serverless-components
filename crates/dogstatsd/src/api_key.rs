@@ -23,7 +23,7 @@ impl ApiKeyFactory {
         }
     }
 
-    pub fn new_from_static_key(api_key: &str) -> Self {
+    pub fn new(api_key: &str) -> Self {
         Self::Static(api_key.to_string())
     }
 
@@ -63,8 +63,8 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn new_from_static_key() {
-        let api_key_factory = ApiKeyFactory::new_from_static_key("mock-api-key");
+    async fn new() {
+        let api_key_factory = ApiKeyFactory::new("mock-api-key");
         assert_eq!(api_key_factory.get_api_key().await, "mock-api-key");
     }
 }

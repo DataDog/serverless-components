@@ -41,7 +41,7 @@ async fn dogstatsd_server_ships_series() {
 
     let _ = start_dogstatsd(&metrics_aggr).await;
 
-    let api_key_factory = ApiKeyFactory::new_from_static_key("mock-api-key");
+    let api_key_factory = ApiKeyFactory::new("mock-api-key");
 
     let mut metrics_flusher = Flusher::new(FlusherConfig {
         api_key_factory: Arc::new(api_key_factory),
