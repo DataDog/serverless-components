@@ -3,42 +3,33 @@ use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 use tokio::sync::OnceCell;
 
-pub type ApiKeyResolverFn =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+pub type ApiKeyResolverFn = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
-enum ApiKeyFactoryInner {
+#[derive(Clone)]
+pub enum ApiKeyFactory {
     Static(String),
     Dynamic {
         resolver_fn: ApiKeyResolverFn,
-        api_key: OnceCell<String>,
+        api_key: Arc<OnceCell<String>>,
     },
-}
-
-#[derive(Clone)]
-pub struct ApiKeyFactory {
-    inner: Arc<ApiKeyFactoryInner>,
 }
 
 impl ApiKeyFactory {
     pub fn new_from_resolver(resolver_fn: ApiKeyResolverFn) -> Self {
-        Self {
-            inner: Arc::new(ApiKeyFactoryInner::Dynamic {
-                resolver_fn,
-                api_key: OnceCell::new(),
-            }),
+        Self::Dynamic {
+            resolver_fn,
+            api_key: Arc::new(OnceCell::new()),
         }
     }
 
     pub fn new_from_static_key(api_key: &str) -> Self {
-        Self {
-            inner: Arc::new(ApiKeyFactoryInner::Static(api_key.to_string())),
-        }
+        Self::Static(api_key.to_string())
     }
 
     pub async fn get_api_key(&self) -> &str {
-        match self.inner.as_ref() {
-            ApiKeyFactoryInner::Static(api_key) => api_key,
-            ApiKeyFactoryInner::Dynamic {
+        match self {
+            Self::Static(api_key) => api_key,
+            Self::Dynamic {
                 resolver_fn,
                 api_key,
             } => {
