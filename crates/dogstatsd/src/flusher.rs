@@ -1,50 +1,17 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::api_key::ApiKeyFactory;
 use crate::aggregator::Aggregator;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error};
-use tokio::sync::OnceCell;
-use std::fmt::{Debug};
-
-pub type ApiKeyFactoryFn =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
-
-#[derive(Clone)]
-pub struct ApiKeyFactory {
-    resolve_key_fn: ApiKeyFactoryFn,
-    api_key: Arc<OnceCell<String>>,
-}
-
-impl ApiKeyFactory {
-    pub fn new(resolve_key_fn: ApiKeyFactoryFn) -> Self {
-        Self {
-            resolve_key_fn,
-            api_key: Arc::new(OnceCell::new()),
-        }
-    }
-
-    pub async fn get_api_key(&self) -> &str {
-        self.api_key
-            .get_or_init(|| async { (self.resolve_key_fn)().await })
-            .await
-    }
-}
-
-impl Debug for ApiKeyFactory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ApiKeyFactory")
-    }
-}
 
 #[derive(Clone)]
 pub struct Flusher {
-    // Accept a future so the API key resolution is deferred until the flush happens
+    // Allow accepting a future so the API key resolution is deferred until the flush happens
     api_key_factory: Arc<ApiKeyFactory>,
     metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     https_proxy: Option<String>,

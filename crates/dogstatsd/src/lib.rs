@@ -8,6 +8,7 @@
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
 pub mod aggregator;
+pub mod api_key;
 pub mod constants;
 pub mod datadog;
 pub mod dogstatsd;
