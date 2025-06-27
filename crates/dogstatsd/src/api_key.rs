@@ -16,15 +16,17 @@ pub enum ApiKeyFactory {
 }
 
 impl ApiKeyFactory {
+    /// Create a new `ApiKeyFactory` with a static API key.
+    pub fn new(api_key: &str) -> Self {
+        Self::Static(api_key.to_string())
+    }
+
+    /// Create a new `ApiKeyFactory` with a dynamic API key resolver function.
     pub fn new_from_resolver(resolver_fn: ApiKeyResolverFn) -> Self {
         Self::Dynamic {
             resolver_fn,
             api_key: Arc::new(OnceCell::new()),
         }
-    }
-
-    pub fn new(api_key: &str) -> Self {
-        Self::Static(api_key.to_string())
     }
 
     pub async fn get_api_key(&self) -> &str {
