@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 use tokio::sync::OnceCell;
 
-pub type ApiKeyResolverFn = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+pub type ApiKeyResolverFn =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub enum ApiKeyFactory {
