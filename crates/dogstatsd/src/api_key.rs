@@ -3,13 +3,13 @@ use std::sync::Arc;
 use tokio::sync::OnceCell;
 use std::fmt::Debug;
 
-pub type ApiKeyFactoryFn =
+pub type ApiKeyResolverFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
 enum ApiKeyFactoryInner {
     Static(String),
     Dynamic {
-        resolve_key_fn: ApiKeyFactoryFn,
+        resolver_fn: ApiKeyResolverFn,
         api_key: OnceCell<String>,
     },
 }
@@ -20,16 +20,16 @@ pub struct ApiKeyFactory {
 }
 
 impl ApiKeyFactory {
-    pub fn new_with_fn(resolve_key_fn: ApiKeyFactoryFn) -> Self {
+    pub fn new_from_resolver(resolver_fn: ApiKeyResolverFn) -> Self {
         Self {
             inner: Arc::new(ApiKeyFactoryInner::Dynamic {
-                resolve_key_fn,
+                resolver_fn,
                 api_key: OnceCell::new(),
             }),
         }
     }
 
-    pub fn new_with_api_key(api_key: &str) -> Self {
+    pub fn new_from_static_key(api_key: &str) -> Self {
         Self {
             inner: Arc::new(ApiKeyFactoryInner::Static(api_key.to_string())),
         }
@@ -38,8 +38,8 @@ impl ApiKeyFactory {
     pub async fn get_api_key(&self) -> &str {
         match self.inner.as_ref() {
             ApiKeyFactoryInner::Static(api_key) => api_key,
-            ApiKeyFactoryInner::Dynamic { resolve_key_fn, api_key } => {
-                api_key.get_or_init(|| async { (resolve_key_fn)().await }).await
+            ApiKeyFactoryInner::Dynamic { resolver_fn, api_key } => {
+                api_key.get_or_init(|| async { (resolver_fn)().await }).await
             }
         }
     }
@@ -57,8 +57,8 @@ pub mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn new_with_fn() {
-        let api_key_factory = Arc::new(ApiKeyFactory::new_with_fn(Arc::new(move || {
+    async fn new_from_resolver() {
+        let api_key_factory = Arc::new(ApiKeyFactory::new_from_resolver(Arc::new(move || {
             let api_key = "mock-api-key".to_string();
             Box::pin(async move { api_key })
         })));
@@ -66,8 +66,8 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn new_with_api_key() {
-        let api_key_factory = ApiKeyFactory::new_with_api_key("mock-api-key");
+    async fn new_from_static_key() {
+        let api_key_factory = ApiKeyFactory::new_from_static_key("mock-api-key");
         assert_eq!(api_key_factory.get_api_key().await, "mock-api-key");
     }
 }
