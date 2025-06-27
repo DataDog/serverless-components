@@ -52,8 +52,7 @@ impl Debug for ApiKeyFactory {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::api_key::ApiKeyFactory;
-    use std::sync::Arc;
+    use super::*;
 
     #[tokio::test]
     async fn new_from_resolver() {
