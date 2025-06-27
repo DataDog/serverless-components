@@ -1,7 +1,7 @@
-use std::{future::Future, pin::Pin};
-use std::sync::Arc;
-use tokio::sync::OnceCell;
 use std::fmt::Debug;
+use std::sync::Arc;
+use std::{future::Future, pin::Pin};
+use tokio::sync::OnceCell;
 
 pub type ApiKeyResolverFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
@@ -16,7 +16,7 @@ enum ApiKeyFactoryInner {
 
 #[derive(Clone)]
 pub struct ApiKeyFactory {
-    inner: Arc<ApiKeyFactoryInner>
+    inner: Arc<ApiKeyFactoryInner>,
 }
 
 impl ApiKeyFactory {
@@ -38,8 +38,13 @@ impl ApiKeyFactory {
     pub async fn get_api_key(&self) -> &str {
         match self.inner.as_ref() {
             ApiKeyFactoryInner::Static(api_key) => api_key,
-            ApiKeyFactoryInner::Dynamic { resolver_fn, api_key } => {
-                api_key.get_or_init(|| async { (resolver_fn)().await }).await
+            ApiKeyFactoryInner::Dynamic {
+                resolver_fn,
+                api_key,
+            } => {
+                api_key
+                    .get_or_init(|| async { (resolver_fn)().await })
+                    .await
             }
         }
     }

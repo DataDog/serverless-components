@@ -1,8 +1,8 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::api_key::ApiKeyFactory;
 use crate::aggregator::Aggregator;
+use crate::api_key::ApiKeyFactory;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
 use std::sync::{Arc, Mutex};
@@ -56,7 +56,9 @@ impl Flusher {
             ));
         }
 
-        self.dd_api.as_ref().expect("dd_api should have been initialized")
+        self.dd_api
+            .as_ref()
+            .expect("dd_api should have been initialized")
     }
 
     /// Flush metrics from the aggregator

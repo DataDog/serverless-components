@@ -27,11 +27,11 @@ use datadog_trace_utils::{config_utils::read_cloud_env, trace_utils::Environment
 
 use dogstatsd::{
     aggregator::Aggregator as MetricsAggregator,
+    api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{MetricsIntakeUrlPrefix, RetryStrategy, Site},
     dogstatsd::{DogStatsD, DogStatsDConfig},
     flusher::{Flusher, FlusherConfig},
-    api_key::ApiKeyFactory,
 };
 
 use dogstatsd::metric::{SortedTags, EMPTY_TAGS};

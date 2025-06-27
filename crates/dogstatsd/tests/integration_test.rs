@@ -4,11 +4,11 @@
 use dogstatsd::metric::SortedTags;
 use dogstatsd::{
     aggregator::Aggregator as MetricsAggregator,
+    api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{DdDdUrl, MetricsIntakeUrlPrefix, MetricsIntakeUrlPrefixOverride},
     dogstatsd::{DogStatsD, DogStatsDConfig},
     flusher::{Flusher, FlusherConfig},
-    api_key::ApiKeyFactory,
 };
 use mockito::Server;
 use std::sync::{Arc, Mutex};
