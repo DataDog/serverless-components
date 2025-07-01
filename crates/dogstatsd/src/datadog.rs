@@ -304,7 +304,7 @@ pub(crate) struct Point {
     pub(crate) value: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 /// A named resource
 pub(crate) struct Resource {
     /// The name of this resource
@@ -335,7 +335,7 @@ impl Serialize for DdMetricKind {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[allow(clippy::struct_field_names)]
 /// A named collection of `Point` instances.
 pub(crate) struct Metric {
@@ -365,7 +365,7 @@ pub struct Origin {
     pub(crate) origin_product_detail: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 /// A collection of metrics as defined by the Datadog Metrics API.
 // NOTE we have a number of `Vec` instances in this implementation that could
 // otherwise be arrays, given that we have constants. Serializing to JSON would

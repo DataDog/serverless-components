@@ -27,6 +27,7 @@ use datadog_trace_utils::{config_utils::read_cloud_env, trace_utils::Environment
 
 use dogstatsd::{
     aggregator::Aggregator as MetricsAggregator,
+    api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{MetricsIntakeUrlPrefix, RetryStrategy, Site},
     dogstatsd::{DogStatsD, DogStatsDConfig},
@@ -203,7 +204,7 @@ async fn start_dogstatsd(
         Some(dd_api_key) => {
             #[allow(clippy::expect_used)]
             let metrics_flusher = Flusher::new(FlusherConfig {
-                api_key: dd_api_key,
+                api_key_factory: Arc::new(ApiKeyFactory::new(&dd_api_key)),
                 aggregator: Arc::clone(&metrics_aggr),
                 metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
                     Some(Site::new(dd_site).expect("Failed to parse site")),

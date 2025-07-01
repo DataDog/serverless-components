@@ -4,6 +4,7 @@
 use dogstatsd::metric::SortedTags;
 use dogstatsd::{
     aggregator::Aggregator as MetricsAggregator,
+    api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{DdDdUrl, MetricsIntakeUrlPrefix, MetricsIntakeUrlPrefixOverride},
     dogstatsd::{DogStatsD, DogStatsDConfig},
@@ -40,8 +41,10 @@ async fn dogstatsd_server_ships_series() {
 
     let _ = start_dogstatsd(&metrics_aggr).await;
 
+    let api_key_factory = ApiKeyFactory::new("mock-api-key");
+
     let mut metrics_flusher = Flusher::new(FlusherConfig {
-        api_key: "mock-api-key".to_string(),
+        api_key_factory: Arc::new(api_key_factory),
         aggregator: Arc::clone(&metrics_aggr),
         metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
             None,
