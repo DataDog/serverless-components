@@ -25,8 +25,7 @@ const JVM_PREFIX: &str = "jvm.";
 const RUNTIME_PREFIX: &str = "runtime.";
 
 /// Represents the product origin of a metric.
-/// The full enum is exhaustive so we only include what we need. Please reference the corresponding
-/// enum for all possible values https://github.com/DataDog/dd-source/blob/573dee9b5f7ee13935cb3ad11b16dde970528983/domains/metrics/shared/libs/proto/origin/origin.proto#L161
+/// The full enum is exhaustive so we only include what we need.
 pub enum OriginProduct {
     Other = 0,
     Serverless = 1,
@@ -39,8 +38,7 @@ impl From<OriginProduct> for u32 {
 }
 
 /// Represents the category origin of a metric.
-/// The full enum is exhaustive so we only include what we need. Please reference the corresponding
-/// enum for all possible values https://github.com/DataDog/dd-source/blob/573dee9b5f7ee13935cb3ad11b16dde970528983/domains/metrics/shared/libs/proto/origin/origin.proto#L276
+/// The full enum is exhaustive so we only include what we need.
 pub enum OriginCategory {
     Other = 0,
     AppServicesMetrics = 35,
@@ -57,8 +55,7 @@ impl From<OriginCategory> for u32 {
 }
 
 /// Represents the service origin of a metric.
-/// The full enum is exhaustive so we only include what we need. Please reference the corresponding
-/// enum for all possible values https://github.com/DataDog/dd-source/blob/573dee9b5f7ee13935cb3ad11b16dde970528983/domains/metrics/shared/libs/proto/origin/origin.proto#L417
+/// The full enum is exhaustive so we only include what we need.
 pub enum OriginService {
     Other = 0,
     ServerlessCustom = 472,
