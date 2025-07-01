@@ -353,12 +353,12 @@ pub(crate) struct Metric {
     pub(crate) metadata: Option<Metadata>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Metadata {
     pub(crate) origin: Option<Origin>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Origin {
     pub(crate) origin_product: u32,
     pub(crate) origin_sub_product: u32,
