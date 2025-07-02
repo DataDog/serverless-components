@@ -16,10 +16,6 @@ const AZURE_FUNCTIONS_TAG_VALUE: &str = "azurefunction";
 
 // Metric prefixes
 const DATADOG_PREFIX: &str = "datadog.";
-const GOOGLE_CLOUD_RUN_PREFIX: &str = "gcp.run";
-const AZURE_APP_SERVICES_PREFIX: &str = "azure.app_services";
-const AZURE_CONTAINER_APP_PREFIX: &str = "azure.app_containerapps";
-const AZURE_FUNCTIONS_PREFIX: &str = "azure.functions";
 const AWS_LAMBDA_PREFIX: &str = "aws.lambda";
 const JVM_PREFIX: &str = "jvm.";
 const RUNTIME_PREFIX: &str = "runtime.";
@@ -88,12 +84,7 @@ pub fn find_metric_origin(metric: &Metric, tags: SortedTags) -> Option<Origin> {
     let service = if metric_name.starts_with(JVM_PREFIX) || metric_name.starts_with(RUNTIME_PREFIX)
     {
         OriginService::ServerlessRuntime
-    } else if metric_prefix == GOOGLE_CLOUD_RUN_PREFIX
-        || metric_prefix == AWS_LAMBDA_PREFIX
-        || metric_prefix == AZURE_APP_SERVICES_PREFIX
-        || metric_prefix == AZURE_CONTAINER_APP_PREFIX
-        || metric_prefix == AZURE_FUNCTIONS_PREFIX
-    {
+    } else if metric_prefix == AWS_LAMBDA_PREFIX {
         OriginService::ServerlessEnhanced
     } else {
         OriginService::ServerlessCustom
@@ -236,7 +227,7 @@ mod tests {
         let tags = SortedTags::parse("origin:cloudrun").unwrap();
         let metric = Metric {
             id: 0,
-            name: "gcp.run.requests".into(),
+            name: "my.custom.metric".into(),
             value: MetricValue::Gauge(1.0),
             tags: Some(tags.clone()),
             timestamp: 0,
@@ -252,7 +243,7 @@ mod tests {
         );
         assert_eq!(
             origin.origin_service as u32,
-            OriginService::ServerlessEnhanced as u32
+            OriginService::ServerlessCustom as u32
         );
     }
 
@@ -261,7 +252,7 @@ mod tests {
         let tags = SortedTags::parse("origin:appservice").unwrap();
         let metric = Metric {
             id: 0,
-            name: "azure.app_services.requests".into(),
+            name: "my.custom.metric".into(),
             value: MetricValue::Gauge(1.0),
             tags: Some(tags.clone()),
             timestamp: 0,
@@ -277,7 +268,7 @@ mod tests {
         );
         assert_eq!(
             origin.origin_service as u32,
-            OriginService::ServerlessEnhanced as u32
+            OriginService::ServerlessCustom as u32
         );
     }
 
@@ -286,7 +277,7 @@ mod tests {
         let tags = SortedTags::parse("origin:containerapp").unwrap();
         let metric = Metric {
             id: 0,
-            name: "azure.app_containerapps.requests".into(),
+            name: "my.custom.metric".into(),
             value: MetricValue::Gauge(1.0),
             tags: Some(tags.clone()),
             timestamp: 0,
@@ -302,7 +293,7 @@ mod tests {
         );
         assert_eq!(
             origin.origin_service as u32,
-            OriginService::ServerlessEnhanced as u32
+            OriginService::ServerlessCustom as u32
         );
     }
 
@@ -311,7 +302,7 @@ mod tests {
         let tags = SortedTags::parse("origin:azurefunction").unwrap();
         let metric = Metric {
             id: 0,
-            name: "azure.functions.requests".into(),
+            name: "my.custom.metric".into(),
             value: MetricValue::Gauge(1.0),
             tags: Some(tags.clone()),
             timestamp: 0,
@@ -327,7 +318,7 @@ mod tests {
         );
         assert_eq!(
             origin.origin_service as u32,
-            OriginService::ServerlessEnhanced as u32
+            OriginService::ServerlessCustom as u32
         );
     }
 
