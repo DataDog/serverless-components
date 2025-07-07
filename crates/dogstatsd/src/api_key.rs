@@ -4,14 +4,14 @@ use std::{future::Future, pin::Pin};
 use tokio::sync::OnceCell;
 
 pub type ApiKeyResolverFn =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<String>> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub enum ApiKeyFactory {
     Static(String),
     Dynamic {
         resolver_fn: ApiKeyResolverFn,
-        api_key: Arc<OnceCell<String>>,
+        api_key: Arc<OnceCell<Option<String>>>,
     },
 }
 
@@ -29,9 +29,9 @@ impl ApiKeyFactory {
         }
     }
 
-    pub async fn get_api_key(&self) -> &str {
+    pub async fn get_api_key(&self) -> Option<&str> {
         match self {
-            Self::Static(api_key) => api_key,
+            Self::Static(api_key) => Some(api_key),
             Self::Dynamic {
                 resolver_fn,
                 api_key,
@@ -39,6 +39,8 @@ impl ApiKeyFactory {
                 api_key
                     .get_or_init(|| async { (resolver_fn)().await })
                     .await
+                    .as_ref()
+                    .map(|s| s.as_str())
             }
         }
     }
@@ -57,15 +59,15 @@ pub mod tests {
     #[tokio::test]
     async fn test_new() {
         let api_key_factory = ApiKeyFactory::new("mock-api-key");
-        assert_eq!(api_key_factory.get_api_key().await, "mock-api-key");
+        assert_eq!(api_key_factory.get_api_key().await, Some("mock-api-key"));
     }
 
     #[tokio::test]
     async fn test_new_from_resolver() {
         let api_key_factory = Arc::new(ApiKeyFactory::new_from_resolver(Arc::new(move || {
             let api_key = "mock-api-key".to_string();
-            Box::pin(async move { api_key })
+            Box::pin(async move { Some(api_key) })
         })));
-        assert_eq!(api_key_factory.get_api_key().await, "mock-api-key");
+        assert_eq!(api_key_factory.get_api_key().await, Some("mock-api-key"));
     }
 }
