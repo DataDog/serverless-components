@@ -35,13 +35,11 @@ impl ApiKeyFactory {
             Self::Dynamic {
                 resolver_fn,
                 api_key,
-            } => {
-                api_key
-                    .get_or_init(|| async { (resolver_fn)().await })
-                    .await
-                    .as_ref()
-                    .map(|s| s.as_str())
-            }
+            } => api_key
+                .get_or_init(|| async { (resolver_fn)().await })
+                .await
+                .as_ref()
+                .map(|s| s.as_str()),
         }
     }
 }
