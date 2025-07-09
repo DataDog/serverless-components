@@ -393,7 +393,6 @@ mod tests {
         // For any valid name, tags et al the parse routine is able to parse an
         // encoded metric line.
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn parse_valid_inputs(
             name in metric_name(),
             values in metric_values(),
@@ -455,7 +454,6 @@ mod tests {
         }
 
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn parse_missing_name_and_value(
             mtype in metric_type(),
             tagset in metric_tagset()
@@ -471,7 +469,6 @@ mod tests {
         }
 
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn parse_invalid_name_and_value_format(
             name in metric_name(),
             values in metric_values(),
@@ -493,7 +490,6 @@ mod tests {
         }
 
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn parse_unsupported_metric_type(
             name in metric_name(),
             values in metric_values(),
@@ -518,7 +514,6 @@ mod tests {
         // For any valid name, tags et al the parse routine is able to parse an
         // encoded metric line.
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn id_consistent(name in metric_name(),
                          mut tags in metric_tags()) {
             let mut tagset1 = String::new();
@@ -550,7 +545,6 @@ mod tests {
         }
 
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn resources_key_val_order(tags in metric_tags()) {
             let sorted_tags = SortedTags { values: tags.into_iter()
                 .map(|(kind, name)| (Ustr::from(&kind), Ustr::from(&name)))
@@ -566,7 +560,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn parse_too_many_tags() {
         // 101
         assert_eq!(
@@ -581,19 +574,16 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn invalid_dogstatsd_no_panic() {
         assert!(parse("somerandomstring|c+a;slda").is_err());
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn parse_container_id() {
         assert!(parse("containerid.metric:0|c|#env:dev,client_transport:udp|c:0000000000000000000000000000000000000000000000000000000000000000").is_ok());
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn parse_tag_no_value() {
         let result = parse("datadog.tracer.flush_triggered:1|c|#lang:go,lang_version:go1.22.10,_dd.origin:lambda,runtime-id:d66f501c-d09b-4d0d-970f-515235c4eb56,v1.65.1,service:aws.lambda,reason:scheduled");
         assert!(result.is_ok());
@@ -607,7 +597,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn parse_tag_multi_column() {
         let result = parse("datadog.tracer.flush_triggered:1|c|#lang:go:and:something:else");
         assert!(result.is_ok());
@@ -618,7 +607,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn parse_tracer_metric() {
         let input = "datadog.tracer.flush_duration:0.785551|ms|#lang:go,lang_version:go1.23.2,env:redacted_env,_dd.origin:lambda,runtime-id:redacted_runtime,tracer_version:v1.70.1,service:redacted_service,env:redacted_env,service:redacted_service,version:redacted_version";
         let expected_error = "ms".to_string();
@@ -630,7 +618,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn parse_metric_timestamp() {
         // Important to test that we round down to the nearest 10 seconds
         // for our buckets
@@ -647,7 +634,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn parse_metric_no_timestamp() {
         // *wince* this could be a race condition
         // we round the timestamp down to a 10s bucket and I want to test now
