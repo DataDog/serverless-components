@@ -202,7 +202,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_process_trace() {
         let (tx, mut rx): (
             Sender<trace_utils::SendData>,
@@ -268,7 +267,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_process_trace_top_level_span_set() {
         let (tx, mut rx): (
             Sender<trace_utils::SendData>,

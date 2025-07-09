@@ -19,7 +19,6 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
-#[cfg(not(miri))]
 #[tokio::test]
 async fn dogstatsd_server_ships_series() {
     use dogstatsd::datadog::RetryStrategy;
@@ -106,7 +105,6 @@ async fn start_dogstatsd(metrics_aggr: &Arc<Mutex<MetricsAggregator>>) -> Cancel
 }
 
 #[cfg(test)]
-#[cfg(not(miri))]
 #[tokio::test]
 async fn test_send_with_retry_immediate_failure() {
     use dogstatsd::datadog::{DdApi, DdDdUrl, RetryStrategy};
@@ -154,7 +152,6 @@ async fn test_send_with_retry_immediate_failure() {
 }
 
 #[cfg(test)]
-#[cfg(not(miri))]
 #[tokio::test]
 async fn test_send_with_retry_linear_backoff_success() {
     use dogstatsd::datadog::{DdApi, DdDdUrl, RetryStrategy};
@@ -216,7 +213,6 @@ async fn test_send_with_retry_linear_backoff_success() {
 }
 
 #[cfg(test)]
-#[cfg(not(miri))]
 #[tokio::test]
 async fn test_send_with_retry_immediate_failure_after_one_attempt() {
     use dogstatsd::datadog::{DdApi, DdDdUrl, RetryStrategy};

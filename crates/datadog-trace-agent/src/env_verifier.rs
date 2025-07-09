@@ -349,7 +349,6 @@ mod tests {
     use super::{EnvVerifier, ServerlessEnvVerifier};
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_ensure_gcp_env_false_if_metadata_server_unreachable() {
         struct MockGoogleMetadataClient {}
         #[async_trait]
@@ -369,7 +368,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_ensure_gcp_env_false_if_no_server_in_response_headers() {
         struct MockGoogleMetadataClient {}
         #[async_trait]
@@ -392,7 +390,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_ensure_gcp_env_if_server_header_not_serverless() {
         struct MockGoogleMetadataClient {}
         #[async_trait]
@@ -417,7 +414,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_ensure_gcp_env_true_if_cloud_function_env() {
         struct MockGoogleMetadataClient {}
         #[async_trait]
@@ -460,7 +456,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_gcp_verify_environment_timeout_exceeded_gives_unknown_values() {
         struct MockGoogleMetadataClient {}
         #[async_trait]
@@ -511,7 +506,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_ensure_azure_env_windows_true() {
         struct MockAzureVerificationClient {}
         #[async_trait]
@@ -527,7 +521,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_ensure_azure_env_windows_false() {
         struct MockAzureVerificationClient {}
         #[async_trait]
@@ -550,7 +543,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_ensure_azure_env_linux_true() {
         struct MockAzureVerificationClient {}
         #[async_trait]
@@ -566,7 +558,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_ensure_azure_env_linux_false() {
         struct MockAzureVerificationClient {}
         #[async_trait]
