@@ -66,52 +66,54 @@ impl From<OriginService> for u32 {
     }
 }
 
-/// Finds the origin of a metric based on its tags and name prefix.
-pub fn find_metric_origin(metric: &Metric, tags: SortedTags) -> Option<Origin> {
-    let metric_name = metric.name.to_string();
+impl Metric {
+    /// Finds the origin of a metric based on its tags and name prefix.
+    pub fn find_origin(&self, tags: SortedTags) -> Option<Origin> {
+        let metric_name = self.name.to_string();
 
-    // First check if it's a Datadog metric
-    if metric_name.starts_with(DATADOG_PREFIX) {
-        return None;
+        // First check if it's a Datadog metric
+        if metric_name.starts_with(DATADOG_PREFIX) {
+            return None;
+        }
+
+        let metric_prefix = metric_name
+            .split('.')
+            .take(2)
+            .collect::<Vec<&str>>()
+            .join(".");
+
+        // Determine the service based on metric prefix first
+        let service = if metric_name.starts_with(JVM_PREFIX) || metric_name.starts_with(RUNTIME_PREFIX)
+        {
+            OriginService::ServerlessRuntime
+        } else if metric_prefix == AWS_LAMBDA_PREFIX || metric_prefix == GOOGLE_CLOUD_RUN_PREFIX {
+            OriginService::ServerlessEnhanced
+        } else {
+            OriginService::ServerlessCustom
+        };
+
+        // Then determine the category based on tags
+        let category = if has_tag_value(&tags, AWS_LAMBDA_TAG_KEY, "") {
+            OriginCategory::LambdaMetrics
+        } else if has_tag_value(&tags, DD_ORIGIN_TAG_KEY, AZURE_APP_SERVICES_TAG_VALUE) {
+            OriginCategory::AppServicesMetrics
+        } else if has_tag_value(&tags, DD_ORIGIN_TAG_KEY, GOOGLE_CLOUD_RUN_TAG_VALUE) {
+            OriginCategory::CloudRunMetrics
+        } else if has_tag_value(&tags, DD_ORIGIN_TAG_KEY, AZURE_CONTAINER_APP_TAG_VALUE) {
+            OriginCategory::ContainerAppMetrics
+        } else if has_tag_value(&tags, DD_ORIGIN_TAG_KEY, AZURE_FUNCTIONS_TAG_VALUE) {
+            OriginCategory::AzureFunctionsMetrics
+        } else {
+            return None;
+        };
+
+        Some(Origin {
+            origin_product: OriginProduct::Serverless.into(),
+            origin_service: service.into(),
+            origin_category: category.into(),
+            ..Default::default()
+        })
     }
-
-    let metric_prefix = metric_name
-        .split('.')
-        .take(2)
-        .collect::<Vec<&str>>()
-        .join(".");
-
-    // Determine the service based on metric prefix first
-    let service = if metric_name.starts_with(JVM_PREFIX) || metric_name.starts_with(RUNTIME_PREFIX)
-    {
-        OriginService::ServerlessRuntime
-    } else if metric_prefix == AWS_LAMBDA_PREFIX || metric_prefix == GOOGLE_CLOUD_RUN_PREFIX {
-        OriginService::ServerlessEnhanced
-    } else {
-        OriginService::ServerlessCustom
-    };
-
-    // Then determine the category based on tags
-    let category = if has_tag_value(&tags, AWS_LAMBDA_TAG_KEY, "") {
-        OriginCategory::LambdaMetrics
-    } else if has_tag_value(&tags, DD_ORIGIN_TAG_KEY, AZURE_APP_SERVICES_TAG_VALUE) {
-        OriginCategory::AppServicesMetrics
-    } else if has_tag_value(&tags, DD_ORIGIN_TAG_KEY, GOOGLE_CLOUD_RUN_TAG_VALUE) {
-        OriginCategory::CloudRunMetrics
-    } else if has_tag_value(&tags, DD_ORIGIN_TAG_KEY, AZURE_CONTAINER_APP_TAG_VALUE) {
-        OriginCategory::ContainerAppMetrics
-    } else if has_tag_value(&tags, DD_ORIGIN_TAG_KEY, AZURE_FUNCTIONS_TAG_VALUE) {
-        OriginCategory::AzureFunctionsMetrics
-    } else {
-        return None;
-    };
-
-    Some(Origin {
-        origin_product: OriginProduct::Serverless.into(),
-        origin_service: service.into(),
-        origin_category: category.into(),
-        ..Default::default()
-    })
 }
 
 /// Checks if the given key-value pair exists in the tags.
@@ -158,7 +160,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags).unwrap();
+        let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
             origin.origin_product as u32,
             OriginProduct::Serverless as u32
@@ -183,7 +185,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags).unwrap();
+        let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
             origin.origin_product as u32,
             OriginProduct::Serverless as u32
@@ -208,7 +210,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags).unwrap();
+        let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
             origin.origin_product as u32,
             OriginProduct::Serverless as u32
@@ -233,7 +235,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags).unwrap();
+        let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
             origin.origin_product as u32,
             OriginProduct::Serverless as u32
@@ -258,7 +260,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags).unwrap();
+        let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
             origin.origin_product as u32,
             OriginProduct::Serverless as u32
@@ -283,7 +285,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags).unwrap();
+        let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
             origin.origin_product as u32,
             OriginProduct::Serverless as u32
@@ -308,7 +310,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags).unwrap();
+        let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
             origin.origin_product as u32,
             OriginProduct::Serverless as u32
@@ -333,7 +335,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags).unwrap();
+        let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
             origin.origin_product as u32,
             OriginProduct::Serverless as u32
@@ -358,7 +360,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags).unwrap();
+        let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
             origin.origin_product as u32,
             OriginProduct::Serverless as u32
@@ -383,7 +385,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags);
+        let origin = metric.find_origin(tags);
         assert_eq!(origin, None);
     }
 
@@ -397,7 +399,7 @@ mod tests {
             tags: Some(tags.clone()),
             timestamp: 0,
         };
-        let origin = find_metric_origin(&metric, tags);
+        let origin = metric.find_origin(tags);
         assert_eq!(origin, None);
     }
 }

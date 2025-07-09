@@ -9,7 +9,6 @@ use crate::datadog::{
 };
 use crate::errors;
 use crate::metric::{self, Metric, MetricValue, SortedTags};
-use crate::origin::find_metric_origin;
 
 use datadog_protos::metrics::{Dogsketch, Metadata, Sketch, SketchPayload};
 use ddsketch_agent::DDSketch;
@@ -265,7 +264,7 @@ fn build_sketch(entry: &Metric, mut base_tag_vec: SortedTags) -> Option<Sketch> 
     }
     sketch.set_tags(base_tag_vec.to_chars());
 
-    if let Some(origin) = find_metric_origin(entry, base_tag_vec) {
+    if let Some(origin) = entry.find_origin(base_tag_vec) {
         sketch.set_metadata(Metadata {
             origin: MessageField::some(origin),
             special_fields: SpecialFields::default(),
@@ -297,7 +296,7 @@ fn build_metric(entry: &Metric, mut base_tag_vec: SortedTags) -> Option<MetricTo
         base_tag_vec.extend(&tags);
     }
 
-    let origin = find_metric_origin(entry, base_tag_vec.clone());
+    let origin = entry.find_origin(base_tag_vec.clone());
     let metadata = origin.map(|o| MetadataToShip {
         origin: Some(OriginToShip {
             origin_product: o.origin_product,
