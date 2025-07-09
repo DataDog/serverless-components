@@ -83,7 +83,8 @@ impl Metric {
             .join(".");
 
         // Determine the service based on metric prefix first
-        let service = if metric_name.starts_with(JVM_PREFIX) || metric_name.starts_with(RUNTIME_PREFIX)
+        let service = if metric_name.starts_with(JVM_PREFIX)
+            || metric_name.starts_with(RUNTIME_PREFIX)
         {
             OriginService::ServerlessRuntime
         } else if metric_prefix == AWS_LAMBDA_PREFIX || metric_prefix == GOOGLE_CLOUD_RUN_PREFIX {
