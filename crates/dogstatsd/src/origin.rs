@@ -17,6 +17,7 @@ const AZURE_FUNCTIONS_TAG_VALUE: &str = "azurefunction";
 // Metric prefixes
 const DATADOG_PREFIX: &str = "datadog.";
 const AWS_LAMBDA_PREFIX: &str = "aws.lambda";
+const GOOGLE_CLOUD_RUN_PREFIX: &str = "gcp.run";
 const JVM_PREFIX: &str = "jvm.";
 const RUNTIME_PREFIX: &str = "runtime.";
 
@@ -84,7 +85,7 @@ pub fn find_metric_origin(metric: &Metric, tags: SortedTags) -> Option<Origin> {
     let service = if metric_name.starts_with(JVM_PREFIX) || metric_name.starts_with(RUNTIME_PREFIX)
     {
         OriginService::ServerlessRuntime
-    } else if metric_prefix == AWS_LAMBDA_PREFIX {
+    } else if metric_prefix == AWS_LAMBDA_PREFIX || metric_prefix == GOOGLE_CLOUD_RUN_PREFIX {
         OriginService::ServerlessEnhanced
     } else {
         OriginService::ServerlessCustom
@@ -223,7 +224,32 @@ mod tests {
     }
 
     #[test]
-    fn test_find_metric_origin_cloudrun() {
+    fn test_find_metric_origin_cloudrun_enhanced() {
+        let tags = SortedTags::parse("origin:cloudrun").unwrap();
+        let metric = Metric {
+            id: 0,
+            name: "gcp.run.enhanced.cold_start".into(),
+            value: MetricValue::Gauge(1.0),
+            tags: Some(tags.clone()),
+            timestamp: 0,
+        };
+        let origin = find_metric_origin(&metric, tags).unwrap();
+        assert_eq!(
+            origin.origin_product as u32,
+            OriginProduct::Serverless as u32
+        );
+        assert_eq!(
+            origin.origin_category as u32,
+            OriginCategory::CloudRunMetrics as u32
+        );
+        assert_eq!(
+            origin.origin_service as u32,
+            OriginService::ServerlessEnhanced as u32
+        );
+    }
+
+    #[test]
+    fn test_find_metric_origin_cloudrun_custom() {
         let tags = SortedTags::parse("origin:cloudrun").unwrap();
         let metric = Metric {
             id: 0,
