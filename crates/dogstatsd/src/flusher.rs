@@ -2,17 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::aggregator::Aggregator;
-use crate::api_key::ApiKeyFactory;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error};
 
+pub type ApiKeyFactory =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Flusher {
-    // Allow accepting a future so the API key resolution is deferred until the flush happens
-    api_key_factory: Arc<ApiKeyFactory>,
+    // Accept a future so the API key resolution is deferred until the flush happens
+    api_key_factory: ApiKeyFactory,
     metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     https_proxy: Option<String>,
     timeout: Duration,
@@ -22,7 +26,7 @@ pub struct Flusher {
 }
 
 pub struct FlusherConfig {
-    pub api_key_factory: Arc<ApiKeyFactory>,
+    pub api_key_factory: ApiKeyFactory,
     pub aggregator: Arc<Mutex<Aggregator>>,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     pub https_proxy: Option<String>,
@@ -34,7 +38,7 @@ pub struct FlusherConfig {
 impl Flusher {
     pub fn new(config: FlusherConfig) -> Self {
         Flusher {
-            api_key_factory: Arc::clone(&config.api_key_factory),
+            api_key_factory: config.api_key_factory,
             metrics_intake_url_prefix: config.metrics_intake_url_prefix,
             https_proxy: config.https_proxy,
             timeout: config.timeout,
@@ -46,9 +50,9 @@ impl Flusher {
 
     async fn get_dd_api(&mut self) -> &DdApi {
         if self.dd_api.is_none() {
-            let api_key = self.api_key_factory.get_api_key().await;
+            let api_key = (self.api_key_factory)().await;
             self.dd_api = Some(DdApi::new(
-                api_key.to_string(),
+                api_key,
                 self.metrics_intake_url_prefix.clone(),
                 self.https_proxy.clone(),
                 self.timeout,
@@ -59,7 +63,7 @@ impl Flusher {
         #[allow(clippy::expect_used)]
         self.dd_api
             .as_ref()
-            .expect("dd_api should have been initialized")
+            .expect("dd_api should be initialized by this point")
     }
 
     /// Flush metrics from the aggregator
