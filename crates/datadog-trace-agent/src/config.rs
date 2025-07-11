@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 use datadog_trace_obfuscation::obfuscation_config;
 use datadog_trace_utils::config_utils::{
@@ -17,6 +18,54 @@ use datadog_trace_utils::trace_utils;
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 
 #[derive(Debug)]
+pub struct Tags {
+    tags: HashMap<String, String>,
+    function_tags_string: OnceLock<String>,
+}
+
+impl Tags {
+    pub fn from_env_string(env_tags: &str) -> Self {
+        let mut tags = HashMap::new();
+        for kv in env_tags.split(',') {
+            let parts = kv.split(':').collect::<Vec<&str>>();
+            if parts.len() == 2 {
+                tags.insert(parts[0].to_string(), parts[1].to_string());
+            }
+        }
+        Self {
+            tags,
+            function_tags_string: OnceLock::new(),
+        }
+    }
+
+    pub fn new() -> Self {
+        Self {
+            tags: HashMap::new(),
+            function_tags_string: OnceLock::new(),
+        }
+    }
+
+    pub fn tags(&self) -> &HashMap<String, String> {
+        &self.tags
+    }
+
+    pub fn function_tags(&self) -> Option<&str> {
+        if self.tags.is_empty() {
+            return None;
+        }
+        Some(self.function_tags_string.get_or_init(|| {
+            let mut kvs = self
+                .tags
+                .iter()
+                .map(|(k, v)| format!("{k}:{v}"))
+                .collect::<Vec<String>>();
+            kvs.sort();
+            kvs.join(",")
+        }))
+    }
+}
+
+#[derive(Debug)]
 pub struct Config {
     pub dd_site: String,
     pub dd_dogstatsd_port: u16,
@@ -25,13 +74,7 @@ pub struct Config {
     pub max_request_content_length: usize,
     pub obfuscation_config: obfuscation_config::ObfuscationConfig,
     pub os: String,
-    pub tags: HashMap<String, String>,
-    // the comma-delimited, key:value form of tags so that we only compute it once
-    // TODO: it is unfortuante that are defining this value separately from the tags value above,
-    // since this is derived from the other and they should be kept synchronized. A better approach
-    // would probably be a tags struct which we instantiate from the hash which provides a
-    // read-only function_tags form as well.
-    pub function_tags: Option<String>,
+    pub tags: Tags,
     /// how often to flush stats, in seconds
     pub stats_flush_interval: u64,
     /// how often to flush traces, in seconds
@@ -77,16 +120,10 @@ impl Config {
             )
         })?;
 
-        let tags = parse_env_tags();
-        let function_tags = if tags.is_empty() {
-            None
+        let tags = if let Ok(env_tags) = env::var("DD_TAGS") {
+            Tags::from_env_string(&env_tags)
         } else {
-            let mut kvs = tags
-                .iter()
-                .map(|(k, v)| format!("{k}:{v}"))
-                .collect::<Vec<String>>();
-            kvs.sort();
-            Some(kvs.join(","))
+            Tags::new()
         };
 
         #[allow(clippy::unwrap_used)]
@@ -115,24 +152,8 @@ impl Config {
                 .or_else(|_| env::var("HTTPS_PROXY"))
                 .ok(),
             tags,
-            function_tags,
         })
     }
-}
-
-fn parse_env_tags() -> HashMap<String, String> {
-    let mut tags = HashMap::new();
-
-    if let Ok(env_tags) = env::var("DD_TAGS") {
-        for kv in env_tags.split(',') {
-            let parts = kv.split(':').collect::<Vec<&str>>();
-            if parts.len() == 2 {
-                tags.insert(parts[0].to_string(), parts[1].to_string());
-            }
-        }
-    }
-
-    tags
 }
 
 #[cfg(test)]
@@ -303,11 +324,8 @@ mod tests {
             ("some".to_string(), "tag".to_string()),
             ("another".to_string(), "thing".to_string()),
         ]);
-        assert_eq!(config.tags, expected_tags);
-        assert_eq!(
-            config.function_tags,
-            Some("another:thing,some:tag".to_string())
-        );
+        assert_eq!(config.tags.tags(), &expected_tags);
+        assert_eq!(config.tags.function_tags(), Some("another:thing,some:tag"));
         env::remove_var("DD_API_KEY");
         env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
         env::remove_var("DD_TAGS");

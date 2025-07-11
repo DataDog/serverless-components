@@ -125,12 +125,12 @@ impl TraceProcessor for ServerlessTraceProcessor {
         };
 
         // Add function_tags to payload if we can
-        if let Some(function_tags) = &config.function_tags {
+        if let Some(function_tags) = config.tags.function_tags() {
             if let TracerPayloadCollection::V07(ref mut tracer_payloads) = payload {
                 for tracer_payload in tracer_payloads {
                     tracer_payload.tags.insert(
                         TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY.to_string(),
-                        function_tags.clone(),
+                        function_tags.to_string(),
                     );
                 }
             }
@@ -164,7 +164,7 @@ mod tests {
     use tokio::sync::mpsc::{self, Receiver, Sender};
 
     use crate::{
-        config::Config,
+        config::{Config, Tags},
         trace_processor::{self, TraceProcessor, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY},
     };
     use datadog_trace_protobuf::pb;
@@ -202,11 +202,7 @@ mod tests {
             os: "linux".to_string(),
             obfuscation_config: ObfuscationConfig::new().unwrap(),
             proxy_url: None,
-            tags: HashMap::from([
-                ("env".to_string(), "test".to_string()),
-                ("service".to_string(), "my-service".to_string()),
-            ]),
-            function_tags: Some("env:test,service:my-service".to_string()),
+            tags: Tags::from_env_string("env:test,service:my-service"),
         }
     }
 
