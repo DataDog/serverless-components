@@ -3,6 +3,7 @@
 
 use ddcommon::Endpoint;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::env;
 use std::str::FromStr;
 
@@ -24,6 +25,7 @@ pub struct Config {
     pub max_request_content_length: usize,
     pub obfuscation_config: obfuscation_config::ObfuscationConfig,
     pub os: String,
+    pub tags: HashMap<String, String>,
     /// how often to flush stats, in seconds
     pub stats_flush_interval: u64,
     /// how often to flush traces, in seconds
@@ -94,14 +96,31 @@ impl Config {
             proxy_url: env::var("DD_PROXY_HTTPS")
                 .or_else(|_| env::var("HTTPS_PROXY"))
                 .ok(),
+            tags: parse_env_tags(),
         })
     }
+}
+
+fn parse_env_tags() -> HashMap<String, String> {
+    let mut tags = HashMap::new();
+
+    if let Ok(env_tags) = env::var("DD_TAGS") {
+        for kv in env_tags.split(',') {
+            let parts = kv.split(':').collect::<Vec<&str>>();
+            if parts.len() == 2 {
+                tags.insert(parts[0].to_string(), parts[1].to_string());
+            }
+        }
+    }
+
+    tags
 }
 
 #[cfg(test)]
 mod tests {
     use duplicate::duplicate_item;
     use serial_test::serial;
+    use std::collections::HashMap;
     use std::env;
 
     use crate::config;
@@ -249,5 +268,25 @@ mod tests {
         env::remove_var("DD_API_KEY");
         env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
         env::remove_var("DD_DOGSTATSD_PORT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_dd_tags() {
+        env::set_var("DD_API_KEY", "_not_a_real_key_");
+        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
+        env::set_var("DD_TAGS", "some:tag,another:thing");
+        let config_res = config::Config::new();
+        println!("{:?}", config_res);
+        assert!(config_res.is_ok());
+        let config = config_res.unwrap();
+        let expected_tags = HashMap::from([
+            ("some".to_string(), "tag".to_string()),
+            ("another".to_string(), "thing".to_string()),
+        ]);
+        assert_eq!(config.tags, expected_tags);
+        env::remove_var("DD_API_KEY");
+        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+        env::remove_var("DD_TAGS");
     }
 }
