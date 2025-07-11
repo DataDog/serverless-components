@@ -189,6 +189,7 @@ mod tests {
             obfuscation_config: ObfuscationConfig::new().unwrap(),
             proxy_url: None,
             tags: HashMap::new(),
+            function_tags: None,
         }
     }
 
