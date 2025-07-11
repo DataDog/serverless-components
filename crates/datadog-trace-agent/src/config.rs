@@ -26,6 +26,12 @@ pub struct Config {
     pub obfuscation_config: obfuscation_config::ObfuscationConfig,
     pub os: String,
     pub tags: HashMap<String, String>,
+    // the comma-delimited, key:value form of tags so that we only compute it once
+    // TODO: it is unfortuante that are defining this value separately from the tags value above,
+    // since this is derived from the other and they should be kept synchronized. A better approach
+    // would probably be a tags struct which we instantiate from the hash which provides a
+    // read-only function_tags form as well.
+    pub function_tags: Option<String>,
     /// how often to flush stats, in seconds
     pub stats_flush_interval: u64,
     /// how often to flush traces, in seconds
@@ -71,6 +77,18 @@ impl Config {
             )
         })?;
 
+        let tags = parse_env_tags();
+        let function_tags = if tags.is_empty() {
+            None
+        } else {
+            let mut kvs = tags
+                .iter()
+                .map(|(k, v)| format!("{k}:{v}"))
+                .collect::<Vec<String>>();
+            kvs.sort();
+            Some(kvs.join(","))
+        };
+
         #[allow(clippy::unwrap_used)]
         Ok(Config {
             app_name: Some(app_name),
@@ -96,7 +114,8 @@ impl Config {
             proxy_url: env::var("DD_PROXY_HTTPS")
                 .or_else(|_| env::var("HTTPS_PROXY"))
                 .ok(),
-            tags: parse_env_tags(),
+            tags,
+            function_tags,
         })
     }
 }
@@ -275,7 +294,7 @@ mod tests {
     fn test_dd_tags() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_TAGS", "some:tag,another:thing");
+        env::set_var("DD_TAGS", "some:tag,another:thing,invalid:thing:here");
         let config_res = config::Config::new();
         println!("{:?}", config_res);
         assert!(config_res.is_ok());
@@ -285,6 +304,10 @@ mod tests {
             ("another".to_string(), "thing".to_string()),
         ]);
         assert_eq!(config.tags, expected_tags);
+        assert_eq!(
+            config.function_tags,
+            Some("another:thing,some:tag".to_string())
+        );
         env::remove_var("DD_API_KEY");
         env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
         env::remove_var("DD_TAGS");
