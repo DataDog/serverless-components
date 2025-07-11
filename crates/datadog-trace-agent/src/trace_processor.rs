@@ -188,6 +188,7 @@ mod tests {
             os: "linux".to_string(),
             obfuscation_config: ObfuscationConfig::new().unwrap(),
             proxy_url: None,
+            tags: HashMap::new(),
         }
     }
 
