@@ -3,8 +3,10 @@
 
 use ddcommon::Endpoint;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::env;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 use datadog_trace_obfuscation::obfuscation_config;
 use datadog_trace_utils::config_utils::{
@@ -16,6 +18,54 @@ use datadog_trace_utils::trace_utils;
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 
 #[derive(Debug)]
+pub struct Tags {
+    tags: HashMap<String, String>,
+    function_tags_string: OnceLock<String>,
+}
+
+impl Tags {
+    pub fn from_env_string(env_tags: &str) -> Self {
+        let mut tags = HashMap::new();
+        for kv in env_tags.split(',') {
+            let parts = kv.split(':').collect::<Vec<&str>>();
+            if parts.len() == 2 {
+                tags.insert(parts[0].to_string(), parts[1].to_string());
+            }
+        }
+        Self {
+            tags,
+            function_tags_string: OnceLock::new(),
+        }
+    }
+
+    pub fn new() -> Self {
+        Self {
+            tags: HashMap::new(),
+            function_tags_string: OnceLock::new(),
+        }
+    }
+
+    pub fn tags(&self) -> &HashMap<String, String> {
+        &self.tags
+    }
+
+    pub fn function_tags(&self) -> Option<&str> {
+        if self.tags.is_empty() {
+            return None;
+        }
+        Some(self.function_tags_string.get_or_init(|| {
+            let mut kvs = self
+                .tags
+                .iter()
+                .map(|(k, v)| format!("{k}:{v}"))
+                .collect::<Vec<String>>();
+            kvs.sort();
+            kvs.join(",")
+        }))
+    }
+}
+
+#[derive(Debug)]
 pub struct Config {
     pub dd_site: String,
     pub dd_dogstatsd_port: u16,
@@ -24,6 +74,7 @@ pub struct Config {
     pub max_request_content_length: usize,
     pub obfuscation_config: obfuscation_config::ObfuscationConfig,
     pub os: String,
+    pub tags: Tags,
     /// how often to flush stats, in seconds
     pub stats_flush_interval: u64,
     /// how often to flush traces, in seconds
@@ -69,6 +120,12 @@ impl Config {
             )
         })?;
 
+        let tags = if let Ok(env_tags) = env::var("DD_TAGS") {
+            Tags::from_env_string(&env_tags)
+        } else {
+            Tags::new()
+        };
+
         #[allow(clippy::unwrap_used)]
         Ok(Config {
             app_name: Some(app_name),
@@ -94,6 +151,7 @@ impl Config {
             proxy_url: env::var("DD_PROXY_HTTPS")
                 .or_else(|_| env::var("HTTPS_PROXY"))
                 .ok(),
+            tags,
         })
     }
 }
@@ -102,6 +160,7 @@ impl Config {
 mod tests {
     use duplicate::duplicate_item;
     use serial_test::serial;
+    use std::collections::HashMap;
     use std::env;
 
     use crate::config;
@@ -249,5 +308,26 @@ mod tests {
         env::remove_var("DD_API_KEY");
         env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
         env::remove_var("DD_DOGSTATSD_PORT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_dd_tags() {
+        env::set_var("DD_API_KEY", "_not_a_real_key_");
+        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
+        env::set_var("DD_TAGS", "some:tag,another:thing,invalid:thing:here");
+        let config_res = config::Config::new();
+        println!("{:?}", config_res);
+        assert!(config_res.is_ok());
+        let config = config_res.unwrap();
+        let expected_tags = HashMap::from([
+            ("some".to_string(), "tag".to_string()),
+            ("another".to_string(), "thing".to_string()),
+        ]);
+        assert_eq!(config.tags.tags(), &expected_tags);
+        assert_eq!(config.tags.function_tags(), Some("another:thing,some:tag"));
+        env::remove_var("DD_API_KEY");
+        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+        env::remove_var("DD_TAGS");
     }
 }
