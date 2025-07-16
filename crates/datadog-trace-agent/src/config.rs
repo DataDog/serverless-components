@@ -26,7 +26,12 @@ pub struct Tags {
 impl Tags {
     pub fn from_env_string(env_tags: &str) -> Self {
         let mut tags = HashMap::new();
-        for kv in env_tags.split(',') {
+
+        // Space-separated key:value tags are the standard for tagging. For compatibility reasons
+        // we also support comma-separated key:value tags as well.
+        let normalized = env_tags.replace(',', " ");
+
+        for kv in normalized.split_whitespace() {
             let parts = kv.split(':').collect::<Vec<&str>>();
             if parts.len() == 2 {
                 tags.insert(parts[0].to_string(), parts[1].to_string());
@@ -310,24 +315,80 @@ mod tests {
         env::remove_var("DD_DOGSTATSD_PORT");
     }
 
-    #[test]
-    #[serial]
-    fn test_dd_tags() {
+    fn test_config_with_dd_tags(dd_tags: &str) -> config::Config {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_TAGS", "some:tag,another:thing,invalid:thing:here");
+        env::set_var("DD_TAGS", dd_tags);
         let config_res = config::Config::new();
-        println!("{:?}", config_res);
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
+        env::remove_var("DD_API_KEY");
+        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+        env::remove_var("DD_TAGS");
+        config
+    }
+
+    #[test]
+    #[serial]
+    fn test_dd_tags_comma_separated() {
+        let config = test_config_with_dd_tags("some:tag,another:thing,invalid:thing:here");
         let expected_tags = HashMap::from([
             ("some".to_string(), "tag".to_string()),
             ("another".to_string(), "thing".to_string()),
         ]);
         assert_eq!(config.tags.tags(), &expected_tags);
         assert_eq!(config.tags.function_tags(), Some("another:thing,some:tag"));
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
-        env::remove_var("DD_TAGS");
+    }
+
+    #[test]
+    #[serial]
+    fn test_dd_tags_space_separated() {
+        let config = test_config_with_dd_tags("some:tag another:thing invalid:thing:here");
+        let expected_tags = HashMap::from([
+            ("some".to_string(), "tag".to_string()),
+            ("another".to_string(), "thing".to_string()),
+        ]);
+        assert_eq!(config.tags.tags(), &expected_tags);
+        assert_eq!(config.tags.function_tags(), Some("another:thing,some:tag"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_dd_tags_mixed_separators() {
+        let config = test_config_with_dd_tags("some:tag,another:thing extra:value");
+        let expected_tags = HashMap::from([
+            ("some".to_string(), "tag".to_string()),
+            ("another".to_string(), "thing".to_string()),
+            ("extra".to_string(), "value".to_string()),
+        ]);
+        assert_eq!(config.tags.tags(), &expected_tags);
+        assert_eq!(
+            config.tags.function_tags(),
+            Some("another:thing,extra:value,some:tag")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_dd_tags_no_valid_tags() {
+        // Test with only invalid tags
+        let config = test_config_with_dd_tags("invalid:thing:here,also-bad");
+        assert_eq!(config.tags.tags(), &HashMap::new());
+        assert_eq!(config.tags.function_tags(), None);
+
+        // Test with empty string
+        let config = test_config_with_dd_tags("");
+        assert_eq!(config.tags.tags(), &HashMap::new());
+        assert_eq!(config.tags.function_tags(), None);
+
+        // Test with just whitespace
+        let config = test_config_with_dd_tags("   ");
+        assert_eq!(config.tags.tags(), &HashMap::new());
+        assert_eq!(config.tags.function_tags(), None);
+
+        // Test with just commas and spaces
+        let config = test_config_with_dd_tags(" , , ");
+        assert_eq!(config.tags.tags(), &HashMap::new());
+        assert_eq!(config.tags.function_tags(), None);
     }
 }
