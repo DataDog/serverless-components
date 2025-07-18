@@ -18,15 +18,15 @@ async-trait = "0.1.64"
 tracing = { version = "0.1", default-features = false }
 serde = { version = "1.0.145", features = ["derive"] }
 serde_json = "1.0"
-ddcommon = { git = "https://github.com/DataDog/libdatadog/", rev = "b708db75c1f21addcd43cf607d0ebf2ff4cfb17f" }
-datadog-trace-protobuf = { git = "https://github.com/DataDog/libdatadog/", rev = "b708db75c1f21addcd43cf607d0ebf2ff4cfb17f" }
-datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "b708db75c1f21addcd43cf607d0ebf2ff4cfb17f", features = ["mini_agent"] }
-datadog-trace-normalization = { git = "https://github.com/DataDog/libdatadog/", rev = "b708db75c1f21addcd43cf607d0ebf2ff4cfb17f" }
-datadog-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog/", rev = "b708db75c1f21addcd43cf607d0ebf2ff4cfb17f" }
+ddcommon = { git = "https://github.com/DataDog/libdatadog/", rev = "8a49c7df2d9cbf05118bfd5b85772676f71b34f2" }
+datadog-trace-protobuf = { git = "https://github.com/DataDog/libdatadog/", rev = "8a49c7df2d9cbf05118bfd5b85772676f71b34f2" }
+datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "8a49c7df2d9cbf05118bfd5b85772676f71b34f2", features = ["mini_agent"] }
+datadog-trace-normalization = { git = "https://github.com/DataDog/libdatadog/", rev = "8a49c7df2d9cbf05118bfd5b85772676f71b34f2" }
+datadog-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog/", rev = "8a49c7df2d9cbf05118bfd5b85772676f71b34f2" }
 
 [dev-dependencies]
 rmp-serde = "1.1.1"
 serial_test = "2.0.0"
 duplicate = "0.4.1"
 tempfile = "3.3.0"
-datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "b708db75c1f21addcd43cf607d0ebf2ff4cfb17f", features=["test-utils"] }
+datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "8a49c7df2d9cbf05118bfd5b85772676f71b34f2", features=["test-utils"] }
