@@ -7,10 +7,11 @@ use dogstatsd::{
     constants::CONTEXTS,
     datadog::{DdDdUrl, MetricsIntakeUrlPrefix, MetricsIntakeUrlPrefixOverride},
     dogstatsd::{DogStatsD, DogStatsDConfig},
+    double_buffered_aggregator::DoubleBufferedAggregator,
     flusher::{ApiKeyFactory, Flusher, FlusherConfig},
 };
 use mockito::Server;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::{
     net::UdpSocket,
     time::{sleep, timeout, Duration},
@@ -33,10 +34,10 @@ async fn dogstatsd_server_ships_series() {
         .create_async()
         .await;
 
-    let metrics_aggr = Arc::new(Mutex::new(
-        MetricsAggregator::new(SortedTags::parse("sometkey:somevalue").unwrap(), CONTEXTS)
+    let metrics_aggr = Arc::new(
+        DoubleBufferedAggregator::new(SortedTags::parse("sometkey:somevalue").unwrap(), CONTEXTS)
             .expect("failed to create aggregator"),
-    ));
+    );
 
     let _ = start_dogstatsd(&metrics_aggr).await;
 
@@ -85,7 +86,7 @@ async fn dogstatsd_server_ships_series() {
     }
 }
 
-async fn start_dogstatsd(metrics_aggr: &Arc<Mutex<MetricsAggregator>>) -> CancellationToken {
+async fn start_dogstatsd(metrics_aggr: &Arc<DoubleBufferedAggregator>) -> CancellationToken {
     let dogstatsd_config = DogStatsDConfig {
         host: "127.0.0.1".to_string(),
         port: 18125,

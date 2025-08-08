@@ -11,6 +11,7 @@ pub mod aggregator;
 pub mod constants;
 pub mod datadog;
 pub mod dogstatsd;
+pub mod double_buffered_aggregator;
 pub mod errors;
 pub mod flusher;
 pub mod metric;

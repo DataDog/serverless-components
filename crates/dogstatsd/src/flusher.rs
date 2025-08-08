@@ -1,12 +1,12 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::aggregator::Aggregator;
+use crate::double_buffered_aggregator::DoubleBufferedAggregator;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error};
 
@@ -21,13 +21,13 @@ pub struct Flusher {
     https_proxy: Option<String>,
     timeout: Duration,
     retry_strategy: RetryStrategy,
-    aggregator: Arc<Mutex<Aggregator>>,
+    aggregator: Arc<DoubleBufferedAggregator>,
     dd_api: Option<DdApi>,
 }
 
 pub struct FlusherConfig {
     pub api_key_factory: ApiKeyFactory,
-    pub aggregator: Arc<Mutex<Aggregator>>,
+    pub aggregator: Arc<DoubleBufferedAggregator>,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     pub https_proxy: Option<String>,
     pub timeout: Duration,
@@ -73,14 +73,7 @@ impl Flusher {
         Vec<crate::datadog::Series>,
         Vec<datadog_protos::metrics::SketchPayload>,
     )> {
-        let (series, distributions) = {
-            #[allow(clippy::expect_used)]
-            let mut aggregator = self.aggregator.lock().expect("lock poisoned");
-            (
-                aggregator.consume_metrics(),
-                aggregator.consume_distributions(),
-            )
-        };
+        let (series, distributions) = self.aggregator.flush();
         self.flush_metrics(series, distributions).await
     }
 
