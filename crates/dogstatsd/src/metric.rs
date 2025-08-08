@@ -130,6 +130,13 @@ impl SortedTags {
         tags_as_vec
     }
 
+    pub fn find_all(&self, tag_key: &str) -> Vec<&Ustr> {
+        self.values
+            .iter()
+            .filter_map(|(k, v)| if k == tag_key { Some(v) } else { None })
+            .collect()
+    }
+
     pub(crate) fn to_resources(&self) -> Vec<datadog::Resource> {
         let mut resources = Vec::with_capacity(constants::MAX_TAGS);
         for (key, val) in &self.values {
@@ -386,7 +393,6 @@ mod tests {
         // For any valid name, tags et al the parse routine is able to parse an
         // encoded metric line.
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn parse_valid_inputs(
             name in metric_name(),
             values in metric_values(),
@@ -448,7 +454,6 @@ mod tests {
         }
 
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn parse_missing_name_and_value(
             mtype in metric_type(),
             tagset in metric_tagset()
@@ -464,7 +469,6 @@ mod tests {
         }
 
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn parse_invalid_name_and_value_format(
             name in metric_name(),
             values in metric_values(),
@@ -486,7 +490,6 @@ mod tests {
         }
 
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn parse_unsupported_metric_type(
             name in metric_name(),
             values in metric_values(),
@@ -511,7 +514,6 @@ mod tests {
         // For any valid name, tags et al the parse routine is able to parse an
         // encoded metric line.
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn id_consistent(name in metric_name(),
                          mut tags in metric_tags()) {
             let mut tagset1 = String::new();
@@ -543,7 +545,6 @@ mod tests {
         }
 
         #[test]
-        #[cfg_attr(miri, ignore)]
         fn resources_key_val_order(tags in metric_tags()) {
             let sorted_tags = SortedTags { values: tags.into_iter()
                 .map(|(kind, name)| (Ustr::from(&kind), Ustr::from(&name)))
@@ -559,7 +560,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn parse_too_many_tags() {
         // 101
         assert_eq!(
@@ -574,13 +574,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn invalid_dogstatsd_no_panic() {
         assert!(parse("somerandomstring|c+a;slda").is_err());
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn parse_container_id() {
         assert!(parse("containerid.metric:0|c|#env:dev,client_transport:udp|c:0000000000000000000000000000000000000000000000000000000000000000").is_ok());
     }
@@ -662,5 +660,14 @@ mod tests {
         let first_element = tags.values.first().unwrap();
         assert_eq!(first_element.0, Ustr::from("a"));
         assert_eq!(first_element.1, Ustr::from("a1"));
+    }
+
+    #[test]
+    fn sorted_tags_find_all() {
+        let tags = SortedTags::parse("a,a:1,b:2,c:3").unwrap();
+        assert_eq!(tags.find_all("a"), vec![&Ustr::from(""), &Ustr::from("1")]);
+        assert_eq!(tags.find_all("b"), vec![&Ustr::from("2")]);
+        assert_eq!(tags.find_all("c"), vec![&Ustr::from("3")]);
+        assert_eq!(tags.find_all("d"), Vec::<&Ustr>::new());
     }
 }

@@ -4,14 +4,16 @@
 //! The aggregation of metrics.
 
 use crate::constants;
-use crate::datadog::{self, Metric as MetricToShip, Series};
+use crate::datadog::{
+    self, Metadata as MetadataToShip, Metric as MetricToShip, Origin as OriginToShip, Series,
+};
 use crate::errors;
 use crate::metric::{self, Metric, MetricValue, SortedTags};
 
-use datadog_protos::metrics::{Dogsketch, Sketch, SketchPayload};
+use datadog_protos::metrics::{Dogsketch, Metadata, Sketch, SketchPayload};
 use ddsketch_agent::DDSketch;
 use hashbrown::hash_table;
-use protobuf::Message;
+use protobuf::{Message, MessageField, SpecialFields};
 use tracing::{error, warn};
 use ustr::Ustr;
 
@@ -261,6 +263,14 @@ fn build_sketch(entry: &Metric, mut base_tag_vec: SortedTags) -> Option<Sketch> 
         base_tag_vec.extend(&tags);
     }
     sketch.set_tags(base_tag_vec.to_chars());
+
+    if let Some(origin) = entry.find_origin(base_tag_vec) {
+        sketch.set_metadata(Metadata {
+            origin: MessageField::some(origin),
+            special_fields: SpecialFields::default(),
+        });
+    }
+
     Some(sketch)
 }
 
@@ -286,12 +296,22 @@ fn build_metric(entry: &Metric, mut base_tag_vec: SortedTags) -> Option<MetricTo
         base_tag_vec.extend(&tags);
     }
 
+    let origin = entry.find_origin(base_tag_vec.clone());
+    let metadata = origin.map(|o| MetadataToShip {
+        origin: Some(OriginToShip {
+            origin_product: o.origin_product,
+            origin_sub_product: o.origin_category,
+            origin_product_detail: o.origin_service,
+        }),
+    });
+
     Some(MetricToShip {
         metric: entry.name.as_str(),
         resources,
         kind,
         points: [point; 1],
         tags: base_tag_vec.to_strings(),
+        metadata,
     })
 }
 
@@ -308,7 +328,7 @@ pub mod tests {
 
     const PRECISION: f64 = 0.000_000_01;
 
-    const SINGLE_METRIC_SIZE: usize = 193; // taken from the test, size of a serialized metric with one tag and 1 digit counter value
+    const SINGLE_METRIC_SIZE: usize = 209; // taken from the test, size of a serialized metric with one tag and 1 digit counter value
     const SINGLE_DISTRIBUTION_SIZE: u64 = 140;
     const DEFAULT_TAGS: &str =
         "dd_extension_version:63-next,architecture:x86_64,_dd.compute_stats:1";
@@ -352,7 +372,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn insertion() {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 2).unwrap();
 
@@ -367,7 +386,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn distribution_insertion() {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 2).unwrap();
 
@@ -382,7 +400,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn overflow() {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 2).unwrap();
         let mut now = std::time::UNIX_EPOCH
@@ -418,7 +435,6 @@ pub mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)]
-    #[cfg_attr(miri, ignore)]
     fn clear() {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 2).unwrap();
         let mut now = 1656581409;
@@ -455,7 +471,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn to_series() {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 2).unwrap();
 
@@ -478,7 +493,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn distributions_to_protobuf() {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 2).unwrap();
 
@@ -496,7 +510,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn consume_distributions_ignore_single_metrics() {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 1_000).unwrap();
         assert_eq!(aggregator.distributions_to_protobuf().sketches.len(), 0);
@@ -513,7 +526,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn consume_distributions_batch_entries() {
         let max_batch = 5;
         let tot = 12;
@@ -538,7 +550,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn consume_distributions_batch_bytes() {
         let expected_distribution_per_batch = 2;
         let total_number_of_distributions = 5;
@@ -583,7 +594,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn consume_distribution_one_element_bigger_than_max_size() {
         let max_bytes = 1;
         let tot = 5;
@@ -618,7 +628,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn consume_series_ignore_distribution() {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 1_000).unwrap();
 
@@ -643,7 +652,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn consume_series_batch_entries() {
         let max_batch = 5;
         let tot = 13;
@@ -669,11 +677,10 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn consume_metrics_batch_bytes() {
         let expected_metrics_per_batch = 2;
         let total_number_of_metrics = 5;
-        let two_metrics_size = 374;
+        let two_metrics_size = 406;
         let max_bytes = SINGLE_METRIC_SIZE * expected_metrics_per_batch + 13;
         let mut aggregator = Aggregator {
             tags: to_sorted_tags(),
@@ -707,7 +714,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn consume_series_one_element_bigger_than_max_size() {
         let max_bytes = 1;
         let tot = 5;
@@ -734,7 +740,6 @@ pub mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn distribution_serialized_deserialized() {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 1_000).unwrap();
 

@@ -137,7 +137,6 @@ mod tests {
     use tracing_test::traced_test;
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_dogstatsd_multi_distribution() {
         let aggregator_arc = setup_dogstatsd(
             "single_machine_performance.rouster.api.series_v2.payload_size_bytes:269942|d|T1656581409
@@ -167,7 +166,6 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_dogstatsd_multi_metric() {
         let mut now: i64 = std::time::UNIX_EPOCH
             .elapsed()
@@ -205,7 +203,6 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_dogstatsd_single_metric() {
         let aggregator_arc = setup_dogstatsd("metric123:99123|c|T1656581409").await;
         
@@ -223,7 +220,6 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
 
     #[tokio::test]
     #[traced_test]
-    #[cfg_attr(miri, ignore)]
     async fn test_dogstatsd_filter_service_check() {
         let aggregator_arc = setup_dogstatsd("_sc|servicecheck|0").await;
         
@@ -235,7 +231,6 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
 
     #[tokio::test]
     #[traced_test]
-    #[cfg_attr(miri, ignore)]
     async fn test_dogstatsd_filter_event() {
         let aggregator_arc = setup_dogstatsd("_e{5,10}:event|test event").await;
         

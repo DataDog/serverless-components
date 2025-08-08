@@ -13,12 +13,14 @@ use datadog_trace_obfuscation::obfuscate::obfuscate_span;
 use datadog_trace_protobuf::pb;
 use datadog_trace_utils::trace_utils::{self};
 use datadog_trace_utils::trace_utils::{EnvironmentType, SendData};
-use datadog_trace_utils::tracer_payload::TraceChunkProcessor;
+use datadog_trace_utils::tracer_payload::{TraceChunkProcessor, TracerPayloadCollection};
 
 use crate::{
     config::Config,
     http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
 };
+
+const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
 
 #[async_trait]
 pub trait TraceProcessor {
@@ -104,7 +106,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
             );
         }
 
-        let payload = match trace_utils::collect_pb_trace_chunks(
+        let mut payload = match trace_utils::collect_pb_trace_chunks(
             traces,
             &tracer_header_tags,
             &mut ChunkProcessor {
@@ -121,6 +123,18 @@ impl TraceProcessor for ServerlessTraceProcessor {
                 )
             }
         };
+
+        // Add function_tags to payload if we can
+        if let Some(function_tags) = config.tags.function_tags() {
+            if let TracerPayloadCollection::V07(ref mut tracer_payloads) = payload {
+                for tracer_payload in tracer_payloads {
+                    tracer_payload.tags.insert(
+                        TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY.to_string(),
+                        function_tags.to_string(),
+                    );
+                }
+            }
+        }
 
         let send_data = SendData::new(body_size, payload, tracer_header_tags, &config.trace_intake);
 
@@ -150,8 +164,8 @@ mod tests {
     use tokio::sync::mpsc::{self, Receiver, Sender};
 
     use crate::{
-        config::Config,
-        trace_processor::{self, TraceProcessor},
+        config::{Config, Tags},
+        trace_processor::{self, TraceProcessor, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY},
     };
     use datadog_trace_protobuf::pb;
     use datadog_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
@@ -188,6 +202,7 @@ mod tests {
             os: "linux".to_string(),
             obfuscation_config: ObfuscationConfig::new().unwrap(),
             proxy_url: None,
+            tags: Tags::from_env_string("env:test,service:my-service"),
         }
     }
 
@@ -202,7 +217,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_process_trace() {
         let (tx, mut rx): (
             Sender<trace_utils::SendData>,
@@ -252,7 +266,10 @@ mod tests {
                 tags: HashMap::new(),
                 dropped_trace: false,
             }],
-            tags: HashMap::new(),
+            tags: HashMap::from([(
+                TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY.to_string(),
+                "env:test,service:my-service".to_string(),
+            )]),
             env: "test-env".to_string(),
             hostname: "".to_string(),
             app_version: "".to_string(),
@@ -268,7 +285,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(miri, ignore)]
     async fn test_process_trace_top_level_span_set() {
         let (tx, mut rx): (
             Sender<trace_utils::SendData>,
@@ -326,7 +342,10 @@ mod tests {
                 tags: HashMap::new(),
                 dropped_trace: false,
             }],
-            tags: HashMap::new(),
+            tags: HashMap::from([(
+                TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY.to_string(),
+                "env:test,service:my-service".to_string(),
+            )]),
             env: "test-env".to_string(),
             hostname: "".to_string(),
             app_version: "".to_string(),

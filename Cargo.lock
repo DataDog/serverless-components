@@ -810,8 +810,8 @@ dependencies = [
 
 [[package]]
 name = "datadog-trace-normalization"
-version = "17.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+version = "19.1.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
 dependencies = [
  "anyhow",
  "datadog-trace-protobuf",
@@ -819,8 +819,8 @@ dependencies = [
 
 [[package]]
 name = "datadog-trace-obfuscation"
-version = "17.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+version = "19.1.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
 dependencies = [
  "anyhow",
  "datadog-trace-protobuf",
@@ -836,8 +836,8 @@ dependencies = [
 
 [[package]]
 name = "datadog-trace-protobuf"
-version = "17.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+version = "19.1.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
 dependencies = [
  "prost",
  "serde",
@@ -846,8 +846,8 @@ dependencies = [
 
 [[package]]
 name = "datadog-trace-utils"
-version = "17.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+version = "19.1.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -862,7 +862,6 @@ dependencies = [
  "httpmock",
  "hyper 1.6.0",
  "hyper-http-proxy",
- "log",
  "prost",
  "rand 0.8.5",
  "rmp",
@@ -873,14 +872,15 @@ dependencies = [
  "testcontainers",
  "tinybytes",
  "tokio",
+ "tracing",
  "urlencoding",
  "zstd",
 ]
 
 [[package]]
 name = "ddcommon"
-version = "17.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+version = "19.1.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
 dependencies = [
  "anyhow",
  "cc",
@@ -896,18 +896,14 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "libc",
- "log",
- "memfd",
  "nix",
  "pin-project",
- "rand 0.8.5",
  "regex",
- "rmp",
- "rmp-serde",
  "rustls",
  "rustls-native-certs 0.8.1",
  "serde",
  "static_assertions",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -2197,15 +2193,6 @@ name = "memchr"
 version = "2.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
-
-[[package]]
-name = "memfd"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2cffa4ad52c6f791f4f8b15f0c05f9824b2ced1160e88cc393d64fff9a8ac64"
-dependencies = [
- "rustix 0.38.44",
-]
 
 [[package]]
 name = "mime"
@@ -3689,8 +3676,8 @@ dependencies = [
 
 [[package]]
 name = "tinybytes"
-version = "17.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae#d6a2da32c6b92d6865a7e7987c8a1df2203fb1ae"
+version = "19.1.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
 dependencies = [
  "serde",
 ]

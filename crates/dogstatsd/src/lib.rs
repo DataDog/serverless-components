@@ -8,6 +8,7 @@
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
 pub mod aggregator;
+pub mod api_key;
 pub mod constants;
 pub mod datadog;
 pub mod dogstatsd;
@@ -15,3 +16,4 @@ pub mod double_buffered_aggregator;
 pub mod errors;
 pub mod flusher;
 pub mod metric;
+pub mod origin;

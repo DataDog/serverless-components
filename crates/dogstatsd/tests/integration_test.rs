@@ -4,11 +4,12 @@
 use dogstatsd::metric::SortedTags;
 use dogstatsd::{
     aggregator::Aggregator as MetricsAggregator,
+    api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{DdDdUrl, MetricsIntakeUrlPrefix, MetricsIntakeUrlPrefixOverride},
     dogstatsd::{DogStatsD, DogStatsDConfig},
     double_buffered_aggregator::DoubleBufferedAggregator,
-    flusher::{ApiKeyFactory, Flusher, FlusherConfig},
+    flusher::{Flusher, FlusherConfig},
 };
 use mockito::Server;
 use std::sync::Arc;
@@ -19,7 +20,6 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
-#[cfg(not(miri))]
 #[tokio::test]
 async fn dogstatsd_server_ships_series() {
     use dogstatsd::datadog::RetryStrategy;
@@ -41,11 +41,10 @@ async fn dogstatsd_server_ships_series() {
 
     let _ = start_dogstatsd(&metrics_aggr).await;
 
-    let api_key_factory: ApiKeyFactory =
-        Arc::new(|| Box::pin(async move { "mock-api-key".to_string() }));
+    let api_key_factory = ApiKeyFactory::new("mock-api-key");
 
     let mut metrics_flusher = Flusher::new(FlusherConfig {
-        api_key_factory,
+        api_key_factory: Arc::new(api_key_factory),
         aggregator: Arc::clone(&metrics_aggr),
         metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
             None,
@@ -107,7 +106,6 @@ async fn start_dogstatsd(metrics_aggr: &Arc<DoubleBufferedAggregator>) -> Cancel
 }
 
 #[cfg(test)]
-#[cfg(not(miri))]
 #[tokio::test]
 async fn test_send_with_retry_immediate_failure() {
     use dogstatsd::datadog::{DdApi, DdDdUrl, RetryStrategy};
@@ -155,7 +153,6 @@ async fn test_send_with_retry_immediate_failure() {
 }
 
 #[cfg(test)]
-#[cfg(not(miri))]
 #[tokio::test]
 async fn test_send_with_retry_linear_backoff_success() {
     use dogstatsd::datadog::{DdApi, DdDdUrl, RetryStrategy};
@@ -217,7 +214,6 @@ async fn test_send_with_retry_linear_backoff_success() {
 }
 
 #[cfg(test)]
-#[cfg(not(miri))]
 #[tokio::test]
 async fn test_send_with_retry_immediate_failure_after_one_attempt() {
     use dogstatsd::datadog::{DdApi, DdDdUrl, RetryStrategy};

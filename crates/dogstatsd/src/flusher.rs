@@ -2,31 +2,28 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::double_buffered_aggregator::DoubleBufferedAggregator;
+use crate::api_key::ApiKeyFactory;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::OnceCell;
 use tracing::{debug, error};
-
-pub type ApiKeyFactory =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = String> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Flusher {
-    // Accept a future so the API key resolution is deferred until the flush happens
-    api_key_factory: ApiKeyFactory,
+    // Allow accepting a future so the API key resolution is deferred until the flush happens
+    api_key_factory: Arc<ApiKeyFactory>,
     metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     https_proxy: Option<String>,
     timeout: Duration,
     retry_strategy: RetryStrategy,
     aggregator: Arc<DoubleBufferedAggregator>,
-    dd_api: Option<DdApi>,
+    dd_api: OnceCell<Option<DdApi>>,
 }
 
 pub struct FlusherConfig {
-    pub api_key_factory: ApiKeyFactory,
+    pub api_key_factory: Arc<ApiKeyFactory>,
     pub aggregator: Arc<DoubleBufferedAggregator>,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     pub https_proxy: Option<String>,
@@ -38,32 +35,35 @@ pub struct FlusherConfig {
 impl Flusher {
     pub fn new(config: FlusherConfig) -> Self {
         Flusher {
-            api_key_factory: config.api_key_factory,
+            api_key_factory: Arc::clone(&config.api_key_factory),
             metrics_intake_url_prefix: config.metrics_intake_url_prefix,
             https_proxy: config.https_proxy,
             timeout: config.timeout,
             retry_strategy: config.retry_strategy,
             aggregator: config.aggregator,
-            dd_api: None,
+            dd_api: OnceCell::new(),
         }
     }
 
-    async fn get_dd_api(&mut self) -> &DdApi {
-        if self.dd_api.is_none() {
-            let api_key = (self.api_key_factory)().await;
-            self.dd_api = Some(DdApi::new(
-                api_key,
-                self.metrics_intake_url_prefix.clone(),
-                self.https_proxy.clone(),
-                self.timeout,
-                self.retry_strategy.clone(),
-            ));
-        }
-
-        #[allow(clippy::expect_used)]
+    async fn get_dd_api(&mut self) -> &Option<DdApi> {
         self.dd_api
-            .as_ref()
-            .expect("dd_api should be initialized by this point")
+            .get_or_init(|| async {
+                let api_key = self.api_key_factory.get_api_key().await;
+                match api_key {
+                    Some(api_key) => Some(DdApi::new(
+                        api_key.to_string(),
+                        self.metrics_intake_url_prefix.clone(),
+                        self.https_proxy.clone(),
+                        self.timeout,
+                        self.retry_strategy.clone(),
+                    )),
+                    None => {
+                        error!("Failed to create dd_api: failed to get API key");
+                        None
+                    }
+                }
+            })
+            .await
     }
 
     /// Flush metrics from the aggregator
@@ -95,7 +95,13 @@ impl Flusher {
         let series_copy = series.clone();
         let distributions_copy = distributions.clone();
 
-        let dd_api = self.get_dd_api().await;
+        let dd_api = match self.get_dd_api().await {
+            None => {
+                error!("Failed to flush metrics: failed to create dd_api");
+                return Some((series_copy, distributions_copy));
+            }
+            Some(dd_api) => dd_api,
+        };
 
         let dd_api_clone = dd_api.clone();
         let series_handle = tokio::spawn(async move {
