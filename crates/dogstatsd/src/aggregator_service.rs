@@ -1,9 +1,6 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-//! Channel-based aggregator service that eliminates lock contention
-//! by using message passing instead of shared mutable state.
-
 use crate::aggregator::Aggregator;
 use crate::datadog::Series;
 use crate::metric::{Metric, SortedTags};
@@ -11,34 +8,26 @@ use datadog_protos::metrics::SketchPayload;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
 
-/// Commands that can be sent to the aggregator service
 #[derive(Debug)]
 pub enum AggregatorCommand {
-    /// Insert a batch of metrics
     InsertBatch(Vec<Metric>),
-    /// Request a flush of all metrics
     Flush(oneshot::Sender<FlushResponse>),
-    /// Clear all metrics
     Clear,
-    /// Shutdown the service
     Shutdown,
 }
 
-/// Response from a flush request
 #[derive(Debug)]
 pub struct FlushResponse {
     pub series: Vec<Series>,
     pub distributions: Vec<SketchPayload>,
 }
 
-/// Handle for interacting with the aggregator service
 #[derive(Clone)]
 pub struct AggregatorHandle {
     tx: mpsc::UnboundedSender<AggregatorCommand>,
 }
 
 impl AggregatorHandle {
-    /// Insert a batch of metrics into the aggregator
     pub fn insert_batch(
         &self,
         metrics: Vec<Metric>,
@@ -46,7 +35,6 @@ impl AggregatorHandle {
         self.tx.send(AggregatorCommand::InsertBatch(metrics))
     }
 
-    /// Request a flush of all metrics
     pub async fn flush(&self) -> Result<FlushResponse, String> {
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
@@ -58,25 +46,21 @@ impl AggregatorHandle {
             .map_err(|e| format!("Failed to receive flush response: {}", e))
     }
 
-    /// Clear all metrics
     pub fn clear(&self) -> Result<(), mpsc::error::SendError<AggregatorCommand>> {
         self.tx.send(AggregatorCommand::Clear)
     }
 
-    /// Shutdown the aggregator service
     pub fn shutdown(&self) -> Result<(), mpsc::error::SendError<AggregatorCommand>> {
         self.tx.send(AggregatorCommand::Shutdown)
     }
 }
 
-/// Aggregator service that runs in its own task
 pub struct AggregatorService {
     aggregator: Aggregator,
     rx: mpsc::UnboundedReceiver<AggregatorCommand>,
 }
 
 impl AggregatorService {
-    /// Create a new aggregator service
     pub fn new(
         tags: SortedTags,
         max_context: usize,
@@ -91,7 +75,6 @@ impl AggregatorService {
         Ok((service, handle))
     }
 
-    /// Run the aggregator service
     pub async fn run(mut self) {
         debug!("Aggregator service started");
 
@@ -102,12 +85,9 @@ impl AggregatorService {
                     for metric in metrics {
                         if let Err(e) = self.aggregator.insert(metric) {
                             insert_errors += 1;
-                            if insert_errors <= 5 {
-                                warn!("Failed to insert metric: {:?}", e);
-                            }
                         }
                     }
-                    if insert_errors > 5 {
+                    if insert_errors > 0 {
                         warn!("Total of {} metrics failed to insert", insert_errors);
                     }
                 }
