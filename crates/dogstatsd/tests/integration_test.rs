@@ -4,6 +4,7 @@
 use dogstatsd::metric::SortedTags;
 use dogstatsd::{
     aggregator::Aggregator as MetricsAggregator,
+    aggregator_service::{AggregatorService, AggregatorHandle},
     api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{DdDdUrl, MetricsIntakeUrlPrefix, MetricsIntakeUrlPrefixOverride},
@@ -11,7 +12,7 @@ use dogstatsd::{
     flusher::{Flusher, FlusherConfig},
 };
 use mockito::Server;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::{
     net::UdpSocket,
     time::{sleep, timeout, Duration},
@@ -33,18 +34,23 @@ async fn dogstatsd_server_ships_series() {
         .create_async()
         .await;
 
-    let metrics_aggr = Arc::new(Mutex::new(
-        MetricsAggregator::new(SortedTags::parse("sometkey:somevalue").unwrap(), CONTEXTS)
-            .expect("failed to create aggregator"),
-    ));
+    // Create the aggregator service
+    let (service, handle) = AggregatorService::new(
+        SortedTags::parse("sometkey:somevalue").unwrap(),
+        CONTEXTS,
+    )
+    .expect("failed to create aggregator service");
+    
+    // Start the service in a background task
+    tokio::spawn(service.run());
 
-    let _ = start_dogstatsd(&metrics_aggr).await;
+    let _ = start_dogstatsd(handle.clone()).await;
 
     let api_key_factory = ApiKeyFactory::new("mock-api-key");
 
     let mut metrics_flusher = Flusher::new(FlusherConfig {
         api_key_factory: Arc::new(api_key_factory),
-        aggregator: Arc::clone(&metrics_aggr),
+        aggregator_handle: handle.clone(),
         metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
             None,
             MetricsIntakeUrlPrefixOverride::maybe_new(
@@ -84,7 +90,7 @@ async fn dogstatsd_server_ships_series() {
     }
 }
 
-async fn start_dogstatsd(metrics_aggr: &Arc<Mutex<MetricsAggregator>>) -> CancellationToken {
+async fn start_dogstatsd(aggregator_handle: AggregatorHandle) -> CancellationToken {
     let dogstatsd_config = DogStatsDConfig {
         host: "127.0.0.1".to_string(),
         port: 18125,
@@ -92,7 +98,7 @@ async fn start_dogstatsd(metrics_aggr: &Arc<Mutex<MetricsAggregator>>) -> Cancel
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
     let dogstatsd_client = DogStatsD::new(
         &dogstatsd_config,
-        Arc::clone(metrics_aggr),
+        aggregator_handle,
         dogstatsd_cancel_token.clone(),
     )
     .await;
