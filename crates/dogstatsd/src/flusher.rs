@@ -80,8 +80,9 @@ impl Flusher {
                 return Some((Vec::new(), Vec::new()));
             }
         };
-        
-        self.flush_metrics(response.series, response.distributions).await
+
+        self.flush_metrics(response.series, response.distributions)
+            .await
     }
 
     /// Flush given batch of metrics

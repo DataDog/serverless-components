@@ -159,7 +159,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
             .try_into()
             .unwrap_or_default();
         now = (now / 10) * 10;
-        
+
         let response = setup_and_consume_dogstatsd(
             format!(
                 "metric3:3|c|#tag3:val3,tag4:val4\nmetric1:1|c\nmetric2:2|c|#tag2:val2|T{:}\n",
@@ -177,7 +177,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     #[tokio::test]
     async fn test_dogstatsd_single_metric() {
         let response = setup_and_consume_dogstatsd("metric123:99123|c|T1656581409").await;
-        
+
         assert_eq!(response.series.len(), 1);
         assert_eq!(response.series[0].series.len(), 1);
         assert_eq!(response.distributions.len(), 0);
@@ -187,7 +187,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     #[traced_test]
     async fn test_dogstatsd_filter_service_check() {
         let response = setup_and_consume_dogstatsd("_sc|servicecheck|0").await;
-        
+
         assert!(!logs_contain("Failed to parse metric"));
         assert_eq!(response.series.len(), 0);
         assert_eq!(response.distributions.len(), 0);
@@ -197,20 +197,22 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     #[traced_test]
     async fn test_dogstatsd_filter_event() {
         let response = setup_and_consume_dogstatsd("_e{5,10}:event|test event").await;
-        
+
         assert!(!logs_contain("Failed to parse metric"));
         assert_eq!(response.series.len(), 0);
         assert_eq!(response.distributions.len(), 0);
     }
 
-    async fn setup_and_consume_dogstatsd(statsd_string: &str) -> crate::aggregator_service::FlushResponse {
+    async fn setup_and_consume_dogstatsd(
+        statsd_string: &str,
+    ) -> crate::aggregator_service::FlushResponse {
         // Create the aggregator service
-        let (service, handle) = AggregatorService::new(EMPTY_TAGS, 1_024)
-            .expect("aggregator service creation failed");
-        
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
+
         // Start the service in a background task
         let service_task = tokio::spawn(service.run());
-        
+
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
         let dogstatsd = DogStatsD {
@@ -222,14 +224,14 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
             ),
         };
         dogstatsd.consume_statsd().await;
-        
+
         // Get the metrics via flush
         let response = handle.flush().await.expect("Failed to flush");
-        
+
         // Shutdown the service
         handle.shutdown().expect("Failed to shutdown");
         service_task.await.expect("Service task failed");
-        
+
         response
     }
 }

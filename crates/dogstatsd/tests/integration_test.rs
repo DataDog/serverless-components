@@ -4,7 +4,7 @@
 use dogstatsd::metric::SortedTags;
 use dogstatsd::{
     aggregator::Aggregator as MetricsAggregator,
-    aggregator_service::{AggregatorService, AggregatorHandle},
+    aggregator_service::{AggregatorHandle, AggregatorService},
     api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{DdDdUrl, MetricsIntakeUrlPrefix, MetricsIntakeUrlPrefixOverride},
@@ -35,12 +35,10 @@ async fn dogstatsd_server_ships_series() {
         .await;
 
     // Create the aggregator service
-    let (service, handle) = AggregatorService::new(
-        SortedTags::parse("sometkey:somevalue").unwrap(),
-        CONTEXTS,
-    )
-    .expect("failed to create aggregator service");
-    
+    let (service, handle) =
+        AggregatorService::new(SortedTags::parse("sometkey:somevalue").unwrap(), CONTEXTS)
+            .expect("failed to create aggregator service");
+
     // Start the service in a background task
     tokio::spawn(service.run());
 
