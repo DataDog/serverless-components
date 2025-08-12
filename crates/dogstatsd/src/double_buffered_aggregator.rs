@@ -28,7 +28,7 @@ impl DoubleBufferedAggregator {
     pub fn insert(&self, metric: Metric) -> Result<(), errors::Insert> {
         let index = self.active_index.load(Ordering::Acquire);
         let buffer = &self.buffers[index];
-        
+
         #[allow(clippy::expect_used)]
         let mut aggregator = buffer.lock().expect("lock poisoned");
         aggregator.insert(metric)
@@ -37,19 +37,19 @@ impl DoubleBufferedAggregator {
     pub fn flush(&self) -> (Vec<Series>, Vec<SketchPayload>) {
         let old_index = self.active_index.load(Ordering::Acquire);
         let new_index = 1 - old_index;
-        
+
         self.active_index.store(new_index, Ordering::Release);
-        
+
         std::thread::yield_now();
-        
+
         let flush_buffer = &self.buffers[old_index];
-        
+
         #[allow(clippy::expect_used)]
         let mut aggregator = flush_buffer.lock().expect("lock poisoned");
-        
+
         let series = aggregator.consume_metrics();
         let distributions = aggregator.consume_distributions();
-        
+
         (series, distributions)
     }
 
@@ -64,16 +64,24 @@ impl DoubleBufferedAggregator {
         let index = self.active_index.load(Ordering::Acquire);
         Arc::clone(&self.buffers[1 - index])
     }
-    
+
     #[cfg(test)]
-    pub fn peek_metrics(&self) -> (crate::datadog::Series, datadog_protos::metrics::SketchPayload) {
+    pub fn peek_metrics(
+        &self,
+    ) -> (
+        crate::datadog::Series,
+        datadog_protos::metrics::SketchPayload,
+    ) {
         let index = self.active_index.load(Ordering::Acquire);
         let buffer = &self.buffers[index];
-        
+
         #[allow(clippy::expect_used)]
         let aggregator = buffer.lock().expect("lock poisoned");
-        
-        (aggregator.to_series(), aggregator.distributions_to_protobuf())
+
+        (
+            aggregator.to_series(),
+            aggregator.distributions_to_protobuf(),
+        )
     }
 }
 
@@ -85,28 +93,28 @@ mod tests {
     #[test]
     fn test_double_buffer_switching() {
         let aggregator = DoubleBufferedAggregator::new(EMPTY_TAGS, 100).unwrap();
-        
+
         let metric1 = parse("test1:1|c|#k:v").expect("metric parse failed");
         assert!(aggregator.insert(metric1).is_ok());
-        
+
         {
             let active = aggregator.get_active_aggregator();
             let active_guard = active.lock().unwrap();
             assert_eq!(active_guard.to_series().len(), 1);
         }
-        
+
         let (series, _) = aggregator.flush();
         assert_eq!(series[0].series.len(), 1);
-        
+
         {
             let inactive = aggregator.get_inactive_aggregator();
             let inactive_guard = inactive.lock().unwrap();
             assert_eq!(inactive_guard.to_series().len(), 0);
         }
-        
+
         let metric2 = parse("test2:2|c|#k:v").expect("metric parse failed");
         assert!(aggregator.insert(metric2).is_ok());
-        
+
         {
             let active = aggregator.get_active_aggregator();
             let active_guard = active.lock().unwrap();
@@ -118,9 +126,9 @@ mod tests {
     fn test_concurrent_operations() {
         use std::thread;
         use std::time::Duration;
-        
+
         let aggregator = Arc::new(DoubleBufferedAggregator::new(EMPTY_TAGS, 1000).unwrap());
-        
+
         let aggregator_insert = Arc::clone(&aggregator);
         let insert_handle = thread::spawn(move || {
             for i in 0..100 {
@@ -129,7 +137,7 @@ mod tests {
                 thread::sleep(Duration::from_micros(10));
             }
         });
-        
+
         let aggregator_flush = Arc::clone(&aggregator);
         let flush_handle = thread::spawn(move || {
             let mut total_flushed = 0;
@@ -142,13 +150,14 @@ mod tests {
             }
             total_flushed
         });
-        
+
         insert_handle.join().unwrap();
         let total_flushed = flush_handle.join().unwrap();
-        
+
         let (final_series, _) = aggregator.flush();
         let final_count: usize = final_series.iter().map(|s| s.series.len()).sum();
-        
+
         assert_eq!(total_flushed + final_count, 100);
     }
 }
+
