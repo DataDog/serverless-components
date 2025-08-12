@@ -12,7 +12,6 @@ use tracing::{debug, error, warn};
 pub enum AggregatorCommand {
     InsertBatch(Vec<Metric>),
     Flush(oneshot::Sender<FlushResponse>),
-    Clear,
     Shutdown,
 }
 
@@ -44,10 +43,6 @@ impl AggregatorHandle {
         response_rx
             .await
             .map_err(|e| format!("Failed to receive flush response: {}", e))
-    }
-
-    pub fn clear(&self) -> Result<(), mpsc::error::SendError<AggregatorCommand>> {
-        self.tx.send(AggregatorCommand::Clear)
     }
 
     pub fn shutdown(&self) -> Result<(), mpsc::error::SendError<AggregatorCommand>> {
@@ -104,11 +99,6 @@ impl AggregatorService {
                     if let Err(_) = response_tx.send(response) {
                         error!("Failed to send flush response - receiver dropped");
                     }
-                }
-
-                AggregatorCommand::Clear => {
-                    self.aggregator.clear();
-                    debug!("Aggregator cleared");
                 }
 
                 AggregatorCommand::Shutdown => {
@@ -178,34 +168,6 @@ mod tests {
         assert_eq!(response.distributions.len(), 1);
         assert_eq!(response.distributions[0].sketches.len(), 2);
         assert_eq!(response.series.len(), 0);
-
-        // Shutdown the service
-        handle.shutdown().expect("Failed to shutdown");
-        service_task.await.expect("Service task failed");
-    }
-
-    #[tokio::test]
-    async fn test_aggregator_service_clear() {
-        let (service, handle) =
-            AggregatorService::new(EMPTY_TAGS, 1000).expect("Failed to create aggregator service");
-
-        // Start the service in a background task
-        let service_task = tokio::spawn(service.run());
-
-        // Insert metrics
-        let metrics = vec![parse("test:1|c|#k:v").expect("metric parse failed")];
-
-        handle
-            .insert_batch(metrics)
-            .expect("Failed to insert metrics");
-
-        // Clear the aggregator
-        handle.clear().expect("Failed to clear");
-
-        // Flush should return empty results
-        let response = handle.flush().await.expect("Failed to flush");
-        assert_eq!(response.series.len(), 0);
-        assert_eq!(response.distributions.len(), 0);
 
         // Shutdown the service
         handle.shutdown().expect("Failed to shutdown");
