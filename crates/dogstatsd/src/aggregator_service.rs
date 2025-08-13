@@ -78,7 +78,8 @@ impl AggregatorService {
                 AggregatorCommand::InsertBatch(metrics) => {
                     let mut insert_errors = 0;
                     for metric in metrics {
-                        if let Err(e) = self.aggregator.insert(metric) {
+                        // The only possible error here is an overflow
+                        if let Err(_e) = self.aggregator.insert(metric) {
                             insert_errors += 1;
                         }
                     }
