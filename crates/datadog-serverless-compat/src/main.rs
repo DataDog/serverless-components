@@ -26,7 +26,7 @@ use datadog_trace_agent::{
 use datadog_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use dogstatsd::{
-    aggregator_service::{AggregatorService, AggregatorHandle},
+    aggregator_service::{AggregatorHandle, AggregatorService},
     api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{MetricsIntakeUrlPrefix, RetryStrategy, Site},
@@ -191,7 +191,7 @@ async fn start_dogstatsd(
         port,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
-    
+
     // 3. Use handle in DogStatsD (cheap to clone)
     let dogstatsd_client = DogStatsD::new(
         &dogstatsd_config,
