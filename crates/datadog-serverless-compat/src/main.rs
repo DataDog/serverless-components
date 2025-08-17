@@ -7,13 +7,12 @@
 #![cfg_attr(not(test), deny(clippy::todo))]
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
-use env_logger::Builder;
-use log::{debug, error, info};
-use std::{env, str::FromStr, sync::Arc, sync::Mutex};
+use std::{env, sync::Arc, sync::Mutex};
 use tokio::{
     sync::Mutex as TokioMutex,
     time::{interval, Duration},
 };
+use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
 use datadog_trace_agent::{
@@ -47,8 +46,6 @@ pub async fn main() {
     let log_level = env::var("DD_LOG_LEVEL")
         .map(|val| val.to_lowercase())
         .unwrap_or("info".to_string());
-    let level_filter = log::LevelFilter::from_str(&log_level).unwrap_or(log::LevelFilter::Info);
-    Builder::new().filter_level(level_filter).init();
 
     let (_, env_type) = match read_cloud_env() {
         Some(value) => value,

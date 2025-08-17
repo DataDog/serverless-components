@@ -6,8 +6,6 @@ license.workspace = true
 description = "Binary to run trace-agent and dogstatsd servers in Serverless environments"
 
 [dependencies]
-log = "0.4"
-env_logger = "0.10.0"
 datadog-trace-agent = { path = "../datadog-trace-agent" }
 datadog-trace-protobuf = { git = "https://github.com/DataDog/libdatadog/", rev = "4eb2b8673354f974591c61bab3f7d485b4c119e0" }
 datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "4eb2b8673354f974591c61bab3f7d485b4c119e0" }
