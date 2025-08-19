@@ -111,39 +111,46 @@ impl Flusher {
         };
 
         let dd_api_clone = dd_api.clone();
-        let series_handle = tokio::spawn(async move {
-            let mut failed = Vec::new();
-            let mut had_shipping_error = false;
-            for a_batch in series {
-                let (continue_shipping, should_retry) =
-                    should_try_next_batch(dd_api_clone.ship_series(&a_batch).await).await;
-                if should_retry {
-                    failed.push(a_batch);
-                    had_shipping_error = true;
+        let series_handle = tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Handle::current();
+            runtime.block_on(async move {
+                let mut failed = Vec::new();
+                let mut had_shipping_error = false;
+                for a_batch in series {
+                    let (continue_shipping, should_retry) =
+                        should_try_next_batch(dd_api_clone.ship_series(&a_batch).await).await;
+                    if should_retry {
+                        failed.push(a_batch);
+                        had_shipping_error = true;
+                    }
+                    if !continue_shipping {
+                        break;
+                    }
                 }
-                if !continue_shipping {
-                    break;
-                }
-            }
-            (failed, had_shipping_error)
+                (failed, had_shipping_error)
+            })
         });
 
         let dd_api_clone = dd_api.clone();
-        let distributions_handle = tokio::spawn(async move {
-            let mut failed = Vec::new();
-            let mut had_shipping_error = false;
-            for a_batch in distributions {
-                let (continue_shipping, should_retry) =
-                    should_try_next_batch(dd_api_clone.ship_distributions(&a_batch).await).await;
-                if should_retry {
-                    failed.push(a_batch);
-                    had_shipping_error = true;
+        let distributions_handle = tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Handle::current();
+            runtime.block_on(async move {
+                let mut failed = Vec::new();
+                let mut had_shipping_error = false;
+                for a_batch in distributions {
+                    let (continue_shipping, should_retry) =
+                        should_try_next_batch(dd_api_clone.ship_distributions(&a_batch).await)
+                            .await;
+                    if should_retry {
+                        failed.push(a_batch);
+                        had_shipping_error = true;
+                    }
+                    if !continue_shipping {
+                        break;
+                    }
                 }
-                if !continue_shipping {
-                    break;
-                }
-            }
-            (failed, had_shipping_error)
+                (failed, had_shipping_error)
+            })
         });
 
         match tokio::try_join!(series_handle, distributions_handle) {
