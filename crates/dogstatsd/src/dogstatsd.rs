@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::aggregator::Aggregator;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{parse, Metric};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 pub struct DogStatsD {
     cancel_token: tokio_util::sync::CancellationToken,
@@ -73,6 +73,7 @@ impl DogStatsD {
         let mut spin_cancelled = false;
         while !spin_cancelled {
             self.consume_statsd().await;
+            tokio::task::yield_now().await;
             spin_cancelled = self.cancel_token.is_cancelled();
         }
     }
@@ -87,7 +88,7 @@ impl DogStatsD {
 
         #[allow(clippy::expect_used)]
         let msgs = std::str::from_utf8(&buf).expect("couldn't parse as string");
-        debug!("Received message: {} from {}", msgs, src);
+        trace!("Received message: {} from {}", msgs, src);
         let statsd_metric_strings = msgs.split('\n');
         self.insert_metrics(statsd_metric_strings);
     }
