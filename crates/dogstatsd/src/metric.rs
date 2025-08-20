@@ -76,7 +76,9 @@ impl SortedTags {
         debug!("SortedTags::parse called with tags_section: {}", tags_section);
         let start = Instant::now();
         let total_tags = tags_section.bytes().filter(|&b| b == b',').count() + 1;
+        debug!("Time consumed after getting total_tags: {:?}", start.elapsed());
         let mut parsed_tags = Vec::with_capacity(total_tags);
+        debug!("Time consumed after initializing parsed_tags: {:?}", start.elapsed());
 
         for part in tags_section.split(',').filter(|s| !s.is_empty()) {
             if let Some(i) = part.find(':') {
@@ -87,8 +89,10 @@ impl SortedTags {
                 parsed_tags.push((Ustr::from(part), Ustr::from("")));
             }
         }
+        debug!("Time consumed after adding parsed_tags: {:?}", start.elapsed());
 
         parsed_tags.dedup();
+        debug!("Time consumed after deduping parsed_tags: {:?}", start.elapsed());
         if parsed_tags.len() > constants::MAX_TAGS {
             return Err(ParseError::Raw(format!(
                 "Too many tags, more than {c}",
@@ -97,6 +101,7 @@ impl SortedTags {
         }
 
         parsed_tags.sort_unstable();
+        debug!("Time consumed after sorting parsed_tags: {:?}", start.elapsed());
         let duration = start.elapsed();
         debug!("SortedTags::parse took {:?}", duration);
         Ok(SortedTags {
