@@ -10,6 +10,8 @@ use regex::Regex;
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 use ustr::Ustr;
+use tracing::{debug};
+use std::time::Instant;
 
 pub const EMPTY_TAGS: SortedTags = SortedTags { values: Vec::new() };
 
@@ -71,6 +73,8 @@ impl SortedTags {
     }
 
     pub fn parse(tags_section: &str) -> Result<SortedTags, ParseError> {
+        debug!("SortedTags::parse called with tags_section: {}", tags_section);
+        let start = Instant::now();
         let total_tags = tags_section.bytes().filter(|&b| b == b',').count() + 1;
         let mut parsed_tags = Vec::with_capacity(total_tags);
 
@@ -93,6 +97,8 @@ impl SortedTags {
         }
 
         parsed_tags.sort_unstable();
+        let duration = start.elapsed();
+        debug!("SortedTags::parse took {:?}", duration);
         Ok(SortedTags {
             values: parsed_tags,
         })
