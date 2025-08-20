@@ -71,28 +71,75 @@ impl SortedTags {
     }
 
     pub fn parse(tags_section: &str) -> Result<SortedTags, ParseError> {
-        let total_tags = tags_section.bytes().filter(|&b| b == b',').count() + 1;
-        let mut parsed_tags = Vec::with_capacity(total_tags);
+        if tags_section.is_empty() {
+            return Ok(SortedTags { values: Vec::new() });
+        }
 
-        for part in tags_section.split(',').filter(|s| !s.is_empty()) {
-            if let Some(i) = part.find(':') {
-                // Avoid creating a new string via split_once
-                let (k, v) = (&part[..i], &part[i + 1..]);
-                parsed_tags.push((Ustr::from(k), Ustr::from(v)));
-            } else {
-                parsed_tags.push((Ustr::from(part), Ustr::from("")));
+        // Pre-allocate based on comma count, but cap it to avoid over-allocation
+        let estimated_tags = tags_section.bytes().filter(|&b| b == b',').count() + 1;
+        let capacity = estimated_tags.min(constants::MAX_TAGS + 1);
+        let mut parsed_tags = Vec::with_capacity(capacity);
+
+        // Use a single pass through the string with manual parsing
+        let mut start = 0;
+        let bytes = tags_section.as_bytes();
+        let len = bytes.len();
+
+        while start < len {
+            // Find the next comma or end of string
+            let mut end = start;
+            while end < len && bytes[end] != b',' {
+                end += 1;
             }
+
+            // Skip empty parts
+            if end > start {
+                // Find colon within this part
+                let mut colon_pos = None;
+                for (i, byte) in bytes.iter().enumerate().skip(start).take(end - start) {
+                    if *byte == b':' {
+                        colon_pos = Some(i);
+                        break;
+                    }
+                }
+
+                // Extract key and value without additional allocations
+                let (key_str, value_str) = if let Some(colon_idx) = colon_pos {
+                    // SAFETY: We know these indices are valid UTF-8 boundaries since we're working
+                    // within the original string and only splitting on ASCII characters
+                    unsafe {
+                        (
+                            tags_section.get_unchecked(start..colon_idx),
+                            tags_section.get_unchecked(colon_idx + 1..end),
+                        )
+                    }
+                } else {
+                    // SAFETY: Same as above
+                    unsafe { (tags_section.get_unchecked(start..end), "") }
+                };
+
+                // Only intern strings once we know we need them
+                let key_ustr = Ustr::from(key_str);
+                let value_ustr = Ustr::from(value_str);
+
+                parsed_tags.push((key_ustr, value_ustr));
+
+                // Early exit if we have too many tags to avoid unnecessary work
+                if parsed_tags.len() > constants::MAX_TAGS {
+                    return Err(ParseError::Raw(format!(
+                        "Too many tags, more than {c}",
+                        c = constants::MAX_TAGS
+                    )));
+                }
+            }
+
+            start = end + 1;
         }
 
-        parsed_tags.dedup();
-        if parsed_tags.len() > constants::MAX_TAGS {
-            return Err(ParseError::Raw(format!(
-                "Too many tags, more than {c}",
-                c = constants::MAX_TAGS
-            )));
-        }
-
+        // Sort first, then dedup - this is more cache-friendly
         parsed_tags.sort_unstable();
+        parsed_tags.dedup();
+
         Ok(SortedTags {
             values: parsed_tags,
         })
