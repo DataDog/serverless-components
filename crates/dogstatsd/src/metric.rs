@@ -76,23 +76,31 @@ impl SortedTags {
         debug!("SortedTags::parse called with tags_section: {}", tags_section);
         let start = Instant::now();
         let total_tags = tags_section.bytes().filter(|&b| b == b',').count() + 1;
-        debug!("Time consumed after getting total_tags: {:?}", start.elapsed());
+        debug!("After getting total_tags: {:?}", start.elapsed());
         let mut parsed_tags = Vec::with_capacity(total_tags);
-        debug!("Time consumed after initializing parsed_tags: {:?}", start.elapsed());
+        debug!("After initializing parsed_tags: {:?}", start.elapsed());
 
         for part in tags_section.split(',').filter(|s| !s.is_empty()) {
+            debug!("Processing part: {:?}: {:?}", part, start.elapsed());
             if let Some(i) = part.find(':') {
                 // Avoid creating a new string via split_once
                 let (k, v) = (&part[..i], &part[i + 1..]);
-                parsed_tags.push((Ustr::from(k), Ustr::from(v)));
+                debug!("Creating ustrs: {:?}", start.elapsed());
+                let k_ustr = Ustr::from(k);
+                let v_ustr = Ustr::from(v);
+                debug!("After creating ustrs: {:?}", start.elapsed());
+                parsed_tags.push((k_ustr, v_ustr));
             } else {
-                parsed_tags.push((Ustr::from(part), Ustr::from("")));
+                let part_ustr = Ustr::from(part);
+                let empty_ustr = Ustr::from("");
+                debug!("After creating empty ustr: {:?}", start.elapsed());
+                parsed_tags.push((part_ustr, empty_ustr));
             }
         }
-        debug!("Time consumed after adding parsed_tags: {:?}", start.elapsed());
+        debug!("After adding parsed_tags: {:?}", start.elapsed());
 
         parsed_tags.dedup();
-        debug!("Time consumed after deduping parsed_tags: {:?}", start.elapsed());
+        debug!("After deduping parsed_tags: {:?}", start.elapsed());
         if parsed_tags.len() > constants::MAX_TAGS {
             return Err(ParseError::Raw(format!(
                 "Too many tags, more than {c}",
@@ -101,7 +109,7 @@ impl SortedTags {
         }
 
         parsed_tags.sort_unstable();
-        debug!("Time consumed after sorting parsed_tags: {:?}", start.elapsed());
+        debug!("After sorting parsed_tags: {:?}", start.elapsed());
         let duration = start.elapsed();
         debug!("SortedTags::parse took {:?}", duration);
         Ok(SortedTags {
