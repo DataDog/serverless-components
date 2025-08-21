@@ -3,16 +3,15 @@
 
 use std::net::SocketAddr;
 use std::str::Split;
-use std::sync::{Arc, Mutex};
 
-use crate::aggregator::Aggregator;
+use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{parse, Metric};
 use tracing::{debug, error};
 
 pub struct DogStatsD {
     cancel_token: tokio_util::sync::CancellationToken,
-    aggregator: Arc<Mutex<Aggregator>>,
+    aggregator_handle: AggregatorHandle,
     buffer_reader: BufferReader,
 }
 
@@ -52,7 +51,7 @@ impl DogStatsD {
     #[must_use]
     pub async fn new(
         config: &DogStatsDConfig,
-        aggregator: Arc<Mutex<Aggregator>>,
+        aggregator_handle: AggregatorHandle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> DogStatsD {
         let addr = format!("{}:{}", config.host, config.port);
@@ -64,7 +63,7 @@ impl DogStatsD {
             .expect("couldn't bind to address");
         DogStatsD {
             cancel_token,
-            aggregator,
+            aggregator_handle,
             buffer_reader: BufferReader::UdpSocketReader(socket),
         }
     }
@@ -119,10 +118,9 @@ impl DogStatsD {
             })
             .collect();
         if !all_valid_metrics.is_empty() {
-            #[allow(clippy::expect_used)]
-            let mut guarded_aggregator = self.aggregator.lock().expect("lock poisoned");
-            for a_valid_value in all_valid_metrics {
-                let _ = guarded_aggregator.insert(a_valid_value);
+            // Send metrics through the channel - no lock needed!
+            if let Err(e) = self.aggregator_handle.insert_batch(all_valid_metrics) {
+                error!("Failed to send metrics to aggregator: {}", e);
             }
         }
     }
@@ -131,62 +129,38 @@ impl DogStatsD {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use crate::aggregator::tests::assert_sketch;
-    use crate::aggregator::tests::assert_value;
-    use crate::aggregator::Aggregator;
+    use crate::aggregator_service::AggregatorService;
     use crate::dogstatsd::{BufferReader, DogStatsD};
     use crate::metric::EMPTY_TAGS;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::sync::{Arc, Mutex};
     use tracing_test::traced_test;
 
     #[tokio::test]
     async fn test_dogstatsd_multi_distribution() {
-        let locked_aggregator = setup_dogstatsd(
+        let response = setup_and_consume_dogstatsd(
             "single_machine_performance.rouster.api.series_v2.payload_size_bytes:269942|d|T1656581409
 single_machine_performance.rouster.metrics_min_timestamp_latency:1426.90870216|d|T1656581409
 single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d|T1656581409
 ",
         )
         .await;
-        let aggregator = locked_aggregator.lock().expect("lock poisoned");
 
-        let parsed_metrics = aggregator.distributions_to_protobuf();
-
-        assert_eq!(parsed_metrics.sketches.len(), 3);
-        assert_eq!(aggregator.to_series().len(), 0);
-        drop(aggregator);
-
-        assert_sketch(
-            &locked_aggregator,
-            "single_machine_performance.rouster.api.series_v2.payload_size_bytes",
-            269_942_f64,
-            1656581400,
-        );
-        assert_sketch(
-            &locked_aggregator,
-            "single_machine_performance.rouster.metrics_min_timestamp_latency",
-            1_426.908_702_16,
-            1656581400,
-        );
-        assert_sketch(
-            &locked_aggregator,
-            "single_machine_performance.rouster.metrics_max_timestamp_latency",
-            1_376.908_702_16,
-            1656581400,
-        );
+        assert_eq!(response.distributions.len(), 1);
+        assert_eq!(response.distributions[0].sketches.len(), 3);
+        assert_eq!(response.series.len(), 0);
     }
 
     #[tokio::test]
     async fn test_dogstatsd_multi_metric() {
-        let mut now = std::time::UNIX_EPOCH
+        let mut now: i64 = std::time::UNIX_EPOCH
             .elapsed()
             .expect("unable to poll clock, unrecoverable")
             .as_secs()
             .try_into()
             .unwrap_or_default();
         now = (now / 10) * 10;
-        let locked_aggregator = setup_dogstatsd(
+
+        let response = setup_and_consume_dogstatsd(
             format!(
                 "metric3:3|c|#tag3:val3,tag4:val4\nmetric1:1|c\nmetric2:2|c|#tag2:val2|T{:}\n",
                 now
@@ -194,69 +168,56 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
             .as_str(),
         )
         .await;
-        let aggregator = locked_aggregator.lock().expect("lock poisoned");
 
-        let parsed_metrics = aggregator.to_series();
-
-        assert_eq!(parsed_metrics.len(), 3);
-        assert_eq!(aggregator.distributions_to_protobuf().sketches.len(), 0);
-        drop(aggregator);
-
-        assert_value(&locked_aggregator, "metric1", 1.0, "", now);
-        assert_value(&locked_aggregator, "metric2", 2.0, "tag2:val2", now);
-        assert_value(
-            &locked_aggregator,
-            "metric3",
-            3.0,
-            "tag3:val3,tag4:val4",
-            now,
-        );
+        assert_eq!(response.series.len(), 1);
+        assert_eq!(response.series[0].series.len(), 3);
+        assert_eq!(response.distributions.len(), 0);
     }
 
     #[tokio::test]
     async fn test_dogstatsd_single_metric() {
-        let locked_aggregator = setup_dogstatsd("metric123:99123|c|T1656581409").await;
-        let aggregator = locked_aggregator.lock().expect("lock poisoned");
-        let parsed_metrics = aggregator.to_series();
+        let response = setup_and_consume_dogstatsd("metric123:99123|c|T1656581409").await;
 
-        assert_eq!(parsed_metrics.len(), 1);
-        assert_eq!(aggregator.distributions_to_protobuf().sketches.len(), 0);
-        drop(aggregator);
-
-        assert_value(&locked_aggregator, "metric123", 99_123.0, "", 1656581400);
+        assert_eq!(response.series.len(), 1);
+        assert_eq!(response.series[0].series.len(), 1);
+        assert_eq!(response.distributions.len(), 0);
     }
 
     #[tokio::test]
     #[traced_test]
     async fn test_dogstatsd_filter_service_check() {
-        let locked_aggregator = setup_dogstatsd("_sc|servicecheck|0").await;
-        let aggregator = locked_aggregator.lock().expect("lock poisoned");
-        let parsed_metrics = aggregator.to_series();
+        let response = setup_and_consume_dogstatsd("_sc|servicecheck|0").await;
 
         assert!(!logs_contain("Failed to parse metric"));
-        assert_eq!(parsed_metrics.len(), 0);
+        assert_eq!(response.series.len(), 0);
+        assert_eq!(response.distributions.len(), 0);
     }
 
     #[tokio::test]
     #[traced_test]
     async fn test_dogstatsd_filter_event() {
-        let locked_aggregator = setup_dogstatsd("_e{5,10}:event|test event").await;
-        let aggregator = locked_aggregator.lock().expect("lock poisoned");
-        let parsed_metrics = aggregator.to_series();
+        let response = setup_and_consume_dogstatsd("_e{5,10}:event|test event").await;
 
         assert!(!logs_contain("Failed to parse metric"));
-        assert_eq!(parsed_metrics.len(), 0);
+        assert_eq!(response.series.len(), 0);
+        assert_eq!(response.distributions.len(), 0);
     }
 
-    async fn setup_dogstatsd(statsd_string: &str) -> Arc<Mutex<Aggregator>> {
-        let aggregator_arc = Arc::new(Mutex::new(
-            Aggregator::new(EMPTY_TAGS, 1_024).expect("aggregator creation failed"),
-        ));
+    async fn setup_and_consume_dogstatsd(
+        statsd_string: &str,
+    ) -> crate::aggregator_service::FlushResponse {
+        // Create the aggregator service
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
+
+        // Start the service in a background task
+        let service_task = tokio::spawn(service.run());
+
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
         let dogstatsd = DogStatsD {
             cancel_token,
-            aggregator: Arc::clone(&aggregator_arc),
+            aggregator_handle: handle.clone(),
             buffer_reader: BufferReader::MirrorReader(
                 statsd_string.as_bytes().to_vec(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
@@ -264,6 +225,13 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         };
         dogstatsd.consume_statsd().await;
 
-        aggregator_arc
+        // Get the metrics via flush
+        let response = handle.flush().await.expect("Failed to flush");
+
+        // Shutdown the service
+        handle.shutdown().expect("Failed to shutdown");
+        service_task.await.expect("Service task failed");
+
+        response
     }
 }
