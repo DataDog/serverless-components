@@ -781,6 +781,7 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]

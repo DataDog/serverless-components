@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tracing::{debug, error};
+use zstd::zstd_safe::CompressionLevel;
 
 #[derive(Clone)]
 pub struct Flusher {
@@ -20,6 +21,7 @@ pub struct Flusher {
     retry_strategy: RetryStrategy,
     aggregator: Arc<Mutex<Aggregator>>,
     dd_api: OnceCell<Option<DdApi>>,
+    compression_level: CompressionLevel,
 }
 
 pub struct FlusherConfig {
@@ -29,6 +31,7 @@ pub struct FlusherConfig {
     pub https_proxy: Option<String>,
     pub timeout: Duration,
     pub retry_strategy: RetryStrategy,
+    pub compression_level: CompressionLevel,
 }
 
 #[allow(clippy::await_holding_lock)]
@@ -41,6 +44,7 @@ impl Flusher {
             timeout: config.timeout,
             retry_strategy: config.retry_strategy,
             aggregator: config.aggregator,
+            compression_level: config.compression_level,
             dd_api: OnceCell::new(),
         }
     }
@@ -56,6 +60,7 @@ impl Flusher {
                         self.https_proxy.clone(),
                         self.timeout,
                         self.retry_strategy.clone(),
+                        self.compression_level.clone(),
                     )),
                     None => {
                         error!("Failed to create dd_api: failed to get API key");

@@ -17,6 +17,7 @@ use tokio::{
     time::{sleep, timeout, Duration},
 };
 use tokio_util::sync::CancellationToken;
+use zstd::zstd_safe::CompressionLevel;
 
 #[cfg(test)]
 #[tokio::test]
@@ -56,6 +57,8 @@ async fn dogstatsd_server_ships_series() {
         https_proxy: None,
         timeout: std::time::Duration::from_secs(5),
         retry_strategy: RetryStrategy::Immediate(3),
+        compression_level: CompressionLevel::try_from(6)
+            .expect("failed to create compression level"),
     });
 
     let server_address = "127.0.0.1:18125";
@@ -133,6 +136,7 @@ async fn test_send_with_retry_immediate_failure() {
         None,
         Duration::from_secs(1),
         retry_strategy.clone(),
+        6,
     );
 
     // Create a series using the Aggregator
@@ -188,6 +192,7 @@ async fn test_send_with_retry_linear_backoff_success() {
         None,
         Duration::from_secs(1),
         retry_strategy.clone(),
+        6,
     );
 
     // Create a series using the Aggregator
@@ -242,6 +247,7 @@ async fn test_send_with_retry_immediate_failure_after_one_attempt() {
         None,
         Duration::from_secs(1),
         retry_strategy.clone(),
+        6,
     );
 
     // Create a series using the Aggregator

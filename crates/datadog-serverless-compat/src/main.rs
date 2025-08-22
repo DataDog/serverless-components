@@ -15,6 +15,7 @@ use tokio::{
     time::{interval, Duration},
 };
 use tracing_subscriber::EnvFilter;
+use zstd::zstd_safe::CompressionLevel;
 
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
@@ -214,6 +215,8 @@ async fn start_dogstatsd(
                 https_proxy,
                 timeout: DOGSTATSD_TIMEOUT_DURATION,
                 retry_strategy: RetryStrategy::LinearBackoff(3, 1),
+                compression_level: CompressionLevel::try_from(6)
+                    .expect("failed to create compression level"),
             });
             Some(metrics_flusher)
         }
