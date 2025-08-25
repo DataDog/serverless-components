@@ -1,11 +1,11 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::aggregator::Aggregator;
+use crate::aggregator_service::AggregatorHandle;
 use crate::api_key::ApiKeyFactory;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tracing::{debug, error};
@@ -18,20 +18,19 @@ pub struct Flusher {
     https_proxy: Option<String>,
     timeout: Duration,
     retry_strategy: RetryStrategy,
-    aggregator: Arc<Mutex<Aggregator>>,
+    aggregator_handle: AggregatorHandle,
     dd_api: OnceCell<Option<DdApi>>,
 }
 
 pub struct FlusherConfig {
     pub api_key_factory: Arc<ApiKeyFactory>,
-    pub aggregator: Arc<Mutex<Aggregator>>,
+    pub aggregator_handle: AggregatorHandle,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     pub https_proxy: Option<String>,
     pub timeout: Duration,
     pub retry_strategy: RetryStrategy,
 }
 
-#[allow(clippy::await_holding_lock)]
 impl Flusher {
     pub fn new(config: FlusherConfig) -> Self {
         Flusher {
@@ -40,7 +39,7 @@ impl Flusher {
             https_proxy: config.https_proxy,
             timeout: config.timeout,
             retry_strategy: config.retry_strategy,
-            aggregator: config.aggregator,
+            aggregator_handle: config.aggregator_handle,
             dd_api: OnceCell::new(),
         }
     }
@@ -73,15 +72,17 @@ impl Flusher {
         Vec<crate::datadog::Series>,
         Vec<datadog_protos::metrics::SketchPayload>,
     )> {
-        let (series, distributions) = {
-            #[allow(clippy::expect_used)]
-            let mut aggregator = self.aggregator.lock().expect("lock poisoned");
-            (
-                aggregator.consume_metrics(),
-                aggregator.consume_distributions(),
-            )
+        // Request flush through the channel - no lock needed!
+        let response = match self.aggregator_handle.flush().await {
+            Ok(response) => response,
+            Err(e) => {
+                error!("Failed to flush aggregator: {}", e);
+                return Some((Vec::new(), Vec::new()));
+            }
         };
-        self.flush_metrics(series, distributions).await
+
+        self.flush_metrics(response.series, response.distributions)
+            .await
     }
 
     /// Flush given batch of metrics
