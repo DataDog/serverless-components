@@ -1,11 +1,11 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::aggregator_service::AggregatorHandle;
+use crate::aggregator::Aggregator;
 use crate::api_key::ApiKeyFactory;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tracing::{debug, error};
@@ -18,19 +18,20 @@ pub struct Flusher {
     https_proxy: Option<String>,
     timeout: Duration,
     retry_strategy: RetryStrategy,
-    aggregator_handle: AggregatorHandle,
+    aggregator: Arc<Mutex<Aggregator>>,
     dd_api: OnceCell<Option<DdApi>>,
 }
 
 pub struct FlusherConfig {
     pub api_key_factory: Arc<ApiKeyFactory>,
-    pub aggregator_handle: AggregatorHandle,
+    pub aggregator: Arc<Mutex<Aggregator>>,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     pub https_proxy: Option<String>,
     pub timeout: Duration,
     pub retry_strategy: RetryStrategy,
 }
 
+#[allow(clippy::await_holding_lock)]
 impl Flusher {
     pub fn new(config: FlusherConfig) -> Self {
         Flusher {
@@ -39,7 +40,7 @@ impl Flusher {
             https_proxy: config.https_proxy,
             timeout: config.timeout,
             retry_strategy: config.retry_strategy,
-            aggregator_handle: config.aggregator_handle,
+            aggregator: config.aggregator,
             dd_api: OnceCell::new(),
         }
     }
@@ -72,17 +73,15 @@ impl Flusher {
         Vec<crate::datadog::Series>,
         Vec<datadog_protos::metrics::SketchPayload>,
     )> {
-        // Request flush through the channel - no lock needed!
-        let response = match self.aggregator_handle.flush().await {
-            Ok(response) => response,
-            Err(e) => {
-                error!("Failed to flush aggregator: {}", e);
-                return Some((Vec::new(), Vec::new()));
-            }
+        let (series, distributions) = {
+            #[allow(clippy::expect_used)]
+            let mut aggregator = self.aggregator.lock().expect("lock poisoned");
+            (
+                aggregator.consume_metrics(),
+                aggregator.consume_distributions(),
+            )
         };
-
-        self.flush_metrics(response.series, response.distributions)
-            .await
+        self.flush_metrics(series, distributions).await
     }
 
     /// Flush given batch of metrics

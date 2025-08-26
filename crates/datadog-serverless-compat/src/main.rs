@@ -7,7 +7,7 @@
 #![cfg_attr(not(test), deny(clippy::todo))]
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
-use std::{env, sync::Arc};
+use std::{env, sync::Arc, sync::Mutex};
 use tokio::{
     sync::Mutex as TokioMutex,
     time::{interval, Duration},
@@ -25,7 +25,7 @@ use datadog_trace_agent::{
 use datadog_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use dogstatsd::{
-    aggregator_service::{AggregatorHandle, AggregatorService},
+    aggregator::Aggregator as MetricsAggregator,
     api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{MetricsIntakeUrlPrefix, RetryStrategy, Site},
@@ -135,9 +135,9 @@ pub async fn main() {
         }
     });
 
-    let (mut metrics_flusher, _aggregator_handle) = if dd_use_dogstatsd {
+    let mut metrics_flusher = if dd_use_dogstatsd {
         debug!("Starting dogstatsd");
-        let (_, metrics_flusher, aggregator_handle) = start_dogstatsd(
+        let (_, metrics_flusher) = start_dogstatsd(
             dd_dogstatsd_port,
             dd_api_key,
             dd_site,
@@ -146,10 +146,10 @@ pub async fn main() {
         )
         .await;
         info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
-        (metrics_flusher, Some(aggregator_handle))
+        metrics_flusher
     } else {
         info!("dogstatsd disabled");
-        (None, None)
+        None
     };
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
@@ -171,28 +171,24 @@ async fn start_dogstatsd(
     dd_site: String,
     https_proxy: Option<String>,
     dogstatsd_tags: &str,
-) -> (CancellationToken, Option<Flusher>, AggregatorHandle) {
-    // 1. Create the aggregator service
+) -> (CancellationToken, Option<Flusher>) {
     #[allow(clippy::expect_used)]
-    let (service, handle) = AggregatorService::new(
-        SortedTags::parse(dogstatsd_tags).unwrap_or(EMPTY_TAGS),
-        CONTEXTS,
-    )
-    .expect("Failed to create aggregator service");
-
-    // 2. Start the aggregator service in the background
-    tokio::spawn(service.run());
+    let metrics_aggr = Arc::new(Mutex::new(
+        MetricsAggregator::new(
+            SortedTags::parse(dogstatsd_tags).unwrap_or(EMPTY_TAGS),
+            CONTEXTS,
+        )
+        .expect("Failed to create metrics aggregator"),
+    ));
 
     let dogstatsd_config = DogStatsDConfig {
         host: AGENT_HOST.to_string(),
         port,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
-
-    // 3. Use handle in DogStatsD (cheap to clone)
     let dogstatsd_client = DogStatsD::new(
         &dogstatsd_config,
-        handle.clone(),
+        Arc::clone(&metrics_aggr),
         dogstatsd_cancel_token.clone(),
     )
     .await;
@@ -206,7 +202,7 @@ async fn start_dogstatsd(
             #[allow(clippy::expect_used)]
             let metrics_flusher = Flusher::new(FlusherConfig {
                 api_key_factory: Arc::new(ApiKeyFactory::new(&dd_api_key)),
-                aggregator_handle: handle.clone(),
+                aggregator: Arc::clone(&metrics_aggr),
                 metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
                     Some(Site::new(dd_site).expect("Failed to parse site")),
                     None,
@@ -224,5 +220,5 @@ async fn start_dogstatsd(
         }
     };
 
-    (dogstatsd_cancel_token, metrics_flusher, handle)
+    (dogstatsd_cancel_token, metrics_flusher)
 }
