@@ -216,8 +216,7 @@ async fn start_dogstatsd(
                 https_proxy,
                 timeout: DOGSTATSD_TIMEOUT_DURATION,
                 retry_strategy: RetryStrategy::LinearBackoff(3, 1),
-                compression_level: CompressionLevel::try_from(6)
-                    .expect("failed to create compression level"),
+                compression_level: CompressionLevel::try_from(6).unwrap_or_default(),
             });
             Some(metrics_flusher)
         }
