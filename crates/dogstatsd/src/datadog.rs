@@ -19,6 +19,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tracing::{debug, error};
 use zstd::stream::write::Encoder;
+use zstd::zstd_safe::CompressionLevel;
 
 // TODO: Move to the more ergonomic LazyLock when MSRV is 1.80
 static SITE_RE: OnceLock<Regex> = OnceLock::new();
@@ -138,6 +139,7 @@ pub struct DdApi {
     metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     client: Option<Client>,
     retry_strategy: RetryStrategy,
+    compression_level: CompressionLevel,
 }
 
 impl DdApi {
@@ -148,6 +150,7 @@ impl DdApi {
         https_proxy: Option<String>,
         timeout: Duration,
         retry_strategy: RetryStrategy,
+        compression_level: CompressionLevel,
     ) -> Self {
         let client = build_client(https_proxy, timeout)
             .inspect_err(|e| {
@@ -159,6 +162,7 @@ impl DdApi {
             metrics_intake_url_prefix,
             client,
             retry_strategy,
+            compression_level,
         }
     }
 
@@ -206,7 +210,7 @@ impl DdApi {
         let start = std::time::Instant::now();
 
         let result = (|| -> std::io::Result<Vec<u8>> {
-            let mut encoder = Encoder::new(Vec::new(), 6)?;
+            let mut encoder = Encoder::new(Vec::new(), self.compression_level)?;
             encoder.write_all(&body)?;
             encoder.finish()
         })();
