@@ -102,6 +102,7 @@ impl DogStatsD {
                     //
                     // avoid metric duplication with lambda layer
                     && !m.starts_with("aws.lambda.enhanced.invocations")
+                    && !m.starts_with("datadog")
             }) // exclude empty messages, service checks, and events
             .map(|m| m.replace('\n', ""))
             .filter_map(|m| match parse(m.as_str()) {
