@@ -72,6 +72,7 @@ impl DogStatsD {
         let mut spin_cancelled = false;
         while !spin_cancelled {
             self.consume_statsd().await;
+            tokio::task::yield_now().await;
             spin_cancelled = self.cancel_token.is_cancelled();
         }
     }
@@ -84,11 +85,13 @@ impl DogStatsD {
             .await
             .expect("didn't receive data");
 
+        let now = std::time::Instant::now();
         #[allow(clippy::expect_used)]
         let msgs = std::str::from_utf8(&buf).expect("couldn't parse as string");
         debug!("Received message: {} from {}", msgs, src);
         let statsd_metric_strings = msgs.split('\n');
         self.insert_metrics(statsd_metric_strings);
+        println!("statsd insert time: {:?}", now.elapsed());
     }
 
     fn insert_metrics(&self, msg: Split<char>) {
