@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use ddcommon::hyper_migration;
 use http_body_util::BodyExt;
 use hyper::{Method, Request};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -21,6 +22,11 @@ const AZURE_LINUX_FUNCTION_ROOT_PATH_STR: &str = "/home/site/wwwroot";
 const AZURE_WINDOWS_FUNCTION_ROOT_PATH_STR: &str = "C:\\home\\site\\wwwroot";
 const AZURE_HOST_JSON_NAME: &str = "host.json";
 const AZURE_FUNCTION_JSON_NAME: &str = "function.json";
+
+// Azure environment variables for resource group detection
+const DD_AZURE_RESOURCE_GROUP: &str = "DD_AZURE_RESOURCE_GROUP";
+const WEBSITE_RESOURCE_GROUP: &str = "WEBSITE_RESOURCE_GROUP";
+const WEBSITE_OWNER_NAME: &str = "WEBSITE_OWNER_NAME";
 
 #[derive(Default, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct GCPMetadata {
@@ -242,6 +248,28 @@ async fn get_gcp_metadata_from_body(body: hyper_migration::Body) -> anyhow::Resu
     Ok(gcp_metadata)
 }
 
+/// Determines the Azure resource group using the same logic as libdatadog
+/// Returns None if running in Flex consumption plan without DD_AZURE_RESOURCE_GROUP set
+fn get_azure_resource_group() -> Option<String> {
+    env::var(DD_AZURE_RESOURCE_GROUP)
+        .ok()
+        .or_else(|| env::var(WEBSITE_RESOURCE_GROUP).ok())
+        .or_else(|| extract_resource_group(env::var(WEBSITE_OWNER_NAME).ok()))
+        .filter(|rg| rg != "flex")
+}
+
+/// Extracts resource group from WEBSITE_OWNER_NAME
+/// This uses the exact same regex logic as libdatadog's AzureMetadata::extract_resource_group
+fn extract_resource_group(s: Option<String>) -> Option<String> {
+    #[allow(clippy::unwrap_used)]
+    let re: Regex = Regex::new(r".+\+(.+)-.+webspace(-Linux)?").unwrap();
+
+    s.as_ref().and_then(|text| {
+        re.captures(text)
+            .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+    })
+}
+
 async fn verify_azure_environment_or_exit(os: &str) {
     let now = Instant::now();
     match ensure_azure_function_environment(Box::new(AzureVerificationClientWrapper {}), os).await {
@@ -252,6 +280,13 @@ async fn verify_azure_environment_or_exit(os: &str) {
             error!("The Mini Agent can only be run in Google Cloud Functions & Azure Functions. Verification has failed, shutting down now. Error: {e}");
             process::exit(1);
         }
+    }
+    if let None = get_azure_resource_group() {
+        error!(
+            "Unable to determine Azure resource group. If you are using Azure Functions on the Flex Consumption plan, \
+             please add your resource group name as an environment variable called `DD_AZURE_RESOURCE_GROUP` in Azure App settings."
+        );
+        process::exit(1);
     }
     debug!(
         "Time taken to verify Azure Functions env: {} ms",
@@ -337,13 +372,10 @@ mod tests {
     use hyper::{body::Bytes, Response, StatusCode};
     use serde_json::json;
     use serial_test::serial;
-    use std::{fs, path::Path, time::Duration};
+    use std::{env, fs, path::Path, time::Duration};
 
     use crate::env_verifier::{
-        ensure_azure_function_environment, ensure_gcp_function_environment,
-        get_region_from_gcp_region_string, AzureVerificationClient, AzureVerificationClientWrapper,
-        GCPInstance, GCPMetadata, GCPProject, GoogleMetadataClient, AZURE_FUNCTION_JSON_NAME,
-        AZURE_HOST_JSON_NAME,
+        ensure_azure_function_environment, ensure_gcp_function_environment, extract_resource_group, get_region_from_gcp_region_string, AzureVerificationClient, AzureVerificationClientWrapper, GCPInstance, GCPMetadata, GCPProject, GoogleMetadataClient, AZURE_FUNCTION_JSON_NAME, AZURE_HOST_JSON_NAME, DD_AZURE_RESOURCE_GROUP, WEBSITE_RESOURCE_GROUP, WEBSITE_OWNER_NAME, get_azure_resource_group
     };
 
     use super::{EnvVerifier, ServerlessEnvVerifier};
@@ -615,4 +647,69 @@ mod tests {
 
         assert_eq!(files, vec![AZURE_HOST_JSON_NAME]);
     }
+
+    #[test]
+    fn test_extract_azure_resource_group_pattern_match_linux() {
+        let website_owner_name = "00000000-0000-0000-0000-000000000000+test-rg-EastUSwebspace-Linux".to_string();
+        let expected_resource_group = "test-rg".to_string();
+
+        assert_eq!(extract_resource_group(Some(website_owner_name)), Some(expected_resource_group));
+    }
+
+    #[test]
+    fn test_extract_azure_resource_group_pattern_match_windows() {
+        let website_owner_name = "00000000-0000-0000-0000-000000000000+test-rg-EastUSwebspace".to_string();
+        let expected_resource_group = "test-rg".to_string();
+
+        assert_eq!(extract_resource_group(Some(website_owner_name)), Some(expected_resource_group));
+    }
+
+    #[test]
+    fn test_extract_azure_resource_group_no_pattern_match() {
+        let website_owner_name = "foo".to_string();
+
+        assert_eq!(extract_resource_group(Some(website_owner_name)), None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_azure_resource_group_website_resource_group() {
+        env::set_var(WEBSITE_RESOURCE_GROUP, "test-rg");
+        env::remove_var(DD_AZURE_RESOURCE_GROUP);
+        assert_eq!(get_azure_resource_group(), Some("test-rg".to_string()));
+        env::remove_var(WEBSITE_RESOURCE_GROUP);
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_azure_resource_group_website_owner_name() {
+        env::set_var(WEBSITE_OWNER_NAME, "00000000-0000-0000-0000-000000000000+test-rg-EastUSwebspace-Linux");
+        env::remove_var(DD_AZURE_RESOURCE_GROUP);
+        env::remove_var(WEBSITE_RESOURCE_GROUP);
+        assert_eq!(get_azure_resource_group(), Some("test-rg".to_string()));
+        env::remove_var(WEBSITE_OWNER_NAME);
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_azure_resource_group_flex_consumption_plan() {
+        env::remove_var(WEBSITE_RESOURCE_GROUP);
+        env::set_var(DD_AZURE_RESOURCE_GROUP, "test-rg");
+        env::set_var(WEBSITE_OWNER_NAME, "00000000-0000-0000-0000-000000000000+flex-EastUSwebspace-Linux");
+        assert_eq!(get_azure_resource_group(), Some("test-rg".to_string()));
+        env::remove_var(WEBSITE_OWNER_NAME);
+        env::remove_var(DD_AZURE_RESOURCE_GROUP);
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_azure_resource_group_flex_dd_azure_resource_group_not_set() {
+        env::remove_var(WEBSITE_RESOURCE_GROUP);
+        env::remove_var(DD_AZURE_RESOURCE_GROUP);
+        env::set_var(WEBSITE_OWNER_NAME, "00000000-0000-0000-0000-000000000000+flex-EastUSwebspace-Linux");
+        assert_eq!(get_azure_resource_group(), None);
+        env::remove_var(WEBSITE_OWNER_NAME);
+        env::remove_var(DD_AZURE_RESOURCE_GROUP);
+    }
+
 }
