@@ -249,7 +249,9 @@ async fn get_gcp_metadata_from_body(body: hyper_migration::Body) -> anyhow::Resu
 /// Checks if we're running in Azure Flex Consumption plan without DD_AZURE_RESOURCE_GROUP set
 /// This would cause billing issues, so we should shut down the trace agent
 fn is_azure_flex_without_resource_group() -> bool {
-    env::var(WEBSITE_SKU).map(|sku| sku == "FlexConsumption").unwrap_or(false)
+    env::var(WEBSITE_SKU)
+        .map(|sku| sku == "FlexConsumption")
+        .unwrap_or(false)
         && env::var(DD_AZURE_RESOURCE_GROUP).is_err()
 }
 
@@ -264,7 +266,7 @@ async fn verify_azure_environment_or_exit(os: &str) {
             process::exit(1);
         }
     }
-    
+
     // Check for Azure Flex Consumption plan without DD_AZURE_RESOURCE_GROUP
     if is_azure_flex_without_resource_group() {
         error!(
@@ -360,9 +362,11 @@ mod tests {
     use std::{env, fs, path::Path, time::Duration};
 
     use crate::env_verifier::{
-        ensure_azure_function_environment, ensure_gcp_function_environment, get_region_from_gcp_region_string, is_azure_flex_without_resource_group, AzureVerificationClient,
-        AzureVerificationClientWrapper, GCPInstance, GCPMetadata, GCPProject, GoogleMetadataClient,
-        AZURE_FUNCTION_JSON_NAME, AZURE_HOST_JSON_NAME, WEBSITE_SKU, DD_AZURE_RESOURCE_GROUP,
+        ensure_azure_function_environment, ensure_gcp_function_environment,
+        get_region_from_gcp_region_string, is_azure_flex_without_resource_group,
+        AzureVerificationClient, AzureVerificationClientWrapper, GCPInstance, GCPMetadata,
+        GCPProject, GoogleMetadataClient, AZURE_FUNCTION_JSON_NAME, AZURE_HOST_JSON_NAME,
+        DD_AZURE_RESOURCE_GROUP, WEBSITE_SKU,
     };
 
     use super::{EnvVerifier, ServerlessEnvVerifier};
@@ -643,7 +647,7 @@ mod tests {
         assert!(is_azure_flex_without_resource_group());
         env::remove_var(WEBSITE_SKU);
     }
-    
+
     #[test]
     fn test_is_azure_flex_without_resource_group_false_resource_group_set() {
         env::set_var(DD_AZURE_RESOURCE_GROUP, "test-resource-group");
