@@ -375,7 +375,11 @@ mod tests {
     use std::{env, fs, path::Path, time::Duration};
 
     use crate::env_verifier::{
-        ensure_azure_function_environment, ensure_gcp_function_environment, extract_resource_group, get_region_from_gcp_region_string, AzureVerificationClient, AzureVerificationClientWrapper, GCPInstance, GCPMetadata, GCPProject, GoogleMetadataClient, AZURE_FUNCTION_JSON_NAME, AZURE_HOST_JSON_NAME, DD_AZURE_RESOURCE_GROUP, WEBSITE_RESOURCE_GROUP, WEBSITE_OWNER_NAME, get_azure_resource_group
+        ensure_azure_function_environment, ensure_gcp_function_environment, extract_resource_group,
+        get_azure_resource_group, get_region_from_gcp_region_string, AzureVerificationClient,
+        AzureVerificationClientWrapper, GCPInstance, GCPMetadata, GCPProject, GoogleMetadataClient,
+        AZURE_FUNCTION_JSON_NAME, AZURE_HOST_JSON_NAME, DD_AZURE_RESOURCE_GROUP,
+        WEBSITE_OWNER_NAME, WEBSITE_RESOURCE_GROUP,
     };
 
     use super::{EnvVerifier, ServerlessEnvVerifier};
@@ -650,18 +654,26 @@ mod tests {
 
     #[test]
     fn test_extract_azure_resource_group_pattern_match_linux() {
-        let website_owner_name = "00000000-0000-0000-0000-000000000000+test-rg-EastUSwebspace-Linux".to_string();
+        let website_owner_name =
+            "00000000-0000-0000-0000-000000000000+test-rg-EastUSwebspace-Linux".to_string();
         let expected_resource_group = "test-rg".to_string();
 
-        assert_eq!(extract_resource_group(Some(website_owner_name)), Some(expected_resource_group));
+        assert_eq!(
+            extract_resource_group(Some(website_owner_name)),
+            Some(expected_resource_group)
+        );
     }
 
     #[test]
     fn test_extract_azure_resource_group_pattern_match_windows() {
-        let website_owner_name = "00000000-0000-0000-0000-000000000000+test-rg-EastUSwebspace".to_string();
+        let website_owner_name =
+            "00000000-0000-0000-0000-000000000000+test-rg-EastUSwebspace".to_string();
         let expected_resource_group = "test-rg".to_string();
 
-        assert_eq!(extract_resource_group(Some(website_owner_name)), Some(expected_resource_group));
+        assert_eq!(
+            extract_resource_group(Some(website_owner_name)),
+            Some(expected_resource_group)
+        );
     }
 
     #[test]
@@ -683,7 +695,10 @@ mod tests {
     #[test]
     #[serial]
     fn test_get_azure_resource_group_website_owner_name() {
-        env::set_var(WEBSITE_OWNER_NAME, "00000000-0000-0000-0000-000000000000+test-rg-EastUSwebspace-Linux");
+        env::set_var(
+            WEBSITE_OWNER_NAME,
+            "00000000-0000-0000-0000-000000000000+test-rg-EastUSwebspace-Linux",
+        );
         env::remove_var(DD_AZURE_RESOURCE_GROUP);
         env::remove_var(WEBSITE_RESOURCE_GROUP);
         assert_eq!(get_azure_resource_group(), Some("test-rg".to_string()));
@@ -695,7 +710,10 @@ mod tests {
     fn test_get_azure_resource_group_flex_consumption_plan() {
         env::remove_var(WEBSITE_RESOURCE_GROUP);
         env::set_var(DD_AZURE_RESOURCE_GROUP, "test-rg");
-        env::set_var(WEBSITE_OWNER_NAME, "00000000-0000-0000-0000-000000000000+flex-EastUSwebspace-Linux");
+        env::set_var(
+            WEBSITE_OWNER_NAME,
+            "00000000-0000-0000-0000-000000000000+flex-EastUSwebspace-Linux",
+        );
         assert_eq!(get_azure_resource_group(), Some("test-rg".to_string()));
         env::remove_var(WEBSITE_OWNER_NAME);
         env::remove_var(DD_AZURE_RESOURCE_GROUP);
@@ -706,10 +724,12 @@ mod tests {
     fn test_get_azure_resource_group_flex_dd_azure_resource_group_not_set() {
         env::remove_var(WEBSITE_RESOURCE_GROUP);
         env::remove_var(DD_AZURE_RESOURCE_GROUP);
-        env::set_var(WEBSITE_OWNER_NAME, "00000000-0000-0000-0000-000000000000+flex-EastUSwebspace-Linux");
+        env::set_var(
+            WEBSITE_OWNER_NAME,
+            "00000000-0000-0000-0000-000000000000+flex-EastUSwebspace-Linux",
+        );
         assert_eq!(get_azure_resource_group(), None);
         env::remove_var(WEBSITE_OWNER_NAME);
         env::remove_var(DD_AZURE_RESOURCE_GROUP);
     }
-
 }
