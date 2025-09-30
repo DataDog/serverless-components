@@ -6,7 +6,7 @@ use crate::datadog::Series;
 use crate::metric::{Metric, SortedTags};
 use datadog_protos::metrics::SketchPayload;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, warn, trace};
 use ustr::Ustr;
 
 #[derive(Debug)]
@@ -42,14 +42,17 @@ impl AggregatorHandle {
     }
 
     pub async fn flush(&self) -> Result<FlushResponse, String> {
+        trace!("dogstatsd aggregator | Entering flush()");
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
             .send(AggregatorCommand::Flush(response_tx))
             .map_err(|e| format!("Failed to send flush command: {}", e))?;
 
-        response_rx
+        let response = response_rx
             .await
-            .map_err(|e| format!("Failed to receive flush response: {}", e))
+            .map_err(|e| format!("Failed to receive flush response: {}", e));
+        trace!("dogstatsd aggregator | Exiting flush()");
+        response
     }
 
     pub async fn get_entry_by_id(

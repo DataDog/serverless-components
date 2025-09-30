@@ -7,7 +7,7 @@ use std::str::Split;
 use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{parse, Metric};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 pub struct DogStatsD {
     cancel_token: tokio_util::sync::CancellationToken,
@@ -69,14 +69,17 @@ impl DogStatsD {
     }
 
     pub async fn spin(self) {
+        trace!("dogstatsd | Entering spin()");
         let mut spin_cancelled = false;
         while !spin_cancelled {
             self.consume_statsd().await;
             spin_cancelled = self.cancel_token.is_cancelled();
         }
+        trace!("dogstatsd | Exiting spin()");
     }
 
     async fn consume_statsd(&self) {
+        trace!("dogstatsd | Entering consume_statsd()");
         #[allow(clippy::expect_used)]
         let (buf, src) = self
             .buffer_reader
@@ -89,9 +92,11 @@ impl DogStatsD {
         debug!("Received message: {} from {}", msgs, src);
         let statsd_metric_strings = msgs.split('\n');
         self.insert_metrics(statsd_metric_strings);
+        trace!("dogstatsd | Exiting consume_statsd()");
     }
 
     fn insert_metrics(&self, msg: Split<char>) {
+        trace!("dogstatsd | Entering insert_metrics()");
         let all_valid_metrics: Vec<Metric> = msg
             .filter(|m| {
                 !m.is_empty()
@@ -123,6 +128,7 @@ impl DogStatsD {
                 error!("Failed to send metrics to aggregator: {}", e);
             }
         }
+        trace!("dogstatsd | Exiting insert_metrics()");
     }
 }
 
