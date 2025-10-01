@@ -1,6 +1,7 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+use http_body_util::BodyExt;
 use hyper::service::service_fn;
 use hyper::{http, Method, Response, StatusCode};
 use libdd_common::hyper_migration;
@@ -9,7 +10,10 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::{
+    Mutex,
+    mpsc::{self, Receiver, Sender},
+};
 use tracing::{debug, error};
 
 use crate::http_utils::log_and_create_http_response;
@@ -22,6 +26,7 @@ const MINI_AGENT_PORT: usize = 8126;
 const TRACE_ENDPOINT_PATH: &str = "/v0.4/traces";
 const STATS_ENDPOINT_PATH: &str = "/v0.6/stats";
 const INFO_ENDPOINT_PATH: &str = "/info";
+const PROFILING_ENDPOINT_PATH: &str = "/profiling/v1/input";
 const TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const STATS_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 
@@ -32,6 +37,7 @@ pub struct MiniAgent {
     pub stats_processor: Arc<dyn stats_processor::StatsProcessor + Send + Sync>,
     pub stats_flusher: Arc<dyn stats_flusher::StatsFlusher + Send + Sync>,
     pub env_verifier: Arc<dyn env_verifier::EnvVerifier + Send + Sync>,
+    pub proxy_aggregator: Arc<Mutex<proxy_aggregator::Aggregator>>,
 }
 
 impl MiniAgent {
@@ -82,10 +88,17 @@ impl MiniAgent {
                 .await;
         });
 
+        // start our proxy flusher for profiling requests
+        let proxy_aggregator_for_flusher = self.proxy_aggregator.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+        });
+
         // setup our hyper http server, where the endpoint_handler handles incoming requests
         let trace_processor = self.trace_processor.clone();
         let stats_processor = self.stats_processor.clone();
         let endpoint_config = self.config.clone();
+        let proxy_aggregator = self.proxy_aggregator.clone();
 
         let service = service_fn(move |req| {
             // called for each http request
@@ -95,15 +108,17 @@ impl MiniAgent {
             let stats_tx = stats_tx.clone();
             let endpoint_config = endpoint_config.clone();
             let mini_agent_metadata = Arc::clone(&mini_agent_metadata);
+            let proxy_aggregator = proxy_aggregator.clone();
 
             MiniAgent::trace_endpoint_handler(
                 endpoint_config,
                 req.map(hyper_migration::Body::incoming),
-                trace_processor,
-                trace_tx,
-                stats_processor,
-                stats_tx,
-                mini_agent_metadata,
+                trace_processor.clone(),
+                trace_tx.clone(),
+                stats_processor.clone(),
+                stats_tx.clone(),
+                Arc::clone(&mini_agent_metadata),
+                proxy_aggregator,
             )
         });
 
@@ -167,6 +182,7 @@ impl MiniAgent {
         stats_processor: Arc<dyn stats_processor::StatsProcessor + Send + Sync>,
         stats_tx: Sender<pb::ClientStatsPayload>,
         mini_agent_metadata: Arc<trace_utils::MiniAgentMetadata>,
+        proxy_aggregator: Arc<Mutex<proxy_aggregator::Aggregator>>,
     ) -> http::Result<hyper_migration::HttpResponse> {
         match (req.method(), req.uri().path()) {
             (&Method::PUT | &Method::POST, TRACE_ENDPOINT_PATH) => {
@@ -190,6 +206,15 @@ impl MiniAgent {
                     ),
                 }
             }
+            (&Method::POST, PROFILING_ENDPOINT_PATH) => {
+                match Self::profiling_proxy_handler(config, req, proxy_aggregator).await {
+                    Ok(res) => Ok(res),
+                    Err(err) => log_and_create_http_response(
+                        &format!("Error processing profiling request: {err}"),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                }
+            }
             (_, INFO_ENDPOINT_PATH) => match Self::info_handler(config.dd_dogstatsd_port) {
                 Ok(res) => Ok(res),
                 Err(err) => log_and_create_http_response(
@@ -205,13 +230,49 @@ impl MiniAgent {
         }
     }
 
+    async fn profiling_proxy_handler(
+        config: Arc<config::Config>,
+        request: hyper_migration::HttpRequest,
+        proxy_aggregator: Arc<Mutex<proxy_aggregator::Aggregator>>,
+    ) -> Result<hyper_migration::HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        debug!("Trace Agent | Proxied request for profiling");
+
+        // Extract headers and body
+        let (parts, body) = request.into_parts();
+        if let Some(response) = http_utils::verify_request_content_length(
+            &parts.headers,
+            config.max_request_content_length,
+            "Error processing profiling request",
+        ) {
+            return response.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>);
+        }
+
+        let body_bytes = body.collect().await?.to_bytes();
+
+        // Create proxy request
+        let proxy_request = ProxyRequest {
+            headers: parts.headers,
+            body: body_bytes,
+            target_url: format!("https://intake.profile.{}/api/v2/profile", config.dd_site),
+        };
+
+        let mut proxy_aggregator = proxy_aggregator.lock().await;
+        proxy_aggregator.add(proxy_request);
+
+        Response::builder()
+            .status(200)
+            .body(hyper_migration::Body::from("Acknowledged profiling request"))
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+    }
+
     fn info_handler(dd_dogstatsd_port: u16) -> http::Result<hyper_migration::HttpResponse> {
         let response_json = json!(
             {
                 "endpoints": [
                     TRACE_ENDPOINT_PATH,
                     STATS_ENDPOINT_PATH,
-                    INFO_ENDPOINT_PATH
+                    INFO_ENDPOINT_PATH,
+                    PROFILING_ENDPOINT_PATH
                 ],
                 "client_drop_p0s": true,
                 "config": {
@@ -223,4 +284,5 @@ impl MiniAgent {
             .status(200)
             .body(hyper_migration::Body::from(response_json.to_string()))
     }
+
 }
