@@ -441,8 +441,8 @@ name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
  "datadog-trace-agent",
- "datadog-trace-protobuf 19.1.0",
- "datadog-trace-utils 19.1.0",
+ "datadog-trace-protobuf",
+ "datadog-trace-utils",
  "dogstatsd",
  "tokio",
  "tokio-util",
@@ -458,11 +458,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "datadog-trace-normalization 21.0.0",
+ "datadog-trace-normalization",
  "datadog-trace-obfuscation",
- "datadog-trace-protobuf 21.0.0",
- "datadog-trace-utils 21.0.0",
- "ddcommon 21.0.0",
+ "datadog-trace-protobuf",
+ "datadog-trace-utils",
+ "ddcommon",
  "duplicate",
  "http-body-util",
  "hyper",
@@ -479,20 +479,11 @@ dependencies = [
 
 [[package]]
 name = "datadog-trace-normalization"
-version = "19.1.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
-dependencies = [
- "anyhow",
- "datadog-trace-protobuf 19.1.0",
-]
-
-[[package]]
-name = "datadog-trace-normalization"
 version = "21.0.0"
 source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
 dependencies = [
  "anyhow",
- "datadog-trace-protobuf 21.0.0",
+ "datadog-trace-protobuf",
 ]
 
 [[package]]
@@ -501,9 +492,9 @@ version = "21.0.0"
 source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
 dependencies = [
  "anyhow",
- "datadog-trace-protobuf 21.0.0",
- "datadog-trace-utils 21.0.0",
- "ddcommon 21.0.0",
+ "datadog-trace-protobuf",
+ "datadog-trace-utils",
+ "ddcommon",
  "log",
  "percent-encoding",
  "regex",
@@ -514,47 +505,12 @@ dependencies = [
 
 [[package]]
 name = "datadog-trace-protobuf"
-version = "19.1.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
-dependencies = [
- "prost",
- "serde",
- "serde_bytes",
-]
-
-[[package]]
-name = "datadog-trace-protobuf"
 version = "21.0.0"
 source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
 dependencies = [
  "prost",
  "serde",
  "serde_bytes",
-]
-
-[[package]]
-name = "datadog-trace-utils"
-version = "19.1.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
-dependencies = [
- "anyhow",
- "bytes",
- "datadog-trace-normalization 19.1.0",
- "datadog-trace-protobuf 19.1.0",
- "ddcommon 19.1.0",
- "futures",
- "http-body-util",
- "hyper",
- "prost",
- "rand 0.8.5",
- "rmp",
- "rmp-serde",
- "rmpv",
- "serde",
- "serde_json",
- "tinybytes 19.1.0",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -566,9 +522,9 @@ dependencies = [
  "bytes",
  "cargo-platform",
  "cargo_metadata",
- "datadog-trace-normalization 21.0.0",
- "datadog-trace-protobuf 21.0.0",
- "ddcommon 21.0.0",
+ "datadog-trace-normalization",
+ "datadog-trace-protobuf",
+ "ddcommon",
  "flate2",
  "futures",
  "http-body-util",
@@ -582,44 +538,11 @@ dependencies = [
  "rmpv",
  "serde",
  "serde_json",
- "tinybytes 21.0.0",
+ "tinybytes",
  "tokio",
  "tracing",
  "urlencoding",
  "zstd",
-]
-
-[[package]]
-name = "ddcommon"
-version = "19.1.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
-dependencies = [
- "anyhow",
- "cc",
- "const_format",
- "futures",
- "futures-core",
- "futures-util",
- "hex",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "libc",
- "nix",
- "pin-project",
- "regex",
- "rustls",
- "rustls-native-certs",
- "serde",
- "static_assertions",
- "thiserror 1.0.69",
- "tokio",
- "tokio-rustls",
- "tower-service",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2665,14 +2588,6 @@ checksum = "8b9ef9bad013ada3808854ceac7b46812a6465ba368859a37e2100283d2d719c"
 dependencies = [
  "cfg-if",
  "once_cell",
-]
-
-[[package]]
-name = "tinybytes"
-version = "19.1.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=4eb2b8673354f974591c61bab3f7d485b4c119e0#4eb2b8673354f974591c61bab3f7d485b4c119e0"
-dependencies = [
- "serde",
 ]
 
 [[package]]
