@@ -22,6 +22,10 @@ const AZURE_WINDOWS_FUNCTION_ROOT_PATH_STR: &str = "C:\\home\\site\\wwwroot";
 const AZURE_HOST_JSON_NAME: &str = "host.json";
 const AZURE_FUNCTION_JSON_NAME: &str = "function.json";
 
+// Azure environment variables for Flex consumption plan detection
+const DD_AZURE_RESOURCE_GROUP: &str = "DD_AZURE_RESOURCE_GROUP";
+const WEBSITE_SKU: &str = "WEBSITE_SKU";
+
 #[derive(Default, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct GCPMetadata {
     pub instance: GCPInstance,
@@ -242,6 +246,15 @@ async fn get_gcp_metadata_from_body(body: hyper_migration::Body) -> anyhow::Resu
     Ok(gcp_metadata)
 }
 
+/// Checks if we're running in Azure Flex Consumption plan without DD_AZURE_RESOURCE_GROUP set
+/// This would cause billing issues, so we should shut down the trace agent
+fn is_azure_flex_without_resource_group() -> bool {
+    env::var(WEBSITE_SKU)
+        .map(|sku| sku == "FlexConsumption")
+        .unwrap_or(false)
+        && env::var(DD_AZURE_RESOURCE_GROUP).is_err()
+}
+
 async fn verify_azure_environment_or_exit(os: &str) {
     let now = Instant::now();
     match ensure_azure_function_environment(Box::new(AzureVerificationClientWrapper {}), os).await {
@@ -252,6 +265,15 @@ async fn verify_azure_environment_or_exit(os: &str) {
             error!("The Mini Agent can only be run in Google Cloud Functions & Azure Functions. Verification has failed, shutting down now. Error: {e}");
             process::exit(1);
         }
+    }
+
+    // Check for Azure Flex Consumption plan without DD_AZURE_RESOURCE_GROUP
+    if is_azure_flex_without_resource_group() {
+        error!(
+            "Azure Flex Consumption plan detected without DD_AZURE_RESOURCE_GROUP set. \
+             Please add your resource group name as an environment variable called `DD_AZURE_RESOURCE_GROUP` in Azure App settings."
+        );
+        process::exit(1);
     }
     debug!(
         "Time taken to verify Azure Functions env: {} ms",
@@ -337,13 +359,14 @@ mod tests {
     use hyper::{body::Bytes, Response, StatusCode};
     use serde_json::json;
     use serial_test::serial;
-    use std::{fs, path::Path, time::Duration};
+    use std::{env, fs, path::Path, time::Duration};
 
     use crate::env_verifier::{
         ensure_azure_function_environment, ensure_gcp_function_environment,
-        get_region_from_gcp_region_string, AzureVerificationClient, AzureVerificationClientWrapper,
-        GCPInstance, GCPMetadata, GCPProject, GoogleMetadataClient, AZURE_FUNCTION_JSON_NAME,
-        AZURE_HOST_JSON_NAME,
+        get_region_from_gcp_region_string, is_azure_flex_without_resource_group,
+        AzureVerificationClient, AzureVerificationClientWrapper, GCPInstance, GCPMetadata,
+        GCPProject, GoogleMetadataClient, AZURE_FUNCTION_JSON_NAME, AZURE_HOST_JSON_NAME,
+        DD_AZURE_RESOURCE_GROUP, WEBSITE_SKU,
     };
 
     use super::{EnvVerifier, ServerlessEnvVerifier};
@@ -614,5 +637,27 @@ mod tests {
         let files = client.get_function_root_files(temp_dir_path).unwrap();
 
         assert_eq!(files, vec![AZURE_HOST_JSON_NAME]);
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_azure_flex_without_resource_group_true() {
+        env::set_var(WEBSITE_SKU, "FlexConsumption");
+        assert!(is_azure_flex_without_resource_group());
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_azure_flex_without_resource_group_false_resource_group_set() {
+        env::set_var(DD_AZURE_RESOURCE_GROUP, "test-resource-group");
+        env::set_var(WEBSITE_SKU, "FlexConsumption");
+        assert!(!is_azure_flex_without_resource_group());
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_azure_flex_without_resource_group_false_not_flex() {
+        env::set_var(WEBSITE_SKU, "ElasticPremium");
+        assert!(!is_azure_flex_without_resource_group());
     }
 }
