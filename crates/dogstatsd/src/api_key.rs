@@ -1,5 +1,8 @@
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use std::{future::Future, pin::Pin};
 use tokio::sync::RwLock;
@@ -7,7 +10,12 @@ use tokio::sync::RwLock;
 pub type ApiKeyResolverFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<String>> + Send>> + Send + Sync>;
 
-#[derive(Clone)]
+#[derive(Default)]
+pub struct ApiKeyState {
+    api_key: Option<String>,
+    last_load_time: Option<Instant>,
+}
+
 pub enum ApiKeyFactory {
     Static(String),
     Dynamic {
@@ -15,8 +23,9 @@ pub enum ApiKeyFactory {
         // How often to reload the api key. If None, the api key will only be loaded once.
         // Reload checks only happen on reads of the api key.
         reload_interval: Option<Duration>,
-        api_key: Arc<RwLock<Option<String>>>,
-        last_reload_time: Arc<RwLock<Option<Instant>>>,
+        api_key_state: Arc<RwLock<ApiKeyState>>,
+        // Whether the api key is currently being loaded. A lock to avoid concurrent loads.
+        loading_api_key: AtomicBool,
     },
 }
 
@@ -34,8 +43,8 @@ impl ApiKeyFactory {
         Self::Dynamic {
             resolver_fn,
             reload_interval,
-            api_key: Arc::new(RwLock::new(None)),
-            last_reload_time: Arc::new(RwLock::new(None)),
+            api_key_state: Arc::new(RwLock::new(ApiKeyState::default())),
+            loading_api_key: AtomicBool::new(false),
         }
     }
 
@@ -44,25 +53,29 @@ impl ApiKeyFactory {
             Self::Static(api_key) => Some(api_key.clone()),
             Self::Dynamic {
                 resolver_fn,
-                api_key,
-                last_reload_time,
+                api_key_state,
+                loading_api_key,
                 ..
             } => {
-                // Check if reload is needed without acquiring write lock for api_key.
-                // If no, return the api key directly. If yes, acquire the write lock and reload the api key.
-                if self.should_load_api_key().await {
-                    let mut api_key_write = api_key.write().await;
-
+                if self.should_load_api_key().await
+                    && loading_api_key
+                        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                        .is_ok()
+                {
                     // Double-check: verify reload is still needed after acquiring lock
                     // This prevents duplicate reloads from multiple threads
                     if self.should_load_api_key().await {
                         let api_key_value = (resolver_fn)().await;
-                        *api_key_write = api_key_value.clone();
-                        *last_reload_time.write().await = Some(Instant::now());
+                        *api_key_state.write().await = ApiKeyState {
+                            api_key: api_key_value.clone(),
+                            last_load_time: Some(Instant::now()),
+                        };
                     }
+
+                    loading_api_key.store(false, Ordering::Release);
                 }
 
-                api_key.read().await.clone()
+                api_key_state.read().await.api_key.clone()
             }
         }
     }
@@ -72,20 +85,20 @@ impl ApiKeyFactory {
             Self::Static(_) => false,
             Self::Dynamic {
                 reload_interval,
-                last_reload_time,
+                api_key_state,
                 ..
             } => {
-                match *last_reload_time.read().await {
+                match api_key_state.read().await.last_load_time {
                     // Initial load
                     None => true,
                     // Not initial load
-                    Some(last_reload_time) => {
+                    Some(last_load_time) => {
                         match *reload_interval {
                             // User's configuration says do not reload
                             None => false,
                             // Reload only if it has been longer than reload interval since last reload
                             Some(reload_interval) => {
-                                Instant::now() > last_reload_time + reload_interval
+                                Instant::now() > last_load_time + reload_interval
                             }
                         }
                     }
