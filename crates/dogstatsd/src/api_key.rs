@@ -57,22 +57,33 @@ impl ApiKeyFactory {
                 loading_api_key,
                 ..
             } => {
-                if self.should_load_api_key().await
-                    && loading_api_key
+                if self.should_load_api_key().await {
+                    // Try to acquire the loading lock.
+                    if (loading_api_key
                         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                        .is_ok()
-                {
-                    // Double-check: verify load is still needed after acquiring lock
-                    // This prevents duplicate loads from multiple threads
-                    if self.should_load_api_key().await {
-                        let api_key_value = (resolver_fn)().await;
-                        *api_key_state.write().await = ApiKeyState {
-                            api_key: api_key_value.clone(),
-                            last_load_time: Some(Instant::now()),
-                        };
-                    }
+                        .is_ok())
+                    {
+                        // Acquired the loading lock.
+                        // Double-check: verify load is still needed after acquiring lock
+                        // This prevents duplicate loads from multiple threads
+                        if self.should_load_api_key().await {
+                            let api_key_value = (resolver_fn)().await;
+                            *api_key_state.write().await = ApiKeyState {
+                                api_key: api_key_value.clone(),
+                                last_load_time: Some(Instant::now()),
+                            };
+                        }
 
-                    loading_api_key.store(false, Ordering::Release);
+                        loading_api_key.store(false, Ordering::Release);
+                    } else {
+                        // Failed to acquire the loading lock, which means another thread is doing the load.
+                        // If there is an old api key, break out and return it.
+                        // (We assume the old api key will still be valid for a while.)
+                        // If there is no old api key, wait for another thread to complete the initial load.
+                        while api_key_state.read().await.last_load_time.is_none() {
+                            tokio::task::yield_now().await;
+                        }
+                    }
                 }
 
                 api_key_state.read().await.api_key.clone()
