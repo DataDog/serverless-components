@@ -108,7 +108,10 @@ pub mod tests {
     #[tokio::test]
     async fn test_new() {
         let api_key_factory = ApiKeyFactory::new("mock-api-key");
-        assert_eq!(api_key_factory.get_api_key().await, Some("mock-api-key".to_string()));
+        assert_eq!(
+            api_key_factory.get_api_key().await,
+            Some("mock-api-key".to_string())
+        );
     }
 
     #[tokio::test]
@@ -130,7 +133,7 @@ pub mod tests {
     async fn test_resolver_with_reload() {
         let counter = Arc::new(RwLock::new(0));
         let counter_clone = counter.clone();
-        
+
         // Return different api keys on each call
         let api_key_factory = Arc::new(ApiKeyFactory::new_from_resolver(
             Arc::new(move || {
@@ -143,14 +146,14 @@ pub mod tests {
             }),
             Some(Duration::from_millis(1)),
         ));
-        
+
         // First call - should return "mock-api-key-1"
         let first_key = api_key_factory.get_api_key().await;
         assert_eq!(first_key, Some("mock-api-key-1".to_string()));
-        
+
         // Sleep for 1 millisecond to allow reload
         tokio::time::sleep(Duration::from_millis(1)).await;
-        
+
         // Second call - should return "mock-api-key-2" (after reload)
         let second_key = api_key_factory.get_api_key().await;
         assert_eq!(second_key, Some("mock-api-key-2".to_string()));
