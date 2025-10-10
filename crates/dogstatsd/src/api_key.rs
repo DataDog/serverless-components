@@ -62,8 +62,8 @@ impl ApiKeyFactory {
                         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                         .is_ok()
                 {
-                    // Double-check: verify reload is still needed after acquiring lock
-                    // This prevents duplicate reloads from multiple threads
+                    // Double-check: verify load is still needed after acquiring lock
+                    // This prevents duplicate loads from multiple threads
                     if self.should_load_api_key().await {
                         let api_key_value = (resolver_fn)().await;
                         *api_key_state.write().await = ApiKeyState {
@@ -96,7 +96,7 @@ impl ApiKeyFactory {
                         match *reload_interval {
                             // User's configuration says do not reload
                             None => false,
-                            // Reload only if it has been longer than reload interval since last reload
+                            // Reload only if it has been longer than reload interval since last load
                             Some(reload_interval) => {
                                 Instant::now() > last_load_time + reload_interval
                             }
