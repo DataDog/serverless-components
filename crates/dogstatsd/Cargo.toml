@@ -30,6 +30,11 @@ datadog-fips = { path = "../datadog-fips", default-features = false }
 mockito = { version = "1.5.0", default-features = false }
 proptest = "1.4.0"
 tracing-test = { version = "0.2.5", default-features = false }
+criterion = "0.5"
+
+[[bench]]
+name = "sorted_tags"
+harness = false
 
 [features]
 default = [ "reqwest/rustls-tls" ]

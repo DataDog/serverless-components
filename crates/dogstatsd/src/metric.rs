@@ -11,7 +11,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 use ustr::Ustr;
 
-pub const EMPTY_TAGS: SortedTags = SortedTags { values: Vec::new() };
+pub const EMPTY_TAGS: SortedTags = SortedTags {
+    values: Vec::new(),
+    sorted: true,
+};
 
 // https://docs.datadoghq.com/developers/dogstatsd/datagram_shell?tab=metrics#dogstatsd-protocol-v13
 static METRIC_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -53,17 +56,23 @@ impl MetricValue {
 
 #[derive(Clone, Debug)]
 pub struct SortedTags {
-    // We sort tags. This is in feature parity with DogStatsD and also means
-    // that we avoid storing the same context multiple times because users have
-    // passed tags in different order through time.
     values: Vec<(Ustr, Ustr)>,
+    sorted: bool,
 }
 
 impl SortedTags {
+    fn ensure_sorted(&mut self) {
+        if !self.sorted {
+            self.values.sort_unstable();
+            self.values.dedup();
+            self.sorted = true;
+        }
+    }
+
     pub fn extend(&mut self, other: &SortedTags) {
         self.values.extend_from_slice(&other.values);
-        self.values.dedup();
-        self.values.sort_unstable();
+        self.sorted = false;
+        self.ensure_sorted();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -71,20 +80,52 @@ impl SortedTags {
     }
 
     pub fn parse(tags_section: &str) -> Result<SortedTags, ParseError> {
-        let total_tags = tags_section.bytes().filter(|&b| b == b',').count() + 1;
-        let mut parsed_tags = Vec::with_capacity(total_tags);
+        if tags_section.is_empty() {
+            return Ok(SortedTags {
+                values: Vec::new(),
+                sorted: true,
+            });
+        }
 
-        for part in tags_section.split(',').filter(|s| !s.is_empty()) {
-            if let Some(i) = part.find(':') {
-                // Avoid creating a new string via split_once
-                let (k, v) = (&part[..i], &part[i + 1..]);
+        let mut parsed_tags = Vec::new();
+        let mut start = 0;
+        let bytes = tags_section.as_bytes();
+
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b',' {
+                if i > start {
+                    let part = unsafe { tags_section.get_unchecked(start..i) };
+                    if let Some(colon_pos) = part.find(':') {
+                        let (k, v) = unsafe {
+                            (
+                                part.get_unchecked(..colon_pos),
+                                part.get_unchecked(colon_pos + 1..),
+                            )
+                        };
+                        parsed_tags.push((Ustr::from(k), Ustr::from(v)));
+                    } else {
+                        parsed_tags.push((Ustr::from(part), Ustr::from("")));
+                    }
+                }
+                start = i + 1;
+            }
+        }
+
+        if start < bytes.len() {
+            let part = unsafe { tags_section.get_unchecked(start..) };
+            if let Some(colon_pos) = part.find(':') {
+                let (k, v) = unsafe {
+                    (
+                        part.get_unchecked(..colon_pos),
+                        part.get_unchecked(colon_pos + 1..),
+                    )
+                };
                 parsed_tags.push((Ustr::from(k), Ustr::from(v)));
-            } else {
+            } else if !part.is_empty() {
                 parsed_tags.push((Ustr::from(part), Ustr::from("")));
             }
         }
 
-        parsed_tags.dedup();
         if parsed_tags.len() > constants::MAX_TAGS {
             return Err(ParseError::Raw(format!(
                 "Too many tags, more than {c}",
@@ -93,8 +134,125 @@ impl SortedTags {
         }
 
         parsed_tags.sort_unstable();
+        parsed_tags.dedup();
+
         Ok(SortedTags {
             values: parsed_tags,
+            sorted: true,
+        })
+    }
+
+    pub fn parse_lazy(tags_section: &str) -> Result<SortedTags, ParseError> {
+        if tags_section.is_empty() {
+            return Ok(SortedTags {
+                values: Vec::new(),
+                sorted: true,
+            });
+        }
+
+        let mut parsed_tags = Vec::new();
+        let mut start = 0;
+        let bytes = tags_section.as_bytes();
+
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b',' {
+                if i > start {
+                    let part = unsafe { tags_section.get_unchecked(start..i) };
+                    if let Some(colon_pos) = part.find(':') {
+                        let (k, v) = unsafe {
+                            (
+                                part.get_unchecked(..colon_pos),
+                                part.get_unchecked(colon_pos + 1..),
+                            )
+                        };
+                        parsed_tags.push((Ustr::from(k), Ustr::from(v)));
+                    } else {
+                        parsed_tags.push((Ustr::from(part), Ustr::from("")));
+                    }
+                }
+                start = i + 1;
+            }
+        }
+
+        if start < bytes.len() {
+            let part = unsafe { tags_section.get_unchecked(start..) };
+            if let Some(colon_pos) = part.find(':') {
+                let (k, v) = unsafe {
+                    (
+                        part.get_unchecked(..colon_pos),
+                        part.get_unchecked(colon_pos + 1..),
+                    )
+                };
+                parsed_tags.push((Ustr::from(k), Ustr::from(v)));
+            } else if !part.is_empty() {
+                parsed_tags.push((Ustr::from(part), Ustr::from("")));
+            }
+        }
+
+        if parsed_tags.len() > constants::MAX_TAGS {
+            return Err(ParseError::Raw(format!(
+                "Too many tags, more than {c}",
+                c = constants::MAX_TAGS
+            )));
+        }
+
+        Ok(SortedTags {
+            values: parsed_tags,
+            sorted: false,
+        })
+    }
+
+    pub fn parse_presorted(tags_section: &str) -> Result<SortedTags, ParseError> {
+        if tags_section.is_empty() {
+            return Ok(SortedTags {
+                values: Vec::new(),
+                sorted: true,
+            });
+        }
+
+        let mut parsed_tags = Vec::new();
+        let mut start = 0;
+        let bytes = tags_section.as_bytes();
+        
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b',' {
+                if i > start {
+                    let part = unsafe { tags_section.get_unchecked(start..i) };
+                    if let Some(colon_pos) = part.find(':') {
+                        let (k, v) = unsafe {
+                            (part.get_unchecked(..colon_pos), part.get_unchecked(colon_pos + 1..))
+                        };
+                        parsed_tags.push((Ustr::from(k), Ustr::from(v)));
+                    } else {
+                        parsed_tags.push((Ustr::from(part), Ustr::from("")));
+                    }
+                }
+                start = i + 1;
+            }
+        }
+        
+        if start < bytes.len() {
+            let part = unsafe { tags_section.get_unchecked(start..) };
+            if let Some(colon_pos) = part.find(':') {
+                let (k, v) = unsafe {
+                    (part.get_unchecked(..colon_pos), part.get_unchecked(colon_pos + 1..))
+                };
+                parsed_tags.push((Ustr::from(k), Ustr::from(v)));
+            } else if !part.is_empty() {
+                parsed_tags.push((Ustr::from(part), Ustr::from("")));
+            }
+        }
+
+        if parsed_tags.len() > constants::MAX_TAGS {
+            return Err(ParseError::Raw(format!(
+                "Too many tags, more than {c}",
+                c = constants::MAX_TAGS
+            )));
+        }
+
+        Ok(SortedTags {
+            values: parsed_tags,
+            sorted: true,
         })
     }
 
@@ -347,6 +505,21 @@ pub fn id(name: Ustr, tags: &Option<SortedTags>, timestamp: i64) -> u64 {
     }
     hasher.finish()
 }
+
+pub fn id_with_sorted_tags(name: Ustr, tags: &mut Option<SortedTags>, timestamp: i64) -> u64 {
+    let mut hasher = FnvHasher::default();
+
+    name.hash(&mut hasher);
+    timestamp.hash(&mut hasher);
+    if let Some(tags_present) = tags {
+        tags_present.ensure_sorted();
+        for kv in tags_present.values.iter() {
+            kv.0.as_bytes().hash(&mut hasher);
+            kv.1.as_bytes().hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
 // <METRIC_NAME>:<VALUE>:<VALUE>:<VALUE>|<TYPE>|@<SAMPLE_RATE>|#<TAG_KEY_1>:<TAG_VALUE_1>,
 // <TAG_KEY_2>:<TAG_VALUE_2>,<TAG_NO_VALUE_3>|T<METRIC_TIMESTAMP>|c:<CONTAINER_ID>
 //
@@ -414,7 +587,6 @@ mod tests {
                     let (original_key, original_value) = kv.split_once(':').unwrap();
                     let mut found = false;
                     for (k,v) in parsed_metric_tags.values.iter() {
-                        // TODO not sure who to handle duplicate keys. To make the test pass, just find any match instead of first
                         if *k == Ustr::from(original_key) && *v == Ustr::from(original_value) {
                             found = true;
                         }
@@ -546,9 +718,12 @@ mod tests {
 
         #[test]
         fn resources_key_val_order(tags in metric_tags()) {
-            let sorted_tags = SortedTags { values: tags.into_iter()
-                .map(|(kind, name)| (Ustr::from(&kind), Ustr::from(&name)))
-                .collect()  };
+            let sorted_tags = SortedTags {
+                values: tags.into_iter()
+                    .map(|(kind, name)| (Ustr::from(&kind), Ustr::from(&name)))
+                    .collect(),
+                sorted: true,
+            };
 
             let resources = sorted_tags.to_resources();
 
