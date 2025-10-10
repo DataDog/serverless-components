@@ -272,8 +272,7 @@ impl DdApi {
                     // handle if status code missing like timeout
                     return Err(ShippingError::Destination(
                         status,
-                        format!("Failed to send request after {} attempts", max_attempts)
-                            .to_string(),
+                        format!("Failed to send request after {attempts} attempts").to_string(),
                     ));
                 }
                 RetryStrategy::LinearBackoff(_, delay) => {
