@@ -80,7 +80,7 @@ impl ApiKeyFactory {
                         // If there is an old api key, break out and return it.
                         // (We assume the old api key will still be valid for a while.)
                         // If there is no old api key, wait for another thread to complete the initial load.
-                        // We check last_load_time instead of api_key because if we check api_key and 
+                        // We check last_load_time instead of api_key because if we check api_key and
                         // the resolver function returns None, this thread would wait forever.
                         while api_key_state.read().await.last_load_time.is_none() {
                             tokio::task::yield_now().await;
