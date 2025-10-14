@@ -42,7 +42,10 @@ impl ApiKeyFactory {
         reload_interval: Option<Duration>,
     ) -> Self {
         if let Some(reload_interval) = reload_interval {
-            debug!("Creating ApiKeyFactory with reload interval: {:?}", reload_interval);
+            debug!(
+                "Creating ApiKeyFactory with reload interval: {:?}",
+                reload_interval
+            );
         }
         Self::Dynamic {
             resolver_fn,
