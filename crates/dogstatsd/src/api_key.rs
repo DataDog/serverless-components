@@ -6,6 +6,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use std::{future::Future, pin::Pin};
 use tokio::sync::RwLock;
+use tracing::debug;
 
 pub type ApiKeyResolverFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<String>> + Send>> + Send + Sync>;
@@ -40,6 +41,9 @@ impl ApiKeyFactory {
         resolver_fn: ApiKeyResolverFn,
         reload_interval: Option<Duration>,
     ) -> Self {
+        if let Some(reload_interval) = reload_interval {
+            debug!("Creating ApiKeyFactory with reload interval: {:?}", reload_interval);
+        }
         Self::Dynamic {
             resolver_fn,
             reload_interval,
