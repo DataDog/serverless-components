@@ -202,6 +202,12 @@ mod tests {
             os: "linux".to_string(),
             obfuscation_config: ObfuscationConfig::new().unwrap(),
             proxy_url: None,
+            proxy_flush_interval: 3,
+            proxy_intake: Endpoint {
+                url: hyper::Uri::from_static("https://proxy.agent.notdog.com/proxy"),
+                api_key: Some("dummy_api_key".into()),
+                ..Default::default()
+            },
             tags: Tags::from_env_string("env:test,service:my-service"),
         }
     }

@@ -9,6 +9,9 @@ use hyper::{
 };
 use serde_json::json;
 use tracing::{debug, error};
+use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
+use core::time::Duration;
+use std::error::Error;
 
 /// Does two things:
 /// 1. Logs the given message. A success status code (within 200-299) will cause an info log to be
@@ -109,6 +112,19 @@ pub fn verify_request_content_length(
         ));
     }
     None
+}
+
+/// Builds a reqwest client with optional proxy configuration and timeout.
+/// Uses FIPS-compliant TLS when the fips feature is enabled.
+pub fn build_client(
+    proxy_url: Option<&str>,
+    timeout: Duration,
+) -> Result<reqwest::Client, Box<dyn Error>> {
+    let mut builder = create_reqwest_client_builder()?.timeout(timeout);
+    if let Some(proxy) = proxy_url {
+        builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+    }
+    Ok(builder.build()?)
 }
 
 #[cfg(test)]

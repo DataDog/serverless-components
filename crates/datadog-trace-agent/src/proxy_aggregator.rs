@@ -1,6 +1,7 @@
-use bytes::Bytes; // TODO: Do we use bytes?
-use reqwest::header::HeaderMap; // TODO: Do we use reqwest?
+use bytes::Bytes;
+use reqwest::header::HeaderMap;
 
+#[derive(Clone)]
 pub struct ProxyRequest {
     pub headers: HeaderMap,
     pub body: Bytes,
@@ -8,19 +9,19 @@ pub struct ProxyRequest {
 }
 
 /// Takes in individual proxy requests and aggregates them into batches to be flushed to Datadog.
-pub struct Aggregator {
+pub struct ProxyAggregator {
     queue: Vec<ProxyRequest>,
 }
 
-impl Default for Aggregator {
+impl Default for ProxyAggregator {
     fn default() -> Self {
-        Aggregator {
+        ProxyAggregator {
             queue: Vec::with_capacity(128), // arbitrary capacity for request queue
         }
     }
 }
 
-impl Aggregator {
+impl ProxyAggregator {
     /// Takes in an individual proxy request.
     pub fn add(&mut self, request: ProxyRequest) {
         self.queue.push(request);

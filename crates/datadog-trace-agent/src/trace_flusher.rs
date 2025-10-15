@@ -9,7 +9,7 @@ use tracing::{debug, error};
 use datadog_trace_utils::trace_utils;
 use datadog_trace_utils::trace_utils::SendData;
 
-use crate::aggregator::TraceAggregator;
+use crate::trace_aggregator::TraceAggregator;
 use crate::config::Config;
 
 #[async_trait]
