@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 use libdd_trace_obfuscation::obfuscation_config;
 use libdd_trace_utils::config_utils::{
     read_cloud_env, trace_intake_url, trace_intake_url_prefixed, trace_stats_url,
-    trace_stats_url_prefixed,
+    trace_stats_url_prefixed
 };
 use libdd_trace_utils::trace_utils;
 
@@ -86,6 +86,9 @@ pub struct Config {
     pub trace_flush_interval: u64,
     pub trace_intake: Endpoint,
     pub trace_stats_intake: Endpoint,
+    /// how often to flush proxy requests, in seconds
+    pub proxy_flush_interval: u64,
+    pub proxy_intake: Endpoint,
     /// timeout for environment verification, in milliseconds
     pub verify_env_timeout: u64,
     pub proxy_url: Option<String>,
@@ -111,6 +114,7 @@ impl Config {
         // trace stats to)
         let mut trace_intake_url = trace_intake_url(&dd_site);
         let mut trace_stats_intake_url = trace_stats_url(&dd_site);
+        let proxy_intake_url = format!("https://intake.profile.{}/api/v2/profile", dd_site);
 
         // DD_APM_DD_URL env var will primarily be used for integration tests
         // overrides the entire trace/trace stats intake url prefix
@@ -139,6 +143,7 @@ impl Config {
             max_request_content_length: 10 * 1024 * 1024, // 10MB in Bytes
             trace_flush_interval: 3,
             stats_flush_interval: 3,
+            proxy_flush_interval: 3,
             verify_env_timeout: 100,
             dd_dogstatsd_port,
             dd_site,
@@ -149,6 +154,11 @@ impl Config {
             },
             trace_stats_intake: Endpoint {
                 url: hyper::Uri::from_str(&trace_stats_intake_url).unwrap(),
+                api_key: Some(api_key.clone()),
+                ..Default::default()
+            },
+            proxy_intake: Endpoint {
+                url: hyper::Uri::from_str(&proxy_intake_url).unwrap(),
                 api_key: Some(api_key),
                 ..Default::default()
             },
