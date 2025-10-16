@@ -59,7 +59,7 @@ impl Flusher {
                         self.https_proxy.clone(),
                         self.timeout,
                         self.retry_strategy.clone(),
-                        self.compression_level.clone(),
+                        self.compression_level,
                     )),
                     None => {
                         error!("Failed to create dd_api: failed to get API key");
@@ -212,7 +212,7 @@ async fn should_try_next_batch(resp: Result<Response, ShippingError>) -> (bool, 
         Err(ShippingError::Destination(sc, msg)) => {
             // Check if status code indicates a permanent error
             let is_permanent_error =
-                sc.map_or(false, |code| code.as_u16() >= 400 && code.as_u16() < 500);
+                sc.is_some_and(|code| code.as_u16() >= 400 && code.as_u16() < 500);
 
             error!("Error shipping data: {:?} {}", sc, msg);
 

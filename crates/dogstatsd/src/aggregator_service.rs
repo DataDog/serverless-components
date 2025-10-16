@@ -45,11 +45,11 @@ impl AggregatorHandle {
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
             .send(AggregatorCommand::Flush(response_tx))
-            .map_err(|e| format!("Failed to send flush command: {}", e))?;
+            .map_err(|e| format!("Failed to send flush command: {e}"))?;
 
         response_rx
             .await
-            .map_err(|e| format!("Failed to receive flush response: {}", e))
+            .map_err(|e| format!("Failed to receive flush response: {e}"))
     }
 
     pub async fn get_entry_by_id(
@@ -66,11 +66,11 @@ impl AggregatorHandle {
                 timestamp,
                 response_tx,
             })
-            .map_err(|e| format!("Failed to send get_entry_by_id command: {}", e))?;
+            .map_err(|e| format!("Failed to send get_entry_by_id command: {e}"))?;
 
         response_rx
             .await
-            .map_err(|e| format!("Failed to receive get_entry_by_id response: {}", e))
+            .map_err(|e| format!("Failed to receive get_entry_by_id response: {e}"))
     }
 
     pub fn shutdown(&self) -> Result<(), mpsc::error::SendError<AggregatorCommand>> {
@@ -125,7 +125,7 @@ impl AggregatorService {
                         distributions,
                     };
 
-                    if let Err(_) = response_tx.send(response) {
+                    if response_tx.send(response).is_err() {
                         error!("Failed to send flush response - receiver dropped");
                     }
                 }
@@ -138,7 +138,7 @@ impl AggregatorService {
                 } => {
                     let entry = self.aggregator.get_entry_by_id(name, &tags, timestamp);
                     let response = entry.cloned();
-                    if let Err(_) = response_tx.send(response) {
+                    if response_tx.send(response).is_err() {
                         error!("Failed to send get_entry_by_id response - receiver dropped");
                     }
                 }
