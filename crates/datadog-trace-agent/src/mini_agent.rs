@@ -299,5 +299,4 @@ impl MiniAgent {
             .status(200)
             .body(hyper_migration::Body::from(response_json.to_string()))
     }
-
 }
