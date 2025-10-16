@@ -17,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 use zstd::zstd_safe::CompressionLevel;
 
 use datadog_trace_agent::{
-    trace_aggregator::TraceAggregator,
+    aggregator::TraceAggregator,
     config, env_verifier, mini_agent, stats_flusher, stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
