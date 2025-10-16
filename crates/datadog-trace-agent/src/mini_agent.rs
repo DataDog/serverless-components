@@ -14,7 +14,8 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, error};
 
 use crate::http_utils::{verify_request_content_length, log_and_create_http_response};
-use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor, proxy_aggregator::ProxyRequest, proxy_flusher};
+use crate::proxy_flusher::{ProxyRequest, ProxyFlusher};
+use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor };
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
@@ -35,14 +36,14 @@ pub struct MiniAgent {
     pub stats_processor: Arc<dyn stats_processor::StatsProcessor + Send + Sync>,
     pub stats_flusher: Arc<dyn stats_flusher::StatsFlusher + Send + Sync>,
     pub env_verifier: Arc<dyn env_verifier::EnvVerifier + Send + Sync>,
-    pub proxy_flusher: Arc<proxy_flusher::ProxyFlusher>,
+    pub proxy_flusher: Arc<ProxyFlusher>,
 }
 
 impl MiniAgent {
     pub async fn start_mini_agent(&self) -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
 
-        // verify we are in a google cloud funtion environment. if not, shut down the mini agent.
+        // verify we are in a google cloud function environment. if not, shut down the mini agent.
         let mini_agent_metadata = Arc::new(
             self.env_verifier
                 .verify_environment(
@@ -87,7 +88,8 @@ impl MiniAgent {
                 .start_stats_flusher(stats_config, stats_rx)
                 .await;
         });
-        // channels to send processed profiling requests to our proxy flusher.
+
+        // channels to send processed profiling requests to our proxy flusher
         let (proxy_tx, proxy_rx): (
             Sender<ProxyRequest>,
             Receiver<ProxyRequest>,
@@ -237,6 +239,7 @@ impl MiniAgent {
         }
     }
 
+    /// Handles incoming proxy requests for profiling - can be abstracted into a generic proxy handler for other proxy requests in the future
     async fn profiling_proxy_handler(
         config: Arc<config::Config>,
         request: hyper_migration::HttpRequest,
@@ -271,7 +274,7 @@ impl MiniAgent {
             target_url: config.proxy_intake.url.to_string(),
         };
 
-        // Send to channel - flusher will aggregate and send
+        // Send to channel
         match proxy_tx.send(proxy_request).await {
             Ok(_) => log_and_create_http_response(
                 "Successfully buffered profiling request to be flushed",

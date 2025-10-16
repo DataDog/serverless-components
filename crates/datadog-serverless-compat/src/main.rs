@@ -21,7 +21,6 @@ use datadog_trace_agent::{
     config, env_verifier, mini_agent, stats_flusher, stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
-    proxy_aggregator,
     proxy_flusher,
 };
 
@@ -126,9 +125,7 @@ pub async fn main() {
         Arc::clone(&config),
     ));
 
-    let proxy_aggregator = Arc::new(TokioMutex::new(proxy_aggregator::ProxyAggregator::default()));
     let proxy_flusher = Arc::new(proxy_flusher::ProxyFlusher::new(
-        proxy_aggregator,
         Arc::clone(&config),
     ));
 
