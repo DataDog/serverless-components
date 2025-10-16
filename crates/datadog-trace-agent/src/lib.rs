@@ -7,7 +7,7 @@
 #![cfg_attr(not(test), deny(clippy::todo))]
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
-pub mod trace_aggregator;
+pub mod aggregator;
 pub mod config;
 pub mod env_verifier;
 pub mod http_utils;

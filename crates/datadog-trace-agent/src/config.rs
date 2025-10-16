@@ -86,8 +86,7 @@ pub struct Config {
     pub trace_flush_interval: u64,
     pub trace_intake: Endpoint,
     pub trace_stats_intake: Endpoint,
-    /// how often to flush proxy requests, in seconds
-    pub proxy_flush_interval: u64,
+    /// the endpoint to forward proxy requests to
     pub proxy_intake: Endpoint,
     /// timeout for environment verification, in milliseconds
     pub verify_env_timeout: u64,
@@ -143,7 +142,6 @@ impl Config {
             max_request_content_length: 10 * 1024 * 1024, // 10MB in Bytes
             trace_flush_interval: 3,
             stats_flush_interval: 3,
-            proxy_flush_interval: 3,
             verify_env_timeout: 100,
             dd_dogstatsd_port,
             dd_site,

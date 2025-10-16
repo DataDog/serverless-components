@@ -10,7 +10,7 @@ use libdd_common::{hyper_migration, GenericHttpClient};
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
-use crate::trace_aggregator::TraceAggregator;
+use crate::aggregator::TraceAggregator;
 use crate::config::Config;
 
 #[async_trait]
