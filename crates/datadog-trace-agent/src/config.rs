@@ -86,8 +86,8 @@ pub struct Config {
     pub trace_flush_interval: u64,
     pub trace_intake: Endpoint,
     pub trace_stats_intake: Endpoint,
-    /// the endpoint to forward proxy requests to
-    pub proxy_intake: Endpoint,
+    /// the endpoint to forward profiling requests to
+    pub profiling_intake: Endpoint,
     /// timeout for environment verification, in milliseconds
     pub verify_env_timeout: u64,
     pub proxy_url: Option<String>,
@@ -113,7 +113,8 @@ impl Config {
         // trace stats to)
         let mut trace_intake_url = trace_intake_url(&dd_site);
         let mut trace_stats_intake_url = trace_stats_url(&dd_site);
-        let proxy_intake_url = format!("https://intake.profile.{}/api/v2/profile", dd_site);
+
+        let profiling_intake_url = format!("https://intake.profile.{}/api/v2/profile", dd_site);
 
         // DD_APM_DD_URL env var will primarily be used for integration tests
         // overrides the entire trace/trace stats intake url prefix
@@ -155,8 +156,8 @@ impl Config {
                 api_key: Some(api_key.clone()),
                 ..Default::default()
             },
-            proxy_intake: Endpoint {
-                url: hyper::Uri::from_str(&proxy_intake_url).unwrap(),
+            profiling_intake: Endpoint {
+                url: hyper::Uri::from_str(&profiling_intake_url).unwrap(),
                 api_key: Some(api_key),
                 ..Default::default()
             },

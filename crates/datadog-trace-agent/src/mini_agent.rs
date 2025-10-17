@@ -266,7 +266,7 @@ impl MiniAgent {
         let proxy_request = ProxyRequest {
             headers: parts.headers,
             body: body_bytes,
-            target_url: config.proxy_intake.url.to_string(),
+            target_url: config.profiling_intake.url.to_string(),
         };
 
         debug!(
