@@ -240,7 +240,7 @@ impl MiniAgent {
         request: hyper_migration::HttpRequest,
         proxy_tx: Sender<ProxyRequest>,
     ) -> http::Result<hyper_migration::HttpResponse> {
-        debug!("Trace Agent | Proxied request for profiling");
+        debug!("Trace Agent | Received profiling request");
 
         // Extract headers and body
         let (parts, body) = request.into_parts();
@@ -268,6 +268,8 @@ impl MiniAgent {
             body: body_bytes,
             target_url: config.proxy_intake.url.to_string(),
         };
+
+        debug!("Trace Agent | Sending profiling request to channel, target: {}", proxy_request.target_url);
 
         // Send to channel
         match proxy_tx.send(proxy_request).await {
