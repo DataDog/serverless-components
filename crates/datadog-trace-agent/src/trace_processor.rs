@@ -188,6 +188,10 @@ mod tests {
             max_request_content_length: 10 * 1024 * 1024,
             trace_flush_interval: 3,
             stats_flush_interval: 3,
+            proxy_client_timeout: 30,
+            proxy_request_timeout: 30,
+            proxy_max_retries: 3,
+            proxy_retry_backoff_base_ms: 100,
             verify_env_timeout: 100,
             trace_intake: Endpoint {
                 url: hyper::Uri::from_static("https://trace.agent.notdog.com/traces"),
