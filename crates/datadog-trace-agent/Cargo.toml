@@ -27,7 +27,7 @@ libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "4351
     "mini_agent",
 ] }
 datadog-fips = { path = "../datadog-fips", default-features = false }
-reqwest = { version = "0.12.23", features = ["json"] }
+reqwest = { version = "0.12.23", features = ["json", "http2"], default-features = false }
 bytes = "1.10.1"
 
 [dev-dependencies]
