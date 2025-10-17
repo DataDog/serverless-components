@@ -25,7 +25,10 @@ pub struct ProxyFlusher {
 
 impl ProxyFlusher {
     pub fn new(config: Arc<Config>) -> Self {
-        debug!("Proxy Flusher | Creating new proxy flusher with target URL: {}", config.proxy_intake.url);
+        debug!(
+            "Proxy Flusher | Creating new proxy flusher with target URL: {}",
+            config.proxy_intake.url
+        );
         let client = build_client(config.proxy_url.as_deref(), Duration::from_secs(30))
             .unwrap_or_else(|e| {
                 error!(
@@ -47,7 +50,10 @@ impl ProxyFlusher {
         debug!("Proxy Flusher | Started, listening for requests");
 
         while let Some(proxy_payload) = rx.recv().await {
-            debug!("Proxy Flusher | Received request from channel, body size: {} bytes", proxy_payload.body.len());
+            debug!(
+                "Proxy Flusher | Received request from channel, body size: {} bytes",
+                proxy_payload.body.len()
+            );
             self.send_request(proxy_payload, api_key).await;
         }
     }
@@ -92,7 +98,10 @@ impl ProxyFlusher {
                 }
             };
 
-            debug!("Proxy Flusher | Sending request (attempt {}/{})", attempts, MAX_RETRIES);
+            debug!(
+                "Proxy Flusher | Sending request (attempt {}/{})",
+                attempts, MAX_RETRIES
+            );
 
             let time = std::time::Instant::now();
             let response = request_builder.send().await;
@@ -114,7 +123,10 @@ impl ProxyFlusher {
                     return;
                 }
                 Err(e) => {
-                    error!("Proxy Flusher | Network error (attempt {}): {:?}", attempts, e);
+                    error!(
+                        "Proxy Flusher | Network error (attempt {}): {:?}",
+                        attempts, e
+                    );
                     if attempts >= MAX_RETRIES {
                         error!(
                             "Proxy Flusher | Failed to send request after {} attempts: {:?}",
