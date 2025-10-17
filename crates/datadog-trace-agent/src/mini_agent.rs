@@ -13,8 +13,8 @@ use std::time::Instant;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, error};
 
-use crate::http_utils::{log_and_create_http_response};
-use crate::proxy_flusher::{ProxyRequest, ProxyFlusher};
+use crate::http_utils::log_and_create_http_response;
+use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
 use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
 use datadog_trace_protobuf::pb;
 use datadog_trace_utils::trace_utils;
@@ -90,10 +90,8 @@ impl MiniAgent {
         });
 
         // channels to send processed profiling requests to our proxy flusher
-        let (proxy_tx, proxy_rx): (
-            Sender<ProxyRequest>,
-            Receiver<ProxyRequest>,
-        ) = mpsc::channel(PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE);
+        let (proxy_tx, proxy_rx): (Sender<ProxyRequest>, Receiver<ProxyRequest>) =
+            mpsc::channel(PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE);
 
         // start our proxy flusher for profiling requests
         let proxy_flusher = self.proxy_flusher.clone();

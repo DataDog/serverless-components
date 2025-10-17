@@ -1,6 +1,8 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+use core::time::Duration;
+use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use ddcommon::hyper_migration;
 use hyper::{
     header,
@@ -8,10 +10,8 @@ use hyper::{
     Response, StatusCode,
 };
 use serde_json::json;
-use tracing::{debug, error};
-use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
-use core::time::Duration;
 use std::error::Error;
+use tracing::{debug, error};
 
 /// Does two things:
 /// 1. Logs the given message. A success status code (within 200-299) will cause an info log to be
