@@ -269,7 +269,10 @@ impl MiniAgent {
             target_url: config.proxy_intake.url.to_string(),
         };
 
-        debug!("Trace Agent | Sending profiling request to channel, target: {}", proxy_request.target_url);
+        debug!(
+            "Trace Agent | Sending profiling request to channel, target: {}",
+            proxy_request.target_url
+        );
 
         // Send to channel
         match proxy_tx.send(proxy_request).await {
