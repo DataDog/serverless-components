@@ -3,7 +3,6 @@
 
 use core::time::Duration;
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
-use ddcommon::hyper_migration;
 use hyper::{
     header,
     http::{self, HeaderMap},
