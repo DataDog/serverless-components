@@ -86,8 +86,16 @@ pub struct Config {
     pub trace_flush_interval: u64,
     pub trace_intake: Endpoint,
     pub trace_stats_intake: Endpoint,
-    /// the endpoint to forward profiling requests to
+    /// Profiling intake endpoint (for proxying profiling data to Datadog)
     pub profiling_intake: Endpoint,
+    /// HTTP client timeout for proxy requests, in milliseconds
+    pub proxy_client_timeout: u64,
+    /// Individual request timeout for proxy requests, in seconds
+    pub proxy_request_timeout: u64,
+    /// Maximum number of retry attempts for failed proxy requests
+    pub proxy_max_retries: u32,
+    /// Base backoff duration for proxy retries, in milliseconds
+    pub proxy_retry_backoff_base_ms: u64,
     /// timeout for environment verification, in milliseconds
     pub verify_env_timeout: u64,
     pub proxy_url: Option<String>,
@@ -143,6 +151,10 @@ impl Config {
             max_request_content_length: 10 * 1024 * 1024, // 10MB in Bytes
             trace_flush_interval: 3,
             stats_flush_interval: 3,
+            proxy_client_timeout: 30,
+            proxy_request_timeout: 30,
+            proxy_max_retries: 3,
+            proxy_retry_backoff_base_ms: 100,
             verify_env_timeout: 100,
             dd_dogstatsd_port,
             dd_site,
