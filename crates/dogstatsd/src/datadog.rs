@@ -293,7 +293,7 @@ pub enum RetryStrategy {
 fn build_client(https_proxy: Option<String>, timeout: Duration) -> Result<Client, Box<dyn Error>> {
     let mut builder = create_reqwest_client_builder()?.timeout(timeout);
     if let Some(proxy) = https_proxy {
-        builder = builder.proxy(reqwest::Proxy::https(proxy)?);
+        builder = builder.proxy(reqwest::Proxy::all(proxy)?);
     }
     Ok(builder.build()?)
 }
