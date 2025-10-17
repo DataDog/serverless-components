@@ -27,7 +27,7 @@ impl ProxyFlusher {
     pub fn new(config: Arc<Config>) -> Self {
         debug!(
             "Proxy Flusher | Creating new proxy flusher with target URL: {}",
-            config.proxy_intake.url
+            config.profiling_intake.url
         );
         let client = build_client(config.proxy_url.as_deref(), Duration::from_secs(30))
             .unwrap_or_else(|e| {
@@ -42,7 +42,7 @@ impl ProxyFlusher {
 
     /// Starts the proxy flusher that listens for proxy payloads from the channel and forwards them to Datadog
     pub async fn start_proxy_flusher(&self, mut rx: Receiver<ProxyRequest>) {
-        let Some(api_key) = self.config.proxy_intake.api_key.as_ref() else {
+        let Some(api_key) = self.config.profiling_intake.api_key.as_ref() else {
             error!("Proxy Flusher | No API key configured, cannot start");
             return;
         };
