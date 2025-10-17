@@ -88,10 +88,8 @@ impl MiniAgent {
         });
 
         // channels to send processed profiling requests to our proxy flusher
-        let (proxy_tx, proxy_rx): (
-            Sender<ProxyRequest>,
-            Receiver<ProxyRequest>,
-        ) = mpsc::channel(PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE);
+        let (proxy_tx, proxy_rx): (Sender<ProxyRequest>, Receiver<ProxyRequest>) =
+            mpsc::channel(PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE);
 
         // start our proxy flusher for profiling requests
         let proxy_flusher = self.proxy_flusher.clone();
