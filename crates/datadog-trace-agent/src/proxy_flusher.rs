@@ -29,14 +29,17 @@ impl ProxyFlusher {
             "Proxy Flusher | Creating new proxy flusher with target URL: {}",
             config.profiling_intake.url
         );
-        let client = build_client(config.proxy_url.as_deref(), Duration::from_secs(30))
-            .unwrap_or_else(|e| {
-                error!(
-                    "Unable to parse proxy configuration: {}, no proxy will be used",
-                    e
-                );
-                reqwest::Client::new()
-            });
+        let client = build_client(
+            config.proxy_url.as_deref(),
+            Duration::from_secs(config.proxy_client_timeout),
+        )
+        .unwrap_or_else(|e| {
+            error!(
+                "Unable to parse proxy configuration: {}, no proxy will be used",
+                e
+            );
+            reqwest::Client::new()
+        });
         ProxyFlusher { config, client }
     }
 
@@ -79,12 +82,14 @@ impl ProxyFlusher {
             .client
             .post(&request.target_url)
             .headers(headers)
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(
+                self.config.proxy_request_timeout,
+            ))
             .body(request.body.clone()))
     }
 
     async fn send_request(&self, request: ProxyRequest, api_key: &str) {
-        const MAX_RETRIES: u32 = 3;
+        let max_retries = self.config.proxy_max_retries;
         let mut attempts = 0;
 
         loop {
@@ -100,7 +105,7 @@ impl ProxyFlusher {
 
             debug!(
                 "Proxy Flusher | Sending request (attempt {}/{})",
-                attempts, MAX_RETRIES
+                attempts, max_retries
             );
 
             let time = std::time::Instant::now();
@@ -123,23 +128,25 @@ impl ProxyFlusher {
                     return;
                 }
                 Err(e) => {
+                    // Only retry on network errors
                     error!(
                         "Proxy Flusher | Network error (attempt {}): {:?}",
                         attempts, e
                     );
-                    if attempts >= MAX_RETRIES {
+                    if attempts >= max_retries {
                         error!(
                             "Proxy Flusher | Failed to send request after {} attempts: {:?}",
                             attempts, e
                         );
                         return;
-                    };
+                    }
+                    // Exponential backoff before retry
+                    let backoff_ms =
+                        self.config.proxy_retry_backoff_base_ms * (2_u64.pow(attempts - 1));
+                    debug!("Proxy Flusher | Retrying after {}ms backoff", backoff_ms);
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }
             }
-            // Exponential backoff
-            let backoff_ms = 100 * (2_u64.pow(attempts - 1));
-            debug!("Proxy Flusher | Retrying after {}ms backoff", backoff_ms);
-            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
         }
     }
 }
