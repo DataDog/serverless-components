@@ -33,3 +33,6 @@ serial_test = "2.0.0"
 duplicate = "0.4.1"
 tempfile = "3.3.0"
 datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "902b6a5296963b96c4faf355f6c53eec263b7568", features=["test-utils"] }
+
+[features]
+default = [ "reqwest/rustls-tls" ]
