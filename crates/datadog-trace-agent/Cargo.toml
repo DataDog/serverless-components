@@ -38,3 +38,6 @@ tempfile = "3.3.0"
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "435107c245112397914935c0f7148a18b91cafc6", features = [
     "test-utils",
 ] }
+
+[features]
+default = [ "reqwest/rustls-tls" ]
