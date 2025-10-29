@@ -17,4 +17,5 @@ repository = "https://github.com/DataDog/serverless-components"
 opt-level = "z"
 lto = true
 codegen-units = 1
-strip = true
+strip = "symbols"
+panic = "abort"

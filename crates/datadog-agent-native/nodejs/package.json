@@ -1,0 +1,30 @@
+{
+  "name": "@datadog/agent-native",
+  "version": "0.1.0",
+  "description": "Node.js bindings for the Datadog Agent Native library",
+  "main": "index.js",
+  "keywords": [
+    "datadog",
+    "agent",
+    "apm",
+    "monitoring",
+    "tracing",
+    "metrics",
+    "native",
+    "ffi"
+  ],
+  "author": "Datadog",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DataDog/serverless-components.git"
+  },
+  "dependencies": {
+    "ffi-napi": "^4.0.3",
+    "ref-napi": "^3.0.3",
+    "ref-struct-di": "^1.1.1"
+  },
+  "engines": {
+    "node": ">=12.0.0"
+  }
+}

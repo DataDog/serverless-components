@@ -642,8 +642,10 @@ mod tests {
     #[test]
     #[serial]
     fn test_is_azure_flex_without_resource_group_true() {
+        env::remove_var(DD_AZURE_RESOURCE_GROUP);
         env::set_var(WEBSITE_SKU, "FlexConsumption");
         assert!(is_azure_flex_without_resource_group());
+        env::remove_var(WEBSITE_SKU);
     }
 
     #[test]
@@ -652,6 +654,8 @@ mod tests {
         env::set_var(DD_AZURE_RESOURCE_GROUP, "test-resource-group");
         env::set_var(WEBSITE_SKU, "FlexConsumption");
         assert!(!is_azure_flex_without_resource_group());
+        env::remove_var(DD_AZURE_RESOURCE_GROUP);
+        env::remove_var(WEBSITE_SKU);
     }
 
     #[test]
@@ -659,5 +663,7 @@ mod tests {
     fn test_is_azure_flex_without_resource_group_false_not_flex() {
         env::set_var(WEBSITE_SKU, "ElasticPremium");
         assert!(!is_azure_flex_without_resource_group());
+        env::remove_var(WEBSITE_SKU);
+        env::remove_var(DD_AZURE_RESOURCE_GROUP);
     }
 }

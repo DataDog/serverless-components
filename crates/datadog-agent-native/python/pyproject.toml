@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datadog-agent-native"
+version = "0.1.0"
+description = "Python bindings for the Rust-based Datadog Agent"
+readme = "README.md"
+authors = [{ name = "Datadog" }]
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/DataDog/serverless-components"
+Repository = "https://github.com/DataDog/serverless-components"
+
+[tool.setuptools]
+packages = ["datadog_agent_native"]
+
+[tool.setuptools.package-data]
+"datadog_agent_native" = ["bin/**/*"]
