@@ -104,7 +104,6 @@ impl Flusher {
 
         // Early return if there are no metrics to flush
         if n_series == 0 && n_distributions == 0 {
-            debug!("No metrics to flush, skipping");
             return None;
         }
 
