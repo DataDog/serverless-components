@@ -66,9 +66,9 @@ impl ApiKeyFactory {
             } => {
                 if self.should_load_api_key().await {
                     // Try to acquire the loading lock.
-                    if (loading_api_key
+                    if loading_api_key
                         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                        .is_ok())
+                        .is_ok()
                     {
                         // Acquired the loading lock.
                         // Double-check: verify load is still needed after acquiring lock
