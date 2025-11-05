@@ -122,7 +122,7 @@ pub fn build_client(
 ) -> Result<reqwest::Client, Box<dyn Error>> {
     let mut builder = create_reqwest_client_builder()?.timeout(timeout);
     if let Some(proxy) = proxy_url {
-        builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+        builder = builder.proxy(reqwest::Proxy::https(proxy)?);
     }
     Ok(builder.build()?)
 }
