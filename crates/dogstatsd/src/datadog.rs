@@ -322,7 +322,7 @@ fn build_client(
     }
 
     if let Some(proxy) = https_proxy {
-        builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+        builder = builder.proxy(reqwest::Proxy::https(proxy)?);
     }
     Ok(builder.build()?)
 }
