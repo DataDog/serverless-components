@@ -83,7 +83,10 @@ impl ProxyFlusher {
         // Add additional Azure Function-specific tags
         let mut tag_parts = vec![
             format!("_dd.origin:azure_functions"),
-            format!("functionname:{}", self.config.app_name.as_deref().unwrap_or_default()),
+            format!(
+                "functionname:{}",
+                self.config.app_name.as_deref().unwrap_or_default()
+            ),
         ];
 
         // Append aas.* tags
@@ -95,7 +98,12 @@ impl ProxyFlusher {
 
         let additional_tags = tag_parts.join(";");
         debug!("Proxy Flusher | Adding profiling tags: {}", additional_tags);
-        headers.insert(DD_ADDITIONAL_TAGS_HEADER, additional_tags.parse().expect("Failed to parse additional tags header"));
+        headers.insert(
+            DD_ADDITIONAL_TAGS_HEADER,
+            additional_tags
+                .parse()
+                .expect("Failed to parse additional tags header"),
+        );
 
         Ok(self
             .client
