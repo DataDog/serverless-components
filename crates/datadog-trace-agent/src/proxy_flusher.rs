@@ -12,6 +12,8 @@ use crate::config::Config;
 use crate::http_utils::build_client;
 use core::time::Duration;
 
+const DD_ADDITIONAL_TAGS_HEADER: &str = "X-Datadog-Additional-Tags";
+
 pub struct ProxyRequest {
     pub headers: HeaderMap,
     pub body: Bytes,
@@ -77,6 +79,23 @@ impl ProxyFlusher {
             Ok(parsed_key) => headers.insert("DD-API-KEY", parsed_key),
             Err(e) => return Err(format!("Failed to parse API key: {}", e)),
         };
+
+        // Add additional Azure Function-specific tags
+        let mut tag_parts = vec![
+            format!("_dd.origin:azure_functions"),
+            format!("functionname:{}", self.config.app_name.as_deref().unwrap_or_default()),
+        ];
+
+        // Append aas.* tags
+        for (key, value) in self.config.tags.tags() {
+            if key.starts_with("aas.") {
+                tag_parts.push(format!("{}:{}", key, value));
+            }
+        }
+
+        let additional_tags = tag_parts.join(";");
+        debug!("Proxy Flusher | Adding profiling tags: {}", additional_tags);
+        headers.insert(DD_ADDITIONAL_TAGS_HEADER, additional_tags.parse().expect("Failed to parse additional tags header"));
 
         Ok(self
             .client
