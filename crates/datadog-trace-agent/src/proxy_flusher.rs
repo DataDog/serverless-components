@@ -98,12 +98,14 @@ impl ProxyFlusher {
 
         let additional_tags = tag_parts.join(";");
         debug!("Proxy Flusher | Adding profiling tags: {}", additional_tags);
-        headers.insert(
-            DD_ADDITIONAL_TAGS_HEADER,
-            additional_tags
-                .parse()
-                .expect("Failed to parse additional tags header"),
-        );
+        match additional_tags.parse() {
+            Ok(parsed_tags) => {
+                headers.insert(DD_ADDITIONAL_TAGS_HEADER, parsed_tags);
+            }
+            Err(e) => {
+                return Err(format!("Failed to parse additional tags header: {}", e));
+            }
+        };
 
         Ok(self
             .client
