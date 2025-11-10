@@ -76,8 +76,7 @@ impl ProxyFlusher {
         headers.remove("host");
         headers.remove("content-length");
 
-        // Add headers to the request
-        // Add additional Azure Function-specific tags
+        // Add headers to the request, including Azure Function-specific tags
         let mut tag_parts = vec![
             format!("_dd.origin:azure_functions"),
             format!(
@@ -124,8 +123,7 @@ impl ProxyFlusher {
             debug!("Proxy Flusher | No Azure App Services metadata found");
         }
 
-        let additional_tags = tag_parts.join(";");
-        debug!("Proxy Flusher | Adding profiling tags: {}", additional_tags);
+        let additional_tags = tag_parts.join(",");
         match additional_tags.parse() {
             Ok(parsed_tags) => {
                 headers.insert(DD_ADDITIONAL_TAGS_HEADER, parsed_tags);
@@ -134,15 +132,6 @@ impl ProxyFlusher {
                 return Err(format!("Failed to parse additional tags header: {}", e));
             }
         };
-
-        debug!("Proxy Flusher | Final headers being sent:");
-        for (name, value) in &headers {
-            if name.as_str().to_lowercase().contains("key") || name.as_str().to_lowercase().contains("token") || name.as_str().to_lowercase().contains("secret") {
-                continue;
-            } else {
-                debug!("  {}: {:?}", name, value);
-            }
-        }
 
         match api_key.parse() {
             Ok(parsed_key) => headers.insert("DD-API-KEY", parsed_key),
