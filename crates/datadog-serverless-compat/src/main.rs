@@ -72,6 +72,7 @@ pub async fn main() {
     let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")
         .map(|val| val.to_lowercase() != "false")
         .unwrap_or(true);
+    let dd_statsd_metric_namespace: Option<String> = env::var("DD_STATSD_METRIC_NAMESPACE").ok();
 
     let https_proxy = env::var("DD_PROXY_HTTPS")
         .or_else(|_| env::var("HTTPS_PROXY"))
@@ -144,6 +145,7 @@ pub async fn main() {
             dd_site,
             https_proxy,
             dogstatsd_tags,
+            dd_statsd_metric_namespace,
         )
         .await;
         info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
@@ -172,6 +174,7 @@ async fn start_dogstatsd(
     dd_site: String,
     https_proxy: Option<String>,
     dogstatsd_tags: &str,
+    metric_namespace: Option<String>,
 ) -> (CancellationToken, Option<Flusher>, AggregatorHandle) {
     // 1. Create the aggregator service
     #[allow(clippy::expect_used)]
@@ -187,6 +190,7 @@ async fn start_dogstatsd(
     let dogstatsd_config = DogStatsDConfig {
         host: AGENT_HOST.to_string(),
         port,
+        metric_namespace,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
 

@@ -95,6 +95,7 @@ async fn start_dogstatsd(aggregator_handle: AggregatorHandle) -> CancellationTok
     let dogstatsd_config = DogStatsDConfig {
         host: "127.0.0.1".to_string(),
         port: 18125,
+        metric_namespace: None,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
     let dogstatsd_client = DogStatsD::new(
