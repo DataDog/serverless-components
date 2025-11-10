@@ -276,7 +276,6 @@ mod tests {
 
     #[test]
     fn test_validate_metric_namespace_valid() {
-        // Valid namespaces
         assert_eq!(
             validate_metric_namespace("myapp"),
             Some("myapp".to_string())
@@ -335,5 +334,4 @@ mod tests {
         assert_eq!(validate_metric_namespace("my$app"), None);
         assert_eq!(validate_metric_namespace("my!app"), None);
     }
-
 }
