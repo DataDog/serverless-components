@@ -3,6 +3,7 @@
 
 use bytes::Bytes;
 
+use ddcommon::azure_app_services;
 use reqwest::header::HeaderMap;
 use std::sync::Arc;
 use tokio::sync::mpsc::Receiver;
@@ -69,17 +70,13 @@ impl ProxyFlusher {
         api_key: &str,
     ) -> Result<reqwest::RequestBuilder, String> {
         let mut headers = request.headers.clone();
+        debug!("Hello from proxy flusher create_request");
 
         // Remove headers that are not needed for the proxy request
         headers.remove("host");
         headers.remove("content-length");
 
         // Add headers to the request
-        match api_key.parse() {
-            Ok(parsed_key) => headers.insert("DD-API-KEY", parsed_key),
-            Err(e) => return Err(format!("Failed to parse API key: {}", e)),
-        };
-
         // Add additional Azure Function-specific tags
         let mut tag_parts = vec![
             format!("_dd.origin:azure_functions"),
@@ -89,10 +86,34 @@ impl ProxyFlusher {
             ),
         ];
 
-        // Append aas.* tags
-        for (key, value) in self.config.tags.tags() {
-            if key.starts_with("aas.") {
-                tag_parts.push(format!("{}:{}", key, value));
+        // Add aas.* tags from Azure App Services metadata if available
+        if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA {
+            let aas_tags = [
+                ("aas.resource.id", aas_metadata.get_resource_id()),
+                (
+                    "aas.environment.extension_version",
+                    aas_metadata.get_extension_version(),
+                ),
+                (
+                    "aas.environment.instance_id",
+                    aas_metadata.get_instance_id(),
+                ),
+                (
+                    "aas.environment.instance_name",
+                    aas_metadata.get_instance_name(),
+                ),
+                ("aas.environment.os", aas_metadata.get_operating_system()),
+                ("aas.resource.group", aas_metadata.get_resource_group()),
+                ("aas.site.name", aas_metadata.get_site_name()),
+                ("aas.site.kind", aas_metadata.get_site_kind()),
+                ("aas.site.type", aas_metadata.get_site_type()),
+                ("aas.subscription.id", aas_metadata.get_subscription_id()),
+            ];
+
+            for (name, value) in aas_tags {
+                if !value.is_empty() {
+                    tag_parts.push(format!("{}:{}", name, value));
+                }
             }
         }
 
@@ -105,6 +126,20 @@ impl ProxyFlusher {
             Err(e) => {
                 return Err(format!("Failed to parse additional tags header: {}", e));
             }
+        };
+
+        debug!("Proxy Flusher | Final headers being sent:");
+        for (name, value) in &headers {
+            if name.as_str().to_lowercase().contains("key") || name.as_str().to_lowercase().contains("token") || name.as_str().to_lowercase().contains("secret") {
+                continue;
+            } else {
+                debug!("  {}: {:?}", name, value);
+            }
+        }
+
+        match api_key.parse() {
+            Ok(parsed_key) => headers.insert("DD-API-KEY", parsed_key),
+            Err(e) => return Err(format!("Failed to parse API key: {}", e)),
         };
 
         Ok(self
@@ -123,6 +158,7 @@ impl ProxyFlusher {
 
         loop {
             attempts += 1;
+            debug!("Proxy Flusher | Creating request. Gonna add tags");
 
             let request_builder = match self.create_request(&request, api_key).await {
                 Ok(builder) => builder,
