@@ -87,13 +87,9 @@ impl ProxyFlusher {
         ];
 
         // Add aas.* tags from Azure App Services metadata if available
-        if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA {
+        if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
             let aas_tags = [
                 ("aas.resource.id", aas_metadata.get_resource_id()),
-                (
-                    "aas.environment.extension_version",
-                    aas_metadata.get_extension_version(),
-                ),
                 (
                     "aas.environment.instance_id",
                     aas_metadata.get_instance_id(),
@@ -102,12 +98,21 @@ impl ProxyFlusher {
                     "aas.environment.instance_name",
                     aas_metadata.get_instance_name(),
                 ),
+                ("aas.subscription.id", aas_metadata.get_subscription_id()),
                 ("aas.environment.os", aas_metadata.get_operating_system()),
+                ("aas.environment.runtime", aas_metadata.get_runtime()),
+                (
+                    "aas.environment.runtime_version",
+                    aas_metadata.get_runtime_version(),
+                ),
+                (
+                    "aas.environment.function_runtime",
+                    aas_metadata.get_function_runtime_version(),
+                ),
                 ("aas.resource.group", aas_metadata.get_resource_group()),
                 ("aas.site.name", aas_metadata.get_site_name()),
                 ("aas.site.kind", aas_metadata.get_site_kind()),
                 ("aas.site.type", aas_metadata.get_site_type()),
-                ("aas.subscription.id", aas_metadata.get_subscription_id()),
             ];
 
             for (name, value) in aas_tags {
@@ -115,6 +120,8 @@ impl ProxyFlusher {
                     tag_parts.push(format!("{}:{}", name, value));
                 }
             }
+        } else {
+            debug!("Proxy Flusher | No Azure App Services metadata found");
         }
 
         let additional_tags = tag_parts.join(";");
