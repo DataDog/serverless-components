@@ -70,7 +70,6 @@ impl ProxyFlusher {
         api_key: &str,
     ) -> Result<reqwest::RequestBuilder, String> {
         let mut headers = request.headers.clone();
-        debug!("Hello from proxy flusher create_request");
 
         // Remove headers that are not needed for the proxy request
         headers.remove("host");
@@ -154,7 +153,6 @@ impl ProxyFlusher {
 
         loop {
             attempts += 1;
-            debug!("Proxy Flusher | Creating request. Gonna add tags");
 
             let request_builder = match self.create_request(&request, api_key).await {
                 Ok(builder) => builder,
