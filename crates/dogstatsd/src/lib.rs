@@ -17,3 +17,4 @@ pub mod errors;
 pub mod flusher;
 pub mod metric;
 pub mod origin;
+pub mod util;

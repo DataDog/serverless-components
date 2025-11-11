@@ -32,6 +32,7 @@ use dogstatsd::{
     datadog::{MetricsIntakeUrlPrefix, RetryStrategy, Site},
     dogstatsd::{DogStatsD, DogStatsDConfig},
     flusher::{Flusher, FlusherConfig},
+    util::parse_metric_namespace,
 };
 
 use dogstatsd::metric::{SortedTags, EMPTY_TAGS};
@@ -74,7 +75,7 @@ pub async fn main() {
         .unwrap_or(true);
     let dd_statsd_metric_namespace: Option<String> = env::var("DD_STATSD_METRIC_NAMESPACE")
         .ok()
-        .and_then(|val| validate_metric_namespace(&val));
+        .and_then(|val| parse_metric_namespace(&val));
 
     let https_proxy = env::var("DD_PROXY_HTTPS")
         .or_else(|_| env::var("HTTPS_PROXY"))
@@ -233,105 +234,4 @@ async fn start_dogstatsd(
     };
 
     (dogstatsd_cancel_token, metrics_flusher, handle)
-}
-
-fn validate_metric_namespace(namespace: &str) -> Option<String> {
-    let trimmed = namespace.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut chars = trimmed.chars();
-
-    // Check first character is a letter
-    if let Some(first_char) = chars.next() {
-        if !first_char.is_ascii_alphabetic() {
-            error!(
-                "DD_STATSD_METRIC_NAMESPACE must start with a letter, got: '{}'. Ignoring namespace.",
-                trimmed
-            );
-            return None;
-        }
-    } else {
-        return None;
-    }
-
-    // Check remaining characters are valid (alphanumeric, underscore, or period)
-    if let Some(invalid_char) =
-        chars.find(|&ch| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.')
-    {
-        error!(
-            "DD_STATSD_METRIC_NAMESPACE contains invalid character '{}' in '{}'. Only ASCII alphanumerics, underscores, and periods are allowed. Ignoring namespace.",
-            invalid_char, trimmed
-        );
-        return None;
-    }
-
-    Some(trimmed.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate_metric_namespace_valid() {
-        assert_eq!(
-            validate_metric_namespace("myapp"),
-            Some("myapp".to_string())
-        );
-        assert_eq!(
-            validate_metric_namespace("my_app"),
-            Some("my_app".to_string())
-        );
-        assert_eq!(
-            validate_metric_namespace("my.app"),
-            Some("my.app".to_string())
-        );
-        assert_eq!(
-            validate_metric_namespace("myApp123"),
-            Some("myApp123".to_string())
-        );
-        assert_eq!(
-            validate_metric_namespace("a1.b2_c3"),
-            Some("a1.b2_c3".to_string())
-        );
-    }
-
-    #[test]
-    fn test_validate_metric_namespace_with_whitespace() {
-        assert_eq!(
-            validate_metric_namespace("  myapp  "),
-            Some("myapp".to_string())
-        );
-        assert_eq!(
-            validate_metric_namespace("\tmyapp\n"),
-            Some("myapp".to_string())
-        );
-    }
-
-    #[test]
-    fn test_validate_metric_namespace_empty() {
-        assert_eq!(validate_metric_namespace(""), None);
-        assert_eq!(validate_metric_namespace("   "), None);
-        assert_eq!(validate_metric_namespace("\t\n"), None);
-    }
-
-    #[test]
-    fn test_validate_metric_namespace_invalid_start() {
-        assert_eq!(validate_metric_namespace("1myapp"), None);
-        assert_eq!(validate_metric_namespace("_myapp"), None);
-        assert_eq!(validate_metric_namespace(".myapp"), None);
-        assert_eq!(validate_metric_namespace("-myapp"), None);
-    }
-
-    #[test]
-    fn test_validate_metric_namespace_invalid_characters() {
-        assert_eq!(validate_metric_namespace("my-app"), None);
-        assert_eq!(validate_metric_namespace("my app"), None);
-        assert_eq!(validate_metric_namespace("my@app"), None);
-        assert_eq!(validate_metric_namespace("my#app"), None);
-        assert_eq!(validate_metric_namespace("my$app"), None);
-        assert_eq!(validate_metric_namespace("my!app"), None);
-    }
 }
