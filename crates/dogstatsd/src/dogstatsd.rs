@@ -6,18 +6,20 @@ use std::str::Split;
 
 use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
-use crate::metric::{parse, Metric};
+use crate::metric::{id, parse, Metric};
 use tracing::{debug, error};
 
 pub struct DogStatsD {
     cancel_token: tokio_util::sync::CancellationToken,
     aggregator_handle: AggregatorHandle,
     buffer_reader: BufferReader,
+    metric_namespace: Option<String>,
 }
 
 pub struct DogStatsDConfig {
     pub host: String,
     pub port: u16,
+    pub metric_namespace: Option<String>,
 }
 
 enum BufferReader {
@@ -65,6 +67,7 @@ impl DogStatsD {
             cancel_token,
             aggregator_handle,
             buffer_reader: BufferReader::UdpSocketReader(socket),
+            metric_namespace: config.metric_namespace.clone(),
         }
     }
 
@@ -91,7 +94,14 @@ impl DogStatsD {
         self.insert_metrics(statsd_metric_strings);
     }
 
+    fn prepend_namespace(namespace: &str, metric: &mut Metric) {
+        let new_name = format!("{}.{}", namespace, metric.name);
+        metric.name = ustr::Ustr::from(&new_name);
+        metric.id = id(metric.name, &metric.tags, metric.timestamp);
+    }
+
     fn insert_metrics(&self, msg: Split<char>) {
+        let namespace = self.metric_namespace.as_deref();
         let all_valid_metrics: Vec<Metric> = msg
             .filter(|m| {
                 !m.is_empty()
@@ -115,6 +125,12 @@ impl DogStatsD {
                     }
                     None
                 }
+            })
+            .map(|mut metric| {
+                if let Some(ns) = namespace {
+                    Self::prepend_namespace(ns, &mut metric);
+                }
+                metric
             })
             .collect();
         if !all_valid_metrics.is_empty() {
@@ -141,7 +157,7 @@ mod tests {
             "single_machine_performance.rouster.api.series_v2.payload_size_bytes:269942|d|T1656581409
 single_machine_performance.rouster.metrics_min_timestamp_latency:1426.90870216|d|T1656581409
 single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d|T1656581409
-",
+", None
         )
         .await;
 
@@ -163,9 +179,10 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         let response = setup_and_consume_dogstatsd(
             format!(
                 "metric3:3|c|#tag3:val3,tag4:val4\nmetric1:1|c\nmetric2:2|c|#tag2:val2|T{:}\n",
-                now
+                now,
             )
             .as_str(),
+            None,
         )
         .await;
 
@@ -176,7 +193,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
 
     #[tokio::test]
     async fn test_dogstatsd_single_metric() {
-        let response = setup_and_consume_dogstatsd("metric123:99123|c|T1656581409").await;
+        let response = setup_and_consume_dogstatsd("metric123:99123|c|T1656581409", None).await;
 
         assert_eq!(response.series.len(), 1);
         assert_eq!(response.series[0].series.len(), 1);
@@ -186,7 +203,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     #[tokio::test]
     #[traced_test]
     async fn test_dogstatsd_filter_service_check() {
-        let response = setup_and_consume_dogstatsd("_sc|servicecheck|0").await;
+        let response = setup_and_consume_dogstatsd("_sc|servicecheck|0", None).await;
 
         assert!(!logs_contain("Failed to parse metric"));
         assert_eq!(response.series.len(), 0);
@@ -196,15 +213,29 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     #[tokio::test]
     #[traced_test]
     async fn test_dogstatsd_filter_event() {
-        let response = setup_and_consume_dogstatsd("_e{5,10}:event|test event").await;
+        let response = setup_and_consume_dogstatsd("_e{5,10}:event|test event", None).await;
 
         assert!(!logs_contain("Failed to parse metric"));
         assert_eq!(response.series.len(), 0);
         assert_eq!(response.distributions.len(), 0);
     }
 
+    #[tokio::test]
+    async fn test_dogstatsd_with_namespace() {
+        let response =
+            setup_and_consume_dogstatsd("my.metric:42|c", Some("custom.namespace".to_string()))
+                .await;
+
+        assert_eq!(response.series.len(), 1);
+        assert_eq!(response.series[0].series.len(), 1);
+        assert!(response.series[0].series[0]
+            .metric
+            .starts_with("custom.namespace.my.metric"));
+    }
+
     async fn setup_and_consume_dogstatsd(
         statsd_string: &str,
+        metric_namespace: Option<String>,
     ) -> crate::aggregator_service::FlushResponse {
         // Create the aggregator service
         let (service, handle) =
@@ -222,6 +253,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
                 statsd_string.as_bytes().to_vec(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
             ),
+            metric_namespace,
         };
         dogstatsd.consume_statsd().await;
 
