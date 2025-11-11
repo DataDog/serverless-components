@@ -257,14 +257,14 @@ fn validate_metric_namespace(namespace: &str) -> Option<String> {
     }
 
     // Check remaining characters are valid (alphanumeric, underscore, or period)
-    for ch in chars {
-        if !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.' {
-            error!(
-                "DD_STATSD_METRIC_NAMESPACE contains invalid character '{}' in '{}'. Only ASCII alphanumerics, underscores, and periods are allowed. Ignoring namespace.",
-                ch, trimmed
-            );
-            return None;
-        }
+    if let Some(invalid_char) =
+        chars.find(|&ch| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.')
+    {
+        error!(
+            "DD_STATSD_METRIC_NAMESPACE contains invalid character '{}' in '{}'. Only ASCII alphanumerics, underscores, and periods are allowed. Ignoring namespace.",
+            invalid_char, trimmed
+        );
+        return None;
     }
 
     Some(trimmed.to_string())
