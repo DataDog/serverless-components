@@ -75,16 +75,9 @@ impl ProxyFlusher {
         headers.remove("host");
         headers.remove("content-length");
 
-        // Add headers to the request, including Azure Function-specific tags
-        let mut tag_parts = vec![
-            format!("_dd.origin:azure_functions"),
-            format!(
-                "functionname:{}",
-                self.config.app_name.as_deref().unwrap_or_default()
-            ),
-        ];
-
+        // Add headers to the request
         // Add aas.* tags from Azure App Services metadata if available
+        let mut tag_parts = vec![];
         if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
             let aas_tags = [
                 ("aas.resource.id", aas_metadata.get_resource_id()),
@@ -121,6 +114,13 @@ impl ProxyFlusher {
         } else {
             debug!("Proxy Flusher | No Azure App Services metadata found");
         }
+
+        // Add serverless-specific tags for profiling
+        tag_parts.push(format!(
+            "functionname:{}",
+            self.config.app_name.as_deref().unwrap_or_default()
+        ));
+        tag_parts.push("_dd.origin:azure_functions".to_string());
 
         let additional_tags = tag_parts.join(",");
         match additional_tags.parse() {
