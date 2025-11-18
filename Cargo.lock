@@ -426,10 +426,11 @@ dependencies = [
 [[package]]
 name = "datadog-protos"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/saluki/?rev=c89b58e5784b985819baf11f13f7d35876741222#c89b58e5784b985819baf11f13f7d35876741222"
+source = "git+https://github.com/DataDog/saluki/?rev=f863626dbfe3c59bb390985fa6530b0621c2a0a2#f863626dbfe3c59bb390985fa6530b0621c2a0a2"
 dependencies = [
  "bytes",
  "prost",
+ "prost-types",
  "protobuf",
  "protobuf-codegen",
  "tonic",
@@ -497,7 +498,7 @@ dependencies = [
 [[package]]
 name = "ddsketch-agent"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/saluki/?rev=c89b58e5784b985819baf11f13f7d35876741222#c89b58e5784b985819baf11f13f7d35876741222"
+source = "git+https://github.com/DataDog/saluki/?rev=f863626dbfe3c59bb390985fa6530b0621c2a0a2#f863626dbfe3c59bb390985fa6530b0621c2a0a2"
 dependencies = [
  "datadog-protos",
  "float-cmp",
@@ -2673,9 +2674,9 @@ dependencies = [
 
 [[package]]
 name = "tonic"
-version = "0.12.3"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877c5b330756d856ffcc4553ab34a5684481ade925ecc54bcd1bf02b1d0d4d52"
+checksum = "7e581ba15a835f4d9ea06c55ab1bd4dce26fc53752c69a04aac00703bfb49ba9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2694,9 +2695,9 @@ dependencies = [
 
 [[package]]
 name = "tonic-build"
-version = "0.12.3"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9557ce109ea773b399c9b9e5dca39294110b74f1f342cb347a80d1fce8c26a11"
+checksum = "eac6f67be712d12f0b41328db3137e0d0757645d8904b4cb7d51cd9c2279e847"
 dependencies = [
  "prettyplease",
  "proc-macro2",
