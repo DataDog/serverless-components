@@ -1,7 +1,7 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use ddcommon::hyper_migration;
+use libdd_common::hyper_migration;
 use hyper::{
     header,
     http::{self, HeaderMap},
@@ -113,7 +113,7 @@ pub fn verify_request_content_length(
 
 #[cfg(test)]
 mod tests {
-    use ddcommon::hyper_migration;
+    use libdd_common::hyper_migration;
     use http_body_util::BodyExt;
     use hyper::header;
     use hyper::HeaderMap;

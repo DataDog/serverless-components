@@ -4,16 +4,16 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ddcommon::hyper_migration;
+use libdd_common::hyper_migration;
 use hyper::{http, StatusCode};
 use tokio::sync::mpsc::Sender;
 use tracing::debug;
 
 use datadog_trace_obfuscation::obfuscate::obfuscate_span;
-use datadog_trace_protobuf::pb;
-use datadog_trace_utils::trace_utils::{self};
-use datadog_trace_utils::trace_utils::{EnvironmentType, SendData};
-use datadog_trace_utils::tracer_payload::{TraceChunkProcessor, TracerPayloadCollection};
+use libdd_trace_protobuf::pb;
+use libdd_trace_utils::trace_utils::{self};
+use libdd_trace_utils::trace_utils::{EnvironmentType, SendData};
+use libdd_trace_utils::tracer_payload::{TraceChunkProcessor, TracerPayloadCollection};
 
 use crate::{
     config::Config,
@@ -167,13 +167,13 @@ mod tests {
         config::{Config, Tags},
         trace_processor::{self, TraceProcessor, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY},
     };
-    use datadog_trace_protobuf::pb;
-    use datadog_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
-    use datadog_trace_utils::trace_utils::MiniAgentMetadata;
-    use datadog_trace_utils::{
+    use libdd_trace_protobuf::pb;
+    use libdd_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
+    use libdd_trace_utils::trace_utils::MiniAgentMetadata;
+    use libdd_trace_utils::{
         test_utils::create_test_json_span, trace_utils, tracer_payload::TracerPayloadCollection,
     };
-    use ddcommon::{hyper_migration, Endpoint};
+    use libdd_common::{hyper_migration, Endpoint};
 
     fn get_current_timestamp_nanos() -> i64 {
         UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64

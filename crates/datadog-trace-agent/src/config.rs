@@ -1,7 +1,7 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use ddcommon::Endpoint;
+use libdd_common::Endpoint;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
@@ -9,11 +9,11 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 
 use datadog_trace_obfuscation::obfuscation_config;
-use datadog_trace_utils::config_utils::{
+use libdd_trace_utils::config_utils::{
     read_cloud_env, trace_intake_url, trace_intake_url_prefixed, trace_stats_url,
     trace_stats_url_prefixed,
 };
-use datadog_trace_utils::trace_utils;
+use libdd_trace_utils::trace_utils;
 
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 

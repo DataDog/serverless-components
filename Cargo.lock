@@ -441,9 +441,9 @@ name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
  "datadog-trace-agent",
- "datadog-trace-protobuf",
- "datadog-trace-utils",
  "dogstatsd",
+ "libdd-trace-protobuf",
+ "libdd-trace-utils",
  "tokio",
  "tokio-util",
  "tracing",
@@ -458,15 +458,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "datadog-trace-normalization",
  "datadog-trace-obfuscation",
- "datadog-trace-protobuf",
- "datadog-trace-utils",
- "ddcommon",
  "duplicate",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libdd-common",
+ "libdd-trace-normalization",
+ "libdd-trace-protobuf",
+ "libdd-trace-utils",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -478,104 +478,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "datadog-trace-normalization"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "anyhow",
- "datadog-trace-protobuf",
-]
-
-[[package]]
 name = "datadog-trace-obfuscation"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
+version = "24.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
 dependencies = [
  "anyhow",
- "datadog-trace-protobuf",
- "datadog-trace-utils",
- "ddcommon",
+ "libdd-common",
+ "libdd-trace-protobuf",
+ "libdd-trace-utils",
  "log",
  "percent-encoding",
  "regex",
  "serde",
  "serde_json",
  "url",
-]
-
-[[package]]
-name = "datadog-trace-protobuf"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "prost",
- "serde",
- "serde_bytes",
-]
-
-[[package]]
-name = "datadog-trace-utils"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "anyhow",
- "bytes",
- "cargo-platform",
- "cargo_metadata",
- "datadog-trace-normalization",
- "datadog-trace-protobuf",
- "ddcommon",
- "flate2",
- "futures",
- "http-body-util",
- "httpmock",
- "hyper",
- "hyper-http-proxy",
- "prost",
- "rand 0.8.5",
- "rmp",
- "rmp-serde",
- "rmpv",
- "serde",
- "serde_json",
- "tinybytes",
- "tokio",
- "tracing",
- "urlencoding",
- "zstd",
-]
-
-[[package]]
-name = "ddcommon"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "anyhow",
- "cc",
- "const_format",
- "futures",
- "futures-core",
- "futures-util",
- "hex",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "libc",
- "nix",
- "pin-project",
- "regex",
- "rustls",
- "rustls-native-certs",
- "serde",
- "static_assertions",
- "thiserror 1.0.69",
- "tokio",
- "tokio-rustls",
- "tower-service",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -944,6 +860,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
 
 [[package]]
+name = "hashbrown"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5419bdc4f6a9207fbeba6d11b604d481addf78ecd10c11ad51e76c2f6482748d"
+
+[[package]]
 name = "headers"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1093,26 +1015,6 @@ dependencies = [
  "smallvec",
  "tokio",
  "want",
-]
-
-[[package]]
-name = "hyper-http-proxy"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ad4b0a1e37510028bc4ba81d0e38d239c39671b0f0ce9e02dfa93a8133f7c08"
-dependencies = [
- "bytes",
- "futures-util",
- "headers",
- "http",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "pin-project-lite",
- "tokio",
- "tokio-rustls",
- "tower-service",
- "webpki-roots",
 ]
 
 [[package]]
@@ -1294,12 +1196,12 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.8.0"
+version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3954d50fe15b02142bf25d3b8bdadb634ec3948f103d04ffe3031bc8fe9d7058"
+checksum = "6717a8d2a5a929a1a2eb43a12812498ed141a0bcfb7e8f7844fbdbe4303bba9f"
 dependencies = [
  "equivalent",
- "hashbrown 0.15.2",
+ "hashbrown 0.16.0",
 ]
 
 [[package]]
@@ -1368,6 +1270,98 @@ name = "libc"
 version = "0.2.171"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
+
+[[package]]
+name = "libdd-common"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "anyhow",
+ "cc",
+ "const_format",
+ "futures",
+ "futures-core",
+ "futures-util",
+ "hex",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "libc",
+ "nix",
+ "pin-project",
+ "regex",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "static_assertions",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "libdd-tinybytes"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "libdd-trace-normalization"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "anyhow",
+ "libdd-trace-protobuf",
+]
+
+[[package]]
+name = "libdd-trace-protobuf"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "prost",
+ "serde",
+ "serde_bytes",
+]
+
+[[package]]
+name = "libdd-trace-utils"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "cargo-platform",
+ "cargo_metadata",
+ "flate2",
+ "futures",
+ "http-body-util",
+ "httpmock",
+ "hyper",
+ "indexmap",
+ "libdd-common",
+ "libdd-tinybytes",
+ "libdd-trace-normalization",
+ "libdd-trace-protobuf",
+ "prost",
+ "rand 0.8.5",
+ "rmp",
+ "rmp-serde",
+ "rmpv",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "urlencoding",
+ "zstd",
+]
 
 [[package]]
 name = "libloading"
@@ -2588,14 +2582,6 @@ checksum = "8b9ef9bad013ada3808854ceac7b46812a6465ba368859a37e2100283d2d719c"
 dependencies = [
  "cfg-if",
  "once_cell",
-]
-
-[[package]]
-name = "tinybytes"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "serde",
 ]
 
 [[package]]

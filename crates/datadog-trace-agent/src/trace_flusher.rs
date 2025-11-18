@@ -6,8 +6,8 @@ use std::{sync::Arc, time};
 use tokio::sync::{mpsc::Receiver, Mutex};
 use tracing::{debug, error};
 
-use datadog_trace_utils::trace_utils;
-use datadog_trace_utils::trace_utils::SendData;
+use libdd_trace_utils::trace_utils;
+use libdd_trace_utils::trace_utils::SendData;
 
 use crate::aggregator::TraceAggregator;
 use crate::config::Config;
@@ -101,6 +101,7 @@ impl TraceFlusher for ServerlessTraceFlusher {
         let traces_clone = traces.clone();
 
         for coalesced_traces in trace_utils::coalesce_send_data(traces) {
+            // TODO: create http client, if proxy_url use that
             match coalesced_traces
                 .send_proxy(self.config.proxy_url.as_deref())
                 .await

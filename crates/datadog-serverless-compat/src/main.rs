@@ -23,7 +23,7 @@ use datadog_trace_agent::{
     trace_processor,
 };
 
-use datadog_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
+use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use dogstatsd::{
     aggregator_service::{AggregatorHandle, AggregatorService},
