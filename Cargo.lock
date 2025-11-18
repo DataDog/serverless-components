@@ -443,7 +443,6 @@ version = "0.1.0"
 dependencies = [
  "datadog-trace-agent",
  "dogstatsd",
- "libdd-trace-protobuf",
  "libdd-trace-utils",
  "tokio",
  "tokio-util",
@@ -466,7 +465,6 @@ dependencies = [
  "hyper-http-proxy",
  "hyper-util",
  "libdd-common",
- "libdd-trace-normalization",
  "libdd-trace-protobuf",
  "libdd-trace-utils",
  "rmp-serde",

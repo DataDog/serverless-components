@@ -26,7 +26,6 @@ libdd-trace-protobuf = { git = "https://github.com/DataDog/libdatadog/", rev = "
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "6e559d75fd184d5cc46c0caf8b78c2b31a36af5e", features = [
     "mini_agent",
 ] }
-libdd-trace-normalization = { git = "https://github.com/DataDog/libdatadog/", rev = "6e559d75fd184d5cc46c0caf8b78c2b31a36af5e" } # TODO: can remove this?
 datadog-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog/", rev = "6e559d75fd184d5cc46c0caf8b78c2b31a36af5e" }
 
 [dev-dependencies]
