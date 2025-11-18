@@ -6,6 +6,7 @@ use std::{sync::Arc, time};
 use tokio::sync::{mpsc::Receiver, Mutex};
 use tracing::{debug, error};
 
+use libdd_common::{connector, hyper_migration};
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
@@ -101,12 +102,28 @@ impl TraceFlusher for ServerlessTraceFlusher {
         let traces_clone = traces.clone();
 
         for coalesced_traces in trace_utils::coalesce_send_data(traces) {
-            // TODO: create http client, if proxy_url use that
-            match coalesced_traces
-                .send_proxy(self.config.proxy_url.as_deref())
-                .await
-                .last_result
-            {
+            let send_result = if let Some(proxy_url) = self.config.proxy_url.as_deref() {
+                let proxy = hyper_http_proxy::Proxy::new(
+                    hyper_http_proxy::Intercept::Https,
+                    proxy_url.parse().unwrap(),
+                );
+
+                let proxy_connector = hyper_http_proxy::ProxyConnector::from_proxy(
+                    connector::Connector::default(),
+                    proxy,
+                )
+                .unwrap();
+
+                let client = hyper_migration::client_builder().build(proxy_connector);
+
+                coalesced_traces.send(&client).await.last_result
+            } else {
+                let client = hyper_migration::new_default_client();
+
+                coalesced_traces.send(&client).await.last_result
+            };
+
+            match send_result {
                 Ok(_) => debug!("Successfully flushed traces"),
                 Err(e) => {
                     error!("Error sending trace: {e:?}");
