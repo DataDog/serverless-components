@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use libdd_common::hyper_migration;
 use hyper::{http, StatusCode};
+use libdd_common::hyper_migration;
 use tokio::sync::mpsc::Sender;
 use tracing::debug;
 
@@ -167,13 +167,13 @@ mod tests {
         config::{Config, Tags},
         trace_processor::{self, TraceProcessor, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY},
     };
+    use libdd_common::{hyper_migration, Endpoint};
     use libdd_trace_protobuf::pb;
     use libdd_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
     use libdd_trace_utils::trace_utils::MiniAgentMetadata;
     use libdd_trace_utils::{
         test_utils::create_test_json_span, trace_utils, tracer_payload::TracerPayloadCollection,
     };
-    use libdd_common::{hyper_migration, Endpoint};
 
     fn get_current_timestamp_nanos() -> i64 {
         UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64

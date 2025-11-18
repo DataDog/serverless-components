@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
-use libdd_common::hyper_migration;
 use http_body_util::BodyExt;
 use hyper::{Method, Request};
+use libdd_common::hyper_migration;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -354,9 +354,9 @@ async fn ensure_azure_function_environment(
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use libdd_trace_utils::trace_utils;
-    use libdd_common::hyper_migration;
     use hyper::{body::Bytes, Response, StatusCode};
+    use libdd_common::hyper_migration;
+    use libdd_trace_utils::trace_utils;
     use serde_json::json;
     use serial_test::serial;
     use std::{env, fs, path::Path, time::Duration};

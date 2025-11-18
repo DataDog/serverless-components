@@ -1,9 +1,9 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use libdd_common::hyper_migration;
 use hyper::service::service_fn;
 use hyper::{http, Method, Response, StatusCode};
+use libdd_common::hyper_migration;
 use serde_json::json;
 use std::io;
 use std::net::SocketAddr;
