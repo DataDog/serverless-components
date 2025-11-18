@@ -103,23 +103,37 @@ impl TraceFlusher for ServerlessTraceFlusher {
 
         for coalesced_traces in trace_utils::coalesce_send_data(traces) {
             let send_result = if let Some(proxy_url) = self.config.proxy_url.as_deref() {
-                let proxy = hyper_http_proxy::Proxy::new(
-                    hyper_http_proxy::Intercept::Https,
-                    proxy_url.parse().unwrap(),
-                );
-
-                let proxy_connector = hyper_http_proxy::ProxyConnector::from_proxy(
-                    connector::Connector::default(),
-                    proxy,
-                )
-                .unwrap();
-
-                let client = hyper_migration::client_builder().build(proxy_connector);
-
-                coalesced_traces.send(&client).await.last_result
+                match proxy_url.parse::<hyper::Uri>() {
+                    Ok(proxy_addr) => {
+                        match hyper_http_proxy::ProxyConnector::from_proxy(
+                            connector::Connector::default(),
+                            hyper_http_proxy::Proxy::new(
+                                hyper_http_proxy::Intercept::Https,
+                                proxy_addr,
+                            ),
+                        ) {
+                            Ok(proxy_connector) => {
+                                let client =
+                                    hyper_migration::client_builder().build(proxy_connector);
+                                coalesced_traces.send(&client).await.last_result
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to build proxy connector: {e:?}, using default client"
+                                );
+                                let client = hyper_migration::new_default_client();
+                                coalesced_traces.send(&client).await.last_result
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Invalid proxy URL: {e:?}, using default client");
+                        let client = hyper_migration::new_default_client();
+                        coalesced_traces.send(&client).await.last_result
+                    }
+                }
             } else {
                 let client = hyper_migration::new_default_client();
-
                 coalesced_traces.send(&client).await.last_result
             };
 
@@ -127,7 +141,7 @@ impl TraceFlusher for ServerlessTraceFlusher {
                 Ok(_) => debug!("Successfully flushed traces"),
                 Err(e) => {
                     error!("Error sending trace: {e:?}");
-                    // Return the original traces for retry
+                    // Return original traces for retry
                     return Some(traces_clone);
                 }
             }
