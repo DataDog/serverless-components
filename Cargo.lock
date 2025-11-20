@@ -447,7 +447,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-core",
  "tracing-subscriber",
  "zstd",
 ]
@@ -473,7 +472,6 @@ dependencies = [
  "serial_test",
  "tempfile",
  "tokio",
- "tower",
  "tracing",
 ]
 

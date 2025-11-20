@@ -12,7 +12,6 @@ dogstatsd = { path = "../dogstatsd", default-features = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", default-features = false }
 tracing = { version = "0.1", default-features = false }
-tracing-core = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = [
     "std",
     "registry",
