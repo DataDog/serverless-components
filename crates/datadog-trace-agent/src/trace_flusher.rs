@@ -101,12 +101,14 @@ impl TraceFlusher for ServerlessTraceFlusher {
         // Since we return the original traces on error, we need to clone them before coalescing
         let traces_clone = traces.clone();
 
-        let Ok(http_client) =
-            ServerlessTraceFlusher::get_http_client(self.config.proxy_url.as_ref())
-        else {
-            error!("Failed to create HTTP client");
-            return None;
-        };
+        let http_client =
+            match ServerlessTraceFlusher::get_http_client(self.config.proxy_url.as_ref()) {
+                Ok(client) => client,
+                Err(e) => {
+                    error!("Failed to create HTTP client: {e:?}");
+                    return None;
+                }
+            };
 
         for coalesced_traces in trace_utils::coalesce_send_data(traces) {
             match coalesced_traces.send(&http_client).await.last_result {
