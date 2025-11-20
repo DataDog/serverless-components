@@ -1,9 +1,9 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use ddcommon::hyper_migration;
 use hyper::service::service_fn;
 use hyper::{http, Method, Response, StatusCode};
+use libdd_common::hyper_migration;
 use serde_json::json;
 use std::io;
 use std::net::SocketAddr;
@@ -14,9 +14,9 @@ use tracing::{debug, error};
 
 use crate::http_utils::log_and_create_http_response;
 use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
-use datadog_trace_protobuf::pb;
-use datadog_trace_utils::trace_utils;
-use datadog_trace_utils::trace_utils::SendData;
+use libdd_trace_protobuf::pb;
+use libdd_trace_utils::trace_utils;
+use libdd_trace_utils::trace_utils::SendData;
 
 const MINI_AGENT_PORT: usize = 8126;
 const TRACE_ENDPOINT_PATH: &str = "/v0.4/traces";

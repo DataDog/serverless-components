@@ -1,7 +1,7 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use datadog_trace_utils::send_data::SendData;
+use libdd_trace_utils::send_data::SendData;
 use std::collections::VecDeque;
 
 /// Maximum content size per payload uncompressed in bytes,
@@ -69,10 +69,10 @@ impl TraceAggregator {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use datadog_trace_utils::{
+    use libdd_common::Endpoint;
+    use libdd_trace_utils::{
         trace_utils::TracerHeaderTags, tracer_payload::TracerPayloadCollection,
     };
-    use ddcommon::Endpoint;
 
     use super::*;
 

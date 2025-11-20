@@ -7,14 +7,18 @@ description = "Binary to run trace-agent and dogstatsd servers in Serverless env
 
 [dependencies]
 datadog-trace-agent = { path = "../datadog-trace-agent" }
-datadog-trace-protobuf = { git = "https://github.com/DataDog/libdatadog/", rev = "902b6a5296963b96c4faf355f6c53eec263b7568" }
-datadog-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "902b6a5296963b96c4faf355f6c53eec263b7568" }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog/", rev = "6e559d75fd184d5cc46c0caf8b78c2b31a36af5e" }
 dogstatsd = { path = "../dogstatsd", default-features = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"]}
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", default-features = false }
 tracing = { version = "0.1", default-features = false }
-tracing-core = { version = "0.1", default-features = false }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry", "fmt", "env-filter", "tracing-log"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "std",
+    "registry",
+    "fmt",
+    "env-filter",
+    "tracing-log",
+] }
 zstd = { version = "0.13.3", default-features = false }
 
 [[bin]]

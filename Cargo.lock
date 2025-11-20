@@ -426,10 +426,11 @@ dependencies = [
 [[package]]
 name = "datadog-protos"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/saluki/?rev=c89b58e5784b985819baf11f13f7d35876741222#c89b58e5784b985819baf11f13f7d35876741222"
+source = "git+https://github.com/DataDog/saluki/?rev=f863626dbfe3c59bb390985fa6530b0621c2a0a2#f863626dbfe3c59bb390985fa6530b0621c2a0a2"
 dependencies = [
  "bytes",
  "prost",
+ "prost-types",
  "protobuf",
  "protobuf-codegen",
  "tonic",
@@ -441,13 +442,11 @@ name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
  "datadog-trace-agent",
- "datadog-trace-protobuf",
- "datadog-trace-utils",
  "dogstatsd",
+ "libdd-trace-utils",
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-core",
  "tracing-subscriber",
  "zstd",
 ]
@@ -458,43 +457,33 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "datadog-trace-normalization",
  "datadog-trace-obfuscation",
- "datadog-trace-protobuf",
- "datadog-trace-utils",
- "ddcommon",
  "duplicate",
  "http-body-util",
  "hyper",
+ "hyper-http-proxy",
  "hyper-util",
+ "libdd-common",
+ "libdd-trace-protobuf",
+ "libdd-trace-utils",
  "rmp-serde",
  "serde",
  "serde_json",
  "serial_test",
  "tempfile",
  "tokio",
- "tower",
  "tracing",
 ]
 
 [[package]]
-name = "datadog-trace-normalization"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "anyhow",
- "datadog-trace-protobuf",
-]
-
-[[package]]
 name = "datadog-trace-obfuscation"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
+version = "24.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
 dependencies = [
  "anyhow",
- "datadog-trace-protobuf",
- "datadog-trace-utils",
- "ddcommon",
+ "libdd-common",
+ "libdd-trace-protobuf",
+ "libdd-trace-utils",
  "log",
  "percent-encoding",
  "regex",
@@ -504,84 +493,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "datadog-trace-protobuf"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "prost",
- "serde",
- "serde_bytes",
-]
-
-[[package]]
-name = "datadog-trace-utils"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "anyhow",
- "bytes",
- "cargo-platform",
- "cargo_metadata",
- "datadog-trace-normalization",
- "datadog-trace-protobuf",
- "ddcommon",
- "flate2",
- "futures",
- "http-body-util",
- "httpmock",
- "hyper",
- "hyper-http-proxy",
- "prost",
- "rand 0.8.5",
- "rmp",
- "rmp-serde",
- "rmpv",
- "serde",
- "serde_json",
- "tinybytes",
- "tokio",
- "tracing",
- "urlencoding",
- "zstd",
-]
-
-[[package]]
-name = "ddcommon"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "anyhow",
- "cc",
- "const_format",
- "futures",
- "futures-core",
- "futures-util",
- "hex",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "libc",
- "nix",
- "pin-project",
- "regex",
- "rustls",
- "rustls-native-certs",
- "serde",
- "static_assertions",
- "thiserror 1.0.69",
- "tokio",
- "tokio-rustls",
- "tower-service",
- "windows-sys 0.52.0",
-]
-
-[[package]]
 name = "ddsketch-agent"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/saluki/?rev=c89b58e5784b985819baf11f13f7d35876741222#c89b58e5784b985819baf11f13f7d35876741222"
+source = "git+https://github.com/DataDog/saluki/?rev=f863626dbfe3c59bb390985fa6530b0621c2a0a2#f863626dbfe3c59bb390985fa6530b0621c2a0a2"
 dependencies = [
  "datadog-protos",
  "float-cmp",
@@ -944,6 +858,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
 
 [[package]]
+name = "hashbrown"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5419bdc4f6a9207fbeba6d11b604d481addf78ecd10c11ad51e76c2f6482748d"
+
+[[package]]
 name = "headers"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1294,12 +1214,12 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.8.0"
+version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3954d50fe15b02142bf25d3b8bdadb634ec3948f103d04ffe3031bc8fe9d7058"
+checksum = "6717a8d2a5a929a1a2eb43a12812498ed141a0bcfb7e8f7844fbdbe4303bba9f"
 dependencies = [
  "equivalent",
- "hashbrown 0.15.2",
+ "hashbrown 0.16.0",
 ]
 
 [[package]]
@@ -1368,6 +1288,98 @@ name = "libc"
 version = "0.2.171"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
+
+[[package]]
+name = "libdd-common"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "anyhow",
+ "cc",
+ "const_format",
+ "futures",
+ "futures-core",
+ "futures-util",
+ "hex",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "libc",
+ "nix",
+ "pin-project",
+ "regex",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "static_assertions",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "libdd-tinybytes"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "libdd-trace-normalization"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "anyhow",
+ "libdd-trace-protobuf",
+]
+
+[[package]]
+name = "libdd-trace-protobuf"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "prost",
+ "serde",
+ "serde_bytes",
+]
+
+[[package]]
+name = "libdd-trace-utils"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog/?rev=6e559d75fd184d5cc46c0caf8b78c2b31a36af5e#6e559d75fd184d5cc46c0caf8b78c2b31a36af5e"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "cargo-platform",
+ "cargo_metadata",
+ "flate2",
+ "futures",
+ "http-body-util",
+ "httpmock",
+ "hyper",
+ "indexmap",
+ "libdd-common",
+ "libdd-tinybytes",
+ "libdd-trace-normalization",
+ "libdd-trace-protobuf",
+ "prost",
+ "rand 0.8.5",
+ "rmp",
+ "rmp-serde",
+ "rmpv",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "urlencoding",
+ "zstd",
+]
 
 [[package]]
 name = "libloading"
@@ -2591,14 +2603,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tinybytes"
-version = "21.0.0"
-source = "git+https://github.com/DataDog/libdatadog/?rev=902b6a5296963b96c4faf355f6c53eec263b7568#902b6a5296963b96c4faf355f6c53eec263b7568"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "tinystr"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2687,9 +2691,9 @@ dependencies = [
 
 [[package]]
 name = "tonic"
-version = "0.12.3"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877c5b330756d856ffcc4553ab34a5684481ade925ecc54bcd1bf02b1d0d4d52"
+checksum = "7e581ba15a835f4d9ea06c55ab1bd4dce26fc53752c69a04aac00703bfb49ba9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2708,9 +2712,9 @@ dependencies = [
 
 [[package]]
 name = "tonic-build"
-version = "0.12.3"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9557ce109ea773b399c9b9e5dca39294110b74f1f342cb347a80d1fce8c26a11"
+checksum = "eac6f67be712d12f0b41328db3137e0d0757645d8904b4cb7d51cd9c2279e847"
 dependencies = [
  "prettyplease",
  "proc-macro2",

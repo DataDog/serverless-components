@@ -5,13 +5,13 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
-use ddcommon::hyper_migration;
 use hyper::{http, StatusCode};
+use libdd_common::hyper_migration;
 use tokio::sync::mpsc::Sender;
 use tracing::debug;
 
-use datadog_trace_protobuf::pb;
-use datadog_trace_utils::stats_utils;
+use libdd_trace_protobuf::pb;
+use libdd_trace_utils::stats_utils;
 
 use crate::config::Config;
 use crate::http_utils::{self, log_and_create_http_response};
