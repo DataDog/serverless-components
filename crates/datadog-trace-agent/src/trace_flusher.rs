@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
-use std::{sync::Arc, time};
+use std::{error::Error, sync::Arc, time};
 use tokio::sync::{mpsc::Receiver, Mutex};
 use tracing::{debug, error};
 
-use libdd_common::{connector, hyper_migration};
+use libdd_common::{hyper_migration, GenericHttpClient};
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
@@ -101,51 +101,47 @@ impl TraceFlusher for ServerlessTraceFlusher {
         // Since we return the original traces on error, we need to clone them before coalescing
         let traces_clone = traces.clone();
 
-        for coalesced_traces in trace_utils::coalesce_send_data(traces) {
-            let send_result = if let Some(proxy_url) = self.config.proxy_url.as_deref() {
-                match proxy_url.parse::<hyper::Uri>() {
-                    Ok(proxy_addr) => {
-                        match hyper_http_proxy::ProxyConnector::from_proxy(
-                            connector::Connector::default(),
-                            hyper_http_proxy::Proxy::new(
-                                hyper_http_proxy::Intercept::Https,
-                                proxy_addr,
-                            ),
-                        ) {
-                            Ok(proxy_connector) => {
-                                let client =
-                                    hyper_migration::client_builder().build(proxy_connector);
-                                coalesced_traces.send(&client).await.last_result
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed to build proxy connector: {e:?}, using default client"
-                                );
-                                let client = hyper_migration::new_default_client();
-                                coalesced_traces.send(&client).await.last_result
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("Invalid proxy URL: {e:?}, using default client");
-                        let client = hyper_migration::new_default_client();
-                        coalesced_traces.send(&client).await.last_result
-                    }
-                }
-            } else {
-                let client = hyper_migration::new_default_client();
-                coalesced_traces.send(&client).await.last_result
-            };
+        let Ok(http_client) =
+            ServerlessTraceFlusher::get_http_client(self.config.proxy_url.as_ref())
+        else {
+            error!("Failed to create HTTP client");
+            return None;
+        };
 
-            match send_result {
+        for coalesced_traces in trace_utils::coalesce_send_data(traces) {
+            match coalesced_traces.send(&http_client).await.last_result {
                 Ok(_) => debug!("Successfully flushed traces"),
                 Err(e) => {
                     error!("Error sending trace: {e:?}");
-                    // Return original traces for retry
+                    // Return the original traces for retry
                     return Some(traces_clone);
                 }
             }
         }
         None
+    }
+}
+
+impl ServerlessTraceFlusher {
+    fn get_http_client(
+        proxy_https: Option<&String>,
+    ) -> Result<
+        GenericHttpClient<hyper_http_proxy::ProxyConnector<libdd_common::connector::Connector>>,
+        Box<dyn Error>,
+    > {
+        if let Some(proxy) = proxy_https {
+            let proxy =
+                hyper_http_proxy::Proxy::new(hyper_http_proxy::Intercept::Https, proxy.parse()?);
+            let proxy_connector = hyper_http_proxy::ProxyConnector::from_proxy(
+                libdd_common::connector::Connector::default(),
+                proxy,
+            )?;
+            Ok(hyper_migration::client_builder().build(proxy_connector))
+        } else {
+            let proxy_connector = hyper_http_proxy::ProxyConnector::new(
+                libdd_common::connector::Connector::default(),
+            )?;
+            Ok(hyper_migration::client_builder().build(proxy_connector))
+        }
     }
 }
