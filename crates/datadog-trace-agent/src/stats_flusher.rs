@@ -6,8 +6,8 @@ use std::{sync::Arc, time};
 use tokio::sync::{mpsc::Receiver, Mutex};
 use tracing::{debug, error};
 
-use datadog_trace_protobuf::pb;
-use datadog_trace_utils::stats_utils;
+use libdd_trace_protobuf::pb;
+use libdd_trace_utils::stats_utils;
 
 use crate::config::Config;
 
