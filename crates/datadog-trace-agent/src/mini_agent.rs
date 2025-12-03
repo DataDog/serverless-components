@@ -40,7 +40,6 @@ pub struct MiniAgent {
 }
 
 impl MiniAgent {
-
     pub async fn start_mini_agent(&self) -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
 
