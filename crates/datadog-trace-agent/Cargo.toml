@@ -15,6 +15,7 @@ hyper-http-proxy = { version = "1.1.0", default-features = false, features = [
 ] }
 hyper-util = { version = "0.1", features = ["service"] }
 http-body-util = "0.1"
+thiserror = { version = "1.0", default-features = false }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 async-trait = "0.1.64"
 tracing = { version = "0.1", default-features = false }
@@ -26,6 +27,7 @@ libdd-trace-protobuf = { git = "https://github.com/DataDog/libdatadog", rev = "4
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "435107c245112397914935c0f7148a18b91cafc6", features = [
     "mini_agent",
 ] }
+libdd-trace-stats = { git = "https://github.com/DataDog/libdatadog", rev = "435107c245112397914935c0f7148a18b91cafc6" }
 
 [dev-dependencies]
 rmp-serde = "1.1.1"
