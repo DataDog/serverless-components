@@ -13,7 +13,10 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, error};
 
 use crate::http_utils::log_and_create_http_response;
-use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
+use crate::{
+    config, env_verifier, stats_concentrator_service, stats_flusher, stats_generator,
+    stats_processor, trace_flusher, trace_processor,
+};
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
@@ -32,9 +35,12 @@ pub struct MiniAgent {
     pub stats_processor: Arc<dyn stats_processor::StatsProcessor + Send + Sync>,
     pub stats_flusher: Arc<dyn stats_flusher::StatsFlusher + Send + Sync>,
     pub env_verifier: Arc<dyn env_verifier::EnvVerifier + Send + Sync>,
+    pub stats_concentrator: stats_concentrator_service::StatsConcentratorHandle,
+    pub stats_generator: Arc<stats_generator::StatsGenerator>,
 }
 
 impl MiniAgent {
+
     pub async fn start_mini_agent(&self) -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
 
@@ -57,8 +63,27 @@ impl MiniAgent {
         // setup a channel to send processed traces to our flusher. tx is passed through each
         // endpoint_handler to the trace processor, which uses it to send de-serialized
         // processed trace payloads to our trace flusher.
-        let (trace_tx, trace_rx): (Sender<SendData>, Receiver<SendData>) =
+        let (trace_tx_internal, trace_rx): (Sender<SendData>, Receiver<SendData>) =
             mpsc::channel(TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE);
+
+        // Create an intercepting channel that generates stats from traces
+        let (trace_tx, mut trace_rx_intercept): (Sender<SendData>, Receiver<SendData>) =
+            mpsc::channel(TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE);
+
+        // Intercept traces to generate stats, then forward to trace flusher
+        let stats_generator = self.stats_generator.clone();
+        tokio::spawn(async move {
+            while let Some(send_data) = trace_rx_intercept.recv().await {
+                // Generate stats from the trace payload
+                if let Err(e) = stats_generator.send(send_data.get_payloads()) {
+                    error!("Failed to generate stats from traces: {e}");
+                }
+                // Forward to trace flusher
+                if let Err(e) = trace_tx_internal.send(send_data).await {
+                    error!("Failed to forward traces to flusher: {e}");
+                }
+            }
+        });
 
         // start our trace flusher. receives trace payloads and handles buffering + deciding when to
         // flush to backend.
@@ -69,10 +94,26 @@ impl MiniAgent {
         });
 
         // channels to send processed stats to our stats flusher.
-        let (stats_tx, stats_rx): (
+        let (stats_tx, stats_rx_all): (
             Sender<pb::ClientStatsPayload>,
             Receiver<pb::ClientStatsPayload>,
         ) = mpsc::channel(STATS_PAYLOAD_CHANNEL_BUFFER_SIZE);
+
+        // Channel for stats from concentrator (generated from traces)
+        let (stats_tx_generated, mut stats_rx_generated): (
+            Sender<pb::ClientStatsPayload>,
+            Receiver<pb::ClientStatsPayload>,
+        ) = mpsc::channel(STATS_PAYLOAD_CHANNEL_BUFFER_SIZE);
+
+        // Merge both stats channels into one for the flusher
+        let stats_tx_clone = stats_tx.clone();
+        tokio::spawn(async move {
+            while let Some(stats) = stats_rx_generated.recv().await {
+                if let Err(e) = stats_tx_clone.send(stats).await {
+                    error!("Failed to forward generated stats: {e}");
+                }
+            }
+        });
 
         // start our stats flusher.
         let stats_flusher = self.stats_flusher.clone();
@@ -80,8 +121,31 @@ impl MiniAgent {
         tokio::spawn(async move {
             let stats_flusher = stats_flusher.clone();
             stats_flusher
-                .start_stats_flusher(stats_config, stats_rx)
+                .start_stats_flusher(stats_config, stats_rx_all)
                 .await;
+        });
+
+        // Start periodic stats flush task
+        let stats_concentrator = self.stats_concentrator.clone();
+        let flush_interval = self.config.stats_flush_interval;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(flush_interval)).await;
+                match stats_concentrator.flush(false).await {
+                    Ok(Some(stats_payload)) => {
+                        debug!("Flushed generated stats from concentrator");
+                        if let Err(e) = stats_tx_generated.send(stats_payload).await {
+                            error!("Failed to send flushed stats: {e}");
+                        }
+                    }
+                    Ok(None) => {
+                        debug!("No generated stats to flush");
+                    }
+                    Err(e) => {
+                        error!("Error flushing generated stats: {e}");
+                    }
+                }
+            }
         });
 
         // setup our hyper http server, where the endpoint_handler handles incoming requests

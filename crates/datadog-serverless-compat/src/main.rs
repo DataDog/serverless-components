@@ -18,7 +18,8 @@ use zstd::zstd_safe::CompressionLevel;
 
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
-    config, env_verifier, mini_agent, stats_flusher, stats_processor,
+    config, env_verifier, mini_agent, stats_concentrator_service, stats_flusher, stats_generator,
+    stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
 };
@@ -124,6 +125,14 @@ pub async fn main() {
         Arc::clone(&config),
     ));
 
+    // Initialize stats concentrator service and generator
+    let (stats_concentrator_service, stats_concentrator_handle) =
+        stats_concentrator_service::StatsConcentratorService::new(config.clone());
+    tokio::spawn(stats_concentrator_service.run());
+    let stats_generator = Arc::new(stats_generator::StatsGenerator::new(
+        stats_concentrator_handle.clone(),
+    ));
+
     let mini_agent = Box::new(mini_agent::MiniAgent {
         config: Arc::clone(&config),
         env_verifier,
@@ -131,6 +140,8 @@ pub async fn main() {
         trace_flusher,
         stats_processor,
         stats_flusher,
+        stats_concentrator: stats_concentrator_handle,
+        stats_generator,
     });
 
     tokio::spawn(async move {
