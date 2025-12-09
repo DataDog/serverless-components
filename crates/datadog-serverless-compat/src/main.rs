@@ -74,6 +74,9 @@ pub async fn main() {
     let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")
         .map(|val| val.to_lowercase() != "false")
         .unwrap_or(true);
+    let dd_stats_computation_enabled = env::var("DD_STATS_COMPUTATION_ENABLED")
+        .map(|val| val.to_lowercase() != "false")
+        .unwrap_or(true);
     let dd_statsd_metric_namespace: Option<String> = env::var("DD_STATSD_METRIC_NAMESPACE")
         .ok()
         .and_then(|val| parse_metric_namespace(&val));
