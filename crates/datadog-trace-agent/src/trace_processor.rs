@@ -9,7 +9,7 @@ use libdd_common::hyper_migration;
 use tokio::sync::mpsc::Sender;
 use tracing::debug;
 
-use datadog_trace_obfuscation::obfuscate::obfuscate_span;
+use libdd_trace_obfuscation::obfuscate::obfuscate_span;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils::{self};
 use libdd_trace_utils::trace_utils::{EnvironmentType, SendData};
@@ -158,7 +158,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
 
 #[cfg(test)]
 mod tests {
-    use datadog_trace_obfuscation::obfuscation_config::ObfuscationConfig;
+    use libdd_trace_obfuscation::obfuscation_config::ObfuscationConfig;
     use hyper::Request;
     use std::{collections::HashMap, sync::Arc, time::UNIX_EPOCH};
     use tokio::sync::mpsc::{self, Receiver, Sender};
