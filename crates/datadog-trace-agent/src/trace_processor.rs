@@ -158,8 +158,8 @@ impl TraceProcessor for ServerlessTraceProcessor {
 
 #[cfg(test)]
 mod tests {
-    use libdd_trace_obfuscation::obfuscation_config::ObfuscationConfig;
     use hyper::Request;
+    use libdd_trace_obfuscation::obfuscation_config::ObfuscationConfig;
     use std::{collections::HashMap, sync::Arc, time::UNIX_EPOCH};
     use tokio::sync::mpsc::{self, Receiver, Sender};
 
