@@ -35,8 +35,8 @@ pub struct MiniAgent {
     pub stats_processor: Arc<dyn stats_processor::StatsProcessor + Send + Sync>,
     pub stats_flusher: Arc<dyn stats_flusher::StatsFlusher + Send + Sync>,
     pub env_verifier: Arc<dyn env_verifier::EnvVerifier + Send + Sync>,
-    pub stats_concentrator: stats_concentrator_service::StatsConcentratorHandle,
-    pub stats_generator: Arc<stats_generator::StatsGenerator>,
+    pub stats_concentrator: Option<stats_concentrator_service::StatsConcentratorHandle>,
+    pub stats_generator: Option<Arc<stats_generator::StatsGenerator>>,
 }
 
 impl MiniAgent {
@@ -65,24 +65,29 @@ impl MiniAgent {
         let (trace_tx_internal, trace_rx): (Sender<SendData>, Receiver<SendData>) =
             mpsc::channel(TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE);
 
-        // Create an intercepting channel that generates stats from traces
-        let (trace_tx, mut trace_rx_intercept): (Sender<SendData>, Receiver<SendData>) =
-            mpsc::channel(TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE);
+        // Conditionally create an intercepting channel that generates stats from traces
+        let trace_tx = if let Some(stats_generator) = self.stats_generator.clone() {
+            let (trace_tx, mut trace_rx_intercept): (Sender<SendData>, Receiver<SendData>) =
+                mpsc::channel(TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE);
 
-        // Intercept traces to generate stats, then forward to trace flusher
-        let stats_generator = self.stats_generator.clone();
-        tokio::spawn(async move {
-            while let Some(send_data) = trace_rx_intercept.recv().await {
-                // Generate stats from the trace payload
-                if let Err(e) = stats_generator.send(send_data.get_payloads()) {
-                    error!("Failed to generate stats from traces: {e}");
+            // Intercept traces to generate stats, then forward to trace flusher
+            tokio::spawn(async move {
+                while let Some(send_data) = trace_rx_intercept.recv().await {
+                    // Generate stats from the trace payload
+                    if let Err(e) = stats_generator.send(send_data.get_payloads()) {
+                        error!("Failed to generate stats from traces: {e}");
+                    }
+                    // Forward to trace flusher
+                    if let Err(e) = trace_tx_internal.send(send_data).await {
+                        error!("Failed to forward traces to flusher: {e}");
+                    }
                 }
-                // Forward to trace flusher
-                if let Err(e) = trace_tx_internal.send(send_data).await {
-                    error!("Failed to forward traces to flusher: {e}");
-                }
-            }
-        });
+            });
+            trace_tx
+        } else {
+            // If stats generation is disabled, use the internal channel directly
+            trace_tx_internal.clone()
+        };
 
         // start our trace flusher. receives trace payloads and handles buffering + deciding when to
         // flush to backend.
@@ -124,28 +129,29 @@ impl MiniAgent {
                 .await;
         });
 
-        // Start periodic stats flush task
-        let stats_concentrator = self.stats_concentrator.clone();
-        let flush_interval = self.config.stats_flush_interval;
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(flush_interval)).await;
-                match stats_concentrator.flush(false).await {
-                    Ok(Some(stats_payload)) => {
-                        debug!("Flushed generated stats from concentrator");
-                        if let Err(e) = stats_tx_generated.send(stats_payload).await {
-                            error!("Failed to send flushed stats: {e}");
+        // Start periodic stats flush task only if stats computation is enabled
+        if let Some(stats_concentrator) = self.stats_concentrator.clone() {
+            let flush_interval = self.config.stats_flush_interval;
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(flush_interval)).await;
+                    match stats_concentrator.flush(false).await {
+                        Ok(Some(stats_payload)) => {
+                            debug!("Flushed generated stats from concentrator");
+                            if let Err(e) = stats_tx_generated.send(stats_payload).await {
+                                error!("Failed to send flushed stats: {e}");
+                            }
+                        }
+                        Ok(None) => {
+                            debug!("No generated stats to flush");
+                        }
+                        Err(e) => {
+                            error!("Error flushing generated stats: {e}");
                         }
                     }
-                    Ok(None) => {
-                        debug!("No generated stats to flush");
-                    }
-                    Err(e) => {
-                        error!("Error flushing generated stats: {e}");
-                    }
                 }
-            }
-        });
+            });
+        }
 
         // setup our hyper http server, where the endpoint_handler handles incoming requests
         let trace_processor = self.trace_processor.clone();
