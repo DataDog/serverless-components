@@ -8,7 +8,7 @@ use std::env;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
-use datadog_trace_obfuscation::obfuscation_config;
+use libdd_trace_obfuscation::obfuscation_config;
 use libdd_trace_utils::config_utils::{
     read_cloud_env, trace_intake_url, trace_intake_url_prefixed, trace_stats_url,
     trace_stats_url_prefixed,
