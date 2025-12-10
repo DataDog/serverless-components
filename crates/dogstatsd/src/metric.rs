@@ -6,24 +6,33 @@ use crate::{constants, datadog};
 use ddsketch_agent::DDSketch;
 use fnv::FnvHasher;
 use protobuf::Chars;
-use regex::Regex;
+use saluki_context::tags::RawTags;
+use saluki_core::data_model::event::metric::{MetricValues, ScalarPoints, SketchPoints};
+use saluki_io::deser::codec::dogstatsd::{
+    DogstatsdCodec, DogstatsdCodecConfiguration, MetricPacket, ParsedPacket,
+};
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 use ustr::Ustr;
 
 pub const EMPTY_TAGS: SortedTags = SortedTags { values: Vec::new() };
 
-// https://docs.datadoghq.com/developers/dogstatsd/datagram_shell?tab=metrics#dogstatsd-protocol-v13
-static METRIC_REGEX: OnceLock<Regex> = OnceLock::new();
-fn get_metric_regex() -> &'static Regex {
+// Saluki codec for parsing DogStatsD metrics
+static DOGSTATSD_CODEC: OnceLock<DogstatsdCodec> = OnceLock::new();
+
+fn get_dogstatsd_codec() -> &'static DogstatsdCodec {
     #[allow(clippy::expect_used)]
-    METRIC_REGEX.get_or_init(|| {
-        Regex::new(
-            r"^(?P<name>[^:]+):(?P<values>[^|]+)\|(?P<type>[a-zA-Z]+)(?:\|@(?P<sample_rate>[\d.]+))?(?:\|#(?P<tags>[^|]+))?(?:\|c:(?P<container_id>[^|]+))?(?:\|T(?P<timestamp>[^|]+))?$",
-        )
-        .expect("Failed to create metric regex")
+    DOGSTATSD_CODEC.get_or_init(|| {
+        let config = DogstatsdCodecConfiguration::default()
+            // Don't set max_tag_count here - Saluki truncates instead of erroring
+            // We'll check the count after parsing
+            .with_timestamps(true)
+            .with_permissive_mode(true); // Allow parsing of malformed metrics
+        DogstatsdCodec::from_configuration(config)
     })
 }
+
+// https://docs.datadoghq.com/developers/dogstatsd/datagram_shell?tab=metrics#dogstatsd-protocol-v13
 
 #[derive(Clone, Debug)]
 pub enum MetricValue {
@@ -237,6 +246,146 @@ pub fn timestamp_to_bucket(timestamp: i64) -> i64 {
     (timestamp / 10) * 10
 }
 
+/// Extract the first scalar value from ScalarPoints (for Counter/Gauge).
+fn extract_first_scalar_value(points: &ScalarPoints) -> Result<f64, ParseError> {
+    // ScalarPoints implements IntoIterator, returns (timestamp, value) pairs
+    points
+        .into_iter()
+        .next()
+        .map(|(_, value)| value)
+        .ok_or_else(|| ParseError::Raw("Missing metric value".to_string()))
+}
+
+/// Extract the first sketch from SketchPoints (for Distribution).
+fn extract_first_sketch(points: &SketchPoints) -> Result<DDSketch, ParseError> {
+    // SketchPoints implements IntoIterator, returns (timestamp, sketch) pairs
+    points
+        .into_iter()
+        .next()
+        .map(|(_, sketch)| sketch.clone())
+        .ok_or_else(|| ParseError::Raw("Missing distribution value".to_string()))
+}
+
+/// Convert Saluki's MetricPacket to our Metric type.
+fn convert_packet_to_metric(
+    packet: MetricPacket,
+    original_type: Option<&str>,
+) -> Result<Metric, ParseError> {
+    // Extract metric value - match on MetricValues and take first value
+    // We need to extract the first value from each variant
+    let metric_value = match &packet.values {
+        MetricValues::Counter(points) => {
+            // Try to access inner fields to extract the first value
+            // ScalarPoints wraps TimestampedValues which has a SmallVec
+            let first_val = extract_first_scalar_value(points)?;
+            MetricValue::Count(first_val)
+        }
+        MetricValues::Gauge(points) => {
+            let first_val = extract_first_scalar_value(points)?;
+            MetricValue::Gauge(first_val)
+        }
+        MetricValues::Distribution(points) => {
+            // For distributions, extract the DDSketch directly
+            let sketch = extract_first_sketch(points)?;
+            MetricValue::Distribution(sketch)
+        }
+        MetricValues::Set(_) => {
+            return Err(ParseError::UnsupportedType("s".to_string()));
+        }
+        MetricValues::Histogram(_) => {
+            // Saluki maps both "ms" (Timer) and "h" (Histogram) to Histogram
+            // Use the original type to distinguish them
+            let type_str = match original_type {
+                Some("ms") => "ms",
+                _ => "h",
+            };
+            return Err(ParseError::UnsupportedType(type_str.to_string()));
+        }
+        MetricValues::Rate(_, _) => {
+            return Err(ParseError::UnsupportedType("ms".to_string()));
+        }
+    };
+
+    // Convert tags
+    let tags = convert_raw_tags_to_sorted(&packet.tags)?;
+
+    // Handle timestamp (convert Option<u64> to i64, bucket to 10s)
+    #[allow(clippy::expect_used)]
+    let now: i64 = std::time::UNIX_EPOCH
+        .elapsed()
+        .expect("unable to poll clock, unrecoverable")
+        .as_secs()
+        .try_into()
+        .unwrap_or_default();
+
+    let bucketed_timestamp = match packet.timestamp {
+        Some(ts) => timestamp_to_bucket(ts as i64),
+        None => timestamp_to_bucket(now),
+    };
+
+    let name = Ustr::from(packet.metric_name);
+    let metric_id = id(name, &tags, bucketed_timestamp);
+
+    Ok(Metric {
+        name,
+        value: metric_value,
+        tags,
+        id: metric_id,
+        timestamp: bucketed_timestamp,
+    })
+}
+
+/// Convert Saluki's RawTags to our SortedTags type.
+fn convert_raw_tags_to_sorted(raw_tags: &RawTags) -> Result<Option<SortedTags>, ParseError> {
+    let mut parsed_tags = Vec::new();
+
+    // Iterate over raw tags (they're in "key:value" or "key" format)
+    for tag_str in raw_tags.clone().into_iter() {
+        if tag_str.is_empty() {
+            continue;
+        }
+
+        // Split on first colon only
+        if let Some(colon_pos) = tag_str.find(':') {
+            let (k, v) = (&tag_str[..colon_pos], &tag_str[colon_pos + 1..]);
+            parsed_tags.push((Ustr::from(k), Ustr::from(v)));
+        } else {
+            // Tag without value
+            parsed_tags.push((Ustr::from(tag_str), Ustr::from("")));
+        }
+    }
+
+    if parsed_tags.is_empty() {
+        return Ok(None);
+    }
+
+    // Enforce MAX_TAGS limit (Saluki may have already enforced this via config, but check anyway)
+    if parsed_tags.len() > constants::MAX_TAGS {
+        return Err(ParseError::Raw(format!(
+            "Too many tags, more than {}",
+            constants::MAX_TAGS
+        )));
+    }
+
+    // Sort and deduplicate (maintain existing behavior)
+    parsed_tags.sort_unstable();
+    parsed_tags.dedup();
+
+    Ok(Some(SortedTags {
+        values: parsed_tags,
+    }))
+}
+
+/// Extract the metric type from a DogStatsD string for error reporting.
+fn extract_metric_type(input: &str) -> Option<&str> {
+    // Format: name:value|TYPE|...
+    // Find the first | and then extract until the next | or end
+    let first_pipe = input.find('|')?;
+    let after_first_pipe = &input[first_pipe + 1..];
+    let type_end = after_first_pipe.find('|').unwrap_or(after_first_pipe.len());
+    Some(&after_first_pipe[..type_end])
+}
+
 /// Parse a metric from given input.
 ///
 /// This function parses a passed `&str` into a `Metric`. We assume that
@@ -248,76 +397,87 @@ pub fn timestamp_to_bucket(timestamp: i64) -> i64 {
 /// limits in [`constants`]. Any non-viable input will be discarded.
 /// example aj-test.increment:1|c|#user:aj-test from 127.0.0.1:50983
 pub fn parse(input: &str) -> Result<Metric, ParseError> {
-    // TODO must enforce / exploit constraints given in `constants`.
-    if let Some(caps) = get_metric_regex().captures(input) {
-        // unused for now
-        // let sample_rate = caps.name("sample_rate").map(|m| m.as_str());
+    // Pre-process decimal timestamps by rounding them
+    let processed_input = if let Some(t_pos) = input.find("|T") {
+        let before_timestamp = &input[..t_pos + 2];
+        let after_t = &input[t_pos + 2..];
 
-        let tags;
-        if let Some(tags_section) = caps.name("tags") {
-            tags = Some(SortedTags::parse(tags_section.as_str())?);
+        // Find the end of the timestamp (next | or end of string)
+        let timestamp_end = after_t.find('|').unwrap_or(after_t.len());
+        let timestamp_str = &after_t[..timestamp_end];
+        let remaining = &after_t[timestamp_end..];
+
+        // If timestamp contains a decimal point, round it
+        if timestamp_str.contains('.') {
+            if let Ok(ts_float) = timestamp_str.parse::<f64>() {
+                let ts_int = ts_float.round() as i64;
+                format!("{}{}{}", before_timestamp, ts_int, remaining)
+            } else {
+                input.to_string()
+            }
         } else {
-            tags = None;
+            input.to_string()
         }
+    } else {
+        input.to_string()
+    };
 
-        #[allow(clippy::unwrap_used)]
-        let val = first_value(caps.name("values").unwrap().as_str())?;
+    let codec = get_dogstatsd_codec();
+    let parsed_packet = codec
+        .decode_packet(processed_input.as_bytes())
+        .map_err(|_| {
+            // Try to extract metric type for better error messages
+            if let Some(mtype) = extract_metric_type(input) {
+                // Check if this is an unsupported type
+                if matches!(
+                    mtype,
+                    "h" | "s"
+                        | "ms"
+                        | "a"
+                        | "b"
+                        | "e"
+                        | "f"
+                        | "i"
+                        | "j"
+                        | "k"
+                        | "l"
+                        | "m"
+                        | "n"
+                        | "o"
+                        | "p"
+                        | "q"
+                        | "r"
+                        | "t"
+                        | "u"
+                        | "v"
+                        | "w"
+                        | "x"
+                        | "y"
+                        | "z"
+                ) && !matches!(mtype, "c" | "g" | "d")
+                {
+                    return ParseError::Raw(format!("Invalid metric type: {}", mtype));
+                }
+            }
+            ParseError::Raw(format!("Invalid metric format {}", input))
+        })?;
 
-        #[allow(clippy::unwrap_used)]
-        let t = caps.name("type").unwrap().as_str();
+    // Extract metric packet from parsed packet
+    let packet = match parsed_packet {
+        ParsedPacket::Metric(metric_packet) => metric_packet,
+        ParsedPacket::Event(_) => {
+            return Err(ParseError::Raw("Expected metric, got event".to_string()));
+        }
+        ParsedPacket::ServiceCheck(_) => {
+            return Err(ParseError::Raw(
+                "Expected metric, got service check".to_string(),
+            ));
+        }
+    };
 
-        #[allow(clippy::expect_used)]
-        let now = std::time::UNIX_EPOCH
-            .elapsed()
-            .expect("unable to poll clock, unrecoverable")
-            .as_secs()
-            .try_into()
-            .unwrap_or_default();
-        // let Metric::new() handle bucketing the timestamp
-        let parsed_timestamp: i64 = match caps.name("timestamp") {
-            Some(ts) => {
-                let sec = ts.as_str().parse::<f64>().unwrap_or(now as f64).round() as i64;
-                timestamp_to_bucket(sec)
-            }
-            None => timestamp_to_bucket(now),
-        };
-        let metric_value = match t {
-            "c" => MetricValue::Count(val),
-            "g" => MetricValue::Gauge(val),
-            "d" => {
-                let sketch = &mut DDSketch::default();
-                sketch.insert(val);
-                MetricValue::Distribution(sketch.to_owned())
-            }
-            "h" | "s" | "ms" => {
-                return Err(ParseError::UnsupportedType(t.to_string()));
-            }
-            _ => {
-                return Err(ParseError::Raw(format!("Invalid metric type: {t}")));
-            }
-        };
-        #[allow(clippy::unwrap_used)]
-        let name = Ustr::from(caps.name("name").unwrap().as_str());
-        let id = id(name, &tags, parsed_timestamp);
-        return Ok(Metric {
-            name,
-            value: metric_value,
-            tags,
-            id,
-            timestamp: parsed_timestamp,
-        });
-    }
-    Err(ParseError::Raw(format!("Invalid metric format {input}")))
-}
-
-fn first_value(values: &str) -> Result<f64, ParseError> {
-    match values.split(':').next() {
-        Some(v) => match v.parse::<f64>() {
-            Ok(v) => Ok(v),
-            Err(e) => Err(ParseError::Raw(format!("Invalid value {e}"))),
-        },
-        None => Err(ParseError::Raw("Missing value".to_string())),
-    }
+    // Check the original input for the actual metric type to handle ms vs h distinction
+    let original_type = extract_metric_type(input);
+    convert_packet_to_metric(packet, original_type)
 }
 
 /// Create an ID given a name and tagset.
