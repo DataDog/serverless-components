@@ -128,13 +128,20 @@ pub async fn main() {
         Arc::clone(&config),
     ));
 
-    // Initialize stats concentrator service and generator
-    let (stats_concentrator_service, stats_concentrator_handle) =
-        stats_concentrator_service::StatsConcentratorService::new(config.clone());
-    tokio::spawn(stats_concentrator_service.run());
-    let stats_generator = Arc::new(stats_generator::StatsGenerator::new(
-        stats_concentrator_handle.clone(),
-    ));
+    // Initialize stats concentrator service and generator conditionally
+    let (stats_concentrator_handle, stats_generator) = if dd_stats_computation_enabled {
+        info!("Stats computation enabled");
+        let (stats_concentrator_service, stats_concentrator_handle) =
+            stats_concentrator_service::StatsConcentratorService::new(config.clone());
+        tokio::spawn(stats_concentrator_service.run());
+        let stats_generator = Arc::new(stats_generator::StatsGenerator::new(
+            stats_concentrator_handle.clone(),
+        ));
+        (Some(stats_concentrator_handle), Some(stats_generator))
+    } else {
+        info!("Stats computation disabled");
+        (None, None)
+    };
 
     let mini_agent = Box::new(mini_agent::MiniAgent {
         config: Arc::clone(&config),
