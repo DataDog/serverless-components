@@ -1275,8 +1275,7 @@ checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
 [[package]]
 name = "libdd-common"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee58537655793508cc5282ecf1507f15a8fa4616a08c728e01a29ee2f035e8fa"
+source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
 dependencies = [
  "anyhow",
  "cc",
@@ -1309,8 +1308,7 @@ dependencies = [
 [[package]]
 name = "libdd-tinybytes"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a046c137739f404448bf5afa25eb07662e572da4371f5148860c83b570fd6d9"
+source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
 dependencies = [
  "serde",
 ]
@@ -1318,8 +1316,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-normalization"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5bea58cf904bc80045756012b20d2ce9b15480881be47d5fedabdf5a11601a9"
+source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
 dependencies = [
  "anyhow",
  "libdd-trace-protobuf",
@@ -1328,8 +1325,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-obfuscation"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c48a8dd85019f39a606af89e4c121c189b3f29d620b0ea69f8ae2b44e362553"
+source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
 dependencies = [
  "anyhow",
  "libdd-common",
@@ -1346,8 +1342,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-protobuf"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b68085a63d80632644b2135c2102aa2d266103766fe7263911cce7536e07b42f"
+source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
 dependencies = [
  "prost",
  "serde",
@@ -1357,8 +1352,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-utils"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb7c359bdb49981bd769b89d5891dfe821de95e4f82419613365acdd0cf36257"
+source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
 dependencies = [
  "anyhow",
  "bytes",
