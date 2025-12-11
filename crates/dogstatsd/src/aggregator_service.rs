@@ -38,7 +38,10 @@ impl AggregatorHandle {
         &self,
         metrics: Vec<Metric>,
     ) -> Result<(), mpsc::error::SendError<AggregatorCommand>> {
-        self.tx.send(AggregatorCommand::InsertBatch(metrics))
+        debug!("Entered AggregatorHandle.insert_batch() with {} metrics", metrics.len());
+        let result = self.tx.send(AggregatorCommand::InsertBatch(metrics));
+        debug!("Leaving AggregatorHandle.insert_batch() with result: {:?}", result);
+        result
     }
 
     pub async fn flush(&self) -> Result<FlushResponse, String> {
@@ -104,6 +107,7 @@ impl AggregatorService {
         while let Some(command) = self.rx.recv().await {
             match command {
                 AggregatorCommand::InsertBatch(metrics) => {
+                    debug!("Entered AggregatorService.run() with InsertBatch command");
                     let mut insert_errors = 0;
                     for metric in metrics {
                         // The only possible error here is an overflow
@@ -114,9 +118,11 @@ impl AggregatorService {
                     if insert_errors > 0 {
                         warn!("Total of {} metrics failed to insert", insert_errors);
                     }
+                    debug!("Leaving AggregatorService.run() with InsertBatch command");
                 }
 
                 AggregatorCommand::Flush(response_tx) => {
+                    debug!("Entered AggregatorService.run() with Flush command");
                     let series = self.aggregator.consume_metrics();
                     let distributions = self.aggregator.consume_distributions();
 
@@ -128,6 +134,7 @@ impl AggregatorService {
                     if response_tx.send(response).is_err() {
                         error!("Failed to send flush response - receiver dropped");
                     }
+                    debug!("Leaving AggregatorService.run() with Flush command");
                 }
 
                 AggregatorCommand::GetEntryById {
