@@ -13,8 +13,8 @@ use tracing::debug;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::stats_utils;
 
-use datadog_serverless_config::Config;
 use crate::http_utils::{self, log_and_create_http_response};
+use datadog_serverless_config::Config;
 
 #[async_trait]
 pub trait StatsProcessor {

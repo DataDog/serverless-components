@@ -15,8 +15,8 @@ use libdd_trace_utils::trace_utils::{self};
 use libdd_trace_utils::trace_utils::{EnvironmentType, SendData};
 use libdd_trace_utils::tracer_payload::{TraceChunkProcessor, TracerPayloadCollection};
 
-use crate::{
-    http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
+use crate::http_utils::{
+    self, log_and_create_http_response, log_and_create_traces_success_http_response,
 };
 use datadog_serverless_config::Config;
 
@@ -101,7 +101,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
         // double check content length is < max request content length in case transfer encoding is used
         if body_size > config.max_request_content_length {
             return log_and_create_http_response(
-                &format!("Error processing traces: Payload too large"),
+                "Error processing traces: Payload too large",
                 StatusCode::PAYLOAD_TOO_LARGE,
             );
         }
@@ -163,9 +163,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc, time::UNIX_EPOCH};
     use tokio::sync::mpsc::{self, Receiver, Sender};
 
-    use crate::{
-        trace_processor::{self, TraceProcessor, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY},
-    };
+    use crate::trace_processor::{self, TraceProcessor, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY};
     use datadog_serverless_config::{Config, Tags};
     use libdd_common::{hyper_migration, Endpoint};
     use libdd_trace_protobuf::pb;
