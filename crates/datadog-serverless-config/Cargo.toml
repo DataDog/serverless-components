@@ -1,0 +1,25 @@
+[package]
+name = "datadog-serverless-config"
+version = "0.1.0"
+license.workspace = true
+edition.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+anyhow = "1.0"
+hyper = { version = "1.6", features = ["http1"] }
+libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "435107c245112397914935c0f7148a18b91cafc6" }
+libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "435107c245112397914935c0f7148a18b91cafc6" }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "435107c245112397914935c0f7148a18b91cafc6", features = [
+    "mini_agent",
+] }
+
+[dev-dependencies]
+serial_test = "2.0.0"
+duplicate = "0.4.1"
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "435107c245112397914935c0f7148a18b91cafc6", features = [
+    "test-utils",
+] }
+

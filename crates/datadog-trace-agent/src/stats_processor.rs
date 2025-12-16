@@ -13,7 +13,7 @@ use tracing::debug;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::stats_utils;
 
-use crate::config::Config;
+use datadog_serverless_config::Config;
 use crate::http_utils::{self, log_and_create_http_response};
 
 #[async_trait]

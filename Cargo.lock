@@ -441,6 +441,7 @@ dependencies = [
 name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
+ "datadog-serverless-config",
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils",
@@ -452,11 +453,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-serverless-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "duplicate",
+ "hyper",
+ "libdd-common",
+ "libdd-trace-obfuscation",
+ "libdd-trace-utils",
+ "serial_test",
+]
+
+[[package]]
 name = "datadog-trace-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "datadog-serverless-config",
  "duplicate",
  "http-body-util",
  "hyper",

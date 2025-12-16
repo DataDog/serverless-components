@@ -16,9 +16,9 @@ use libdd_trace_utils::trace_utils::{EnvironmentType, SendData};
 use libdd_trace_utils::tracer_payload::{TraceChunkProcessor, TracerPayloadCollection};
 
 use crate::{
-    config::Config,
     http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
 };
+use datadog_serverless_config::Config;
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
 
@@ -164,9 +164,9 @@ mod tests {
     use tokio::sync::mpsc::{self, Receiver, Sender};
 
     use crate::{
-        config::{Config, Tags},
         trace_processor::{self, TraceProcessor, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY},
     };
+    use datadog_serverless_config::{Config, Tags};
     use libdd_common::{hyper_migration, Endpoint};
     use libdd_trace_protobuf::pb;
     use libdd_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
