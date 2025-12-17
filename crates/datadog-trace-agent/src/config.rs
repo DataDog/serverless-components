@@ -84,6 +84,8 @@ pub struct Config {
     pub stats_flush_interval: u64,
     /// how often to flush traces, in seconds
     pub trace_flush_interval: u64,
+    /// buffer length for span concentrator
+    pub stats_buffer_length: usize,
     pub trace_intake: Endpoint,
     pub trace_stats_intake: Endpoint,
     /// timeout for environment verification, in milliseconds
@@ -131,6 +133,11 @@ impl Config {
             Tags::new()
         };
 
+        let stats_buffer_length: usize = env::var("DD_STATS_BUFFER_LENGTH")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(90);
+
         #[allow(clippy::unwrap_used)]
         Ok(Config {
             app_name: Some(app_name),
@@ -157,6 +164,7 @@ impl Config {
                 .or_else(|_| env::var("HTTPS_PROXY"))
                 .ok(),
             tags,
+            stats_buffer_length,
         })
     }
 }

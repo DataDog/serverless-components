@@ -10,7 +10,6 @@ use tracing::error;
 
 const S_TO_NS: u64 = 1_000_000_000;
 const BUCKET_DURATION_NS: u64 = 10 * S_TO_NS; // 10 seconds
-const BUFFER_LENGTH: usize = 90;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StatsError {
@@ -119,7 +118,7 @@ impl StatsConcentratorService {
             SystemTime::now(),
             vec![],
             vec![],
-            BUFFER_LENGTH,
+            config.stats_buffer_length,
         );
         let service: StatsConcentratorService = Self {
             concentrator,

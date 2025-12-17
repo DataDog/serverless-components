@@ -46,7 +46,7 @@ const AGENT_HOST: &str = "0.0.0.0";
 
 #[tokio::main]
 pub async fn main() {
-    info!("Stats test - buffer length: 90, bucket duration: 10");
+    info!("Stats test - buffer length: configurable / default 90, bucket duration: 10");
 
     let log_level = env::var("DD_LOG_LEVEL")
         .map(|val| val.to_lowercase())
