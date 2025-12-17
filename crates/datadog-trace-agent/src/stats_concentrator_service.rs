@@ -119,7 +119,7 @@ impl StatsConcentratorService {
             SystemTime::now(),
             vec![],
             vec![],
-            BUFFER_LENGTH
+            BUFFER_LENGTH,
         );
         let service: StatsConcentratorService = Self {
             concentrator,
