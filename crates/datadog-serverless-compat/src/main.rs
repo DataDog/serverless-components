@@ -46,8 +46,6 @@ const AGENT_HOST: &str = "0.0.0.0";
 
 #[tokio::main]
 pub async fn main() {
-    info!("Stats test - buffer length: configurable / default 90, bucket duration: 10");
-
     let log_level = env::var("DD_LOG_LEVEL")
         .map(|val| val.to_lowercase())
         .unwrap_or("info".to_string());
@@ -106,6 +104,7 @@ pub async fn main() {
 
     #[allow(clippy::expect_used)]
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    info!("Stats test - buffer length: configurable / default 90, bucket duration: 10");
 
     debug!("Logging subsystem enabled");
 
