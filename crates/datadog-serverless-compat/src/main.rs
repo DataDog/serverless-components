@@ -18,7 +18,8 @@ use zstd::zstd_safe::CompressionLevel;
 
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
-    config, env_verifier, mini_agent, stats_flusher, stats_processor,
+    config, env_verifier, mini_agent, stats_concentrator_service, stats_flusher, stats_generator,
+    stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
 };
@@ -73,6 +74,9 @@ pub async fn main() {
     let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")
         .map(|val| val.to_lowercase() != "false")
         .unwrap_or(true);
+    let dd_stats_computation_enabled = env::var("DD_STATS_COMPUTATION_ENABLED")
+        .map(|val| val.to_lowercase() != "false")
+        .unwrap_or(true);
     let dd_statsd_metric_namespace: Option<String> = env::var("DD_STATSD_METRIC_NAMESPACE")
         .ok()
         .and_then(|val| parse_metric_namespace(&val));
@@ -100,6 +104,7 @@ pub async fn main() {
 
     #[allow(clippy::expect_used)]
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    info!("Stats test - buffer length: configurable / default 90, bucket duration: 10");
 
     debug!("Logging subsystem enabled");
 
@@ -124,6 +129,21 @@ pub async fn main() {
         Arc::clone(&config),
     ));
 
+    // Initialize stats concentrator service and generator conditionally
+    let (stats_concentrator_handle, stats_generator) = if dd_stats_computation_enabled {
+        info!("Stats computation enabled");
+        let (stats_concentrator_service, stats_concentrator_handle) =
+            stats_concentrator_service::StatsConcentratorService::new(config.clone());
+        tokio::spawn(stats_concentrator_service.run());
+        let stats_generator = Arc::new(stats_generator::StatsGenerator::new(
+            stats_concentrator_handle.clone(),
+        ));
+        (Some(stats_concentrator_handle), Some(stats_generator))
+    } else {
+        info!("Stats computation disabled");
+        (None, None)
+    };
+
     let mini_agent = Box::new(mini_agent::MiniAgent {
         config: Arc::clone(&config),
         env_verifier,
@@ -131,6 +151,8 @@ pub async fn main() {
         trace_flusher,
         stats_processor,
         stats_flusher,
+        stats_concentrator: stats_concentrator_handle,
+        stats_generator,
     });
 
     tokio::spawn(async move {

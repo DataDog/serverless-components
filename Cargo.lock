@@ -39,6 +39,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "anyhow"
 version = "1.0.97"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -465,12 +471,14 @@ dependencies = [
  "libdd-common",
  "libdd-trace-obfuscation",
  "libdd-trace-protobuf",
+ "libdd-trace-stats",
  "libdd-trace-utils",
  "rmp-serde",
  "serde",
  "serde_json",
  "serial_test",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
 ]
@@ -649,6 +657,12 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+
+[[package]]
+name = "foldhash"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "form_urlencoded"
@@ -839,6 +853,11 @@ name = "hashbrown"
 version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash",
+]
 
 [[package]]
 name = "hashbrown"
@@ -1275,7 +1294,7 @@ checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
 [[package]]
 name = "libdd-common"
 version = "1.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
+source = "git+https://github.com/DataDog/libdatadog?rev=774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7#774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7"
 dependencies = [
  "anyhow",
  "cc",
@@ -1306,9 +1325,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "libdd-ddsketch"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog?rev=774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7#774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7"
+dependencies = [
+ "prost",
+]
+
+[[package]]
 name = "libdd-tinybytes"
 version = "1.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
+source = "git+https://github.com/DataDog/libdatadog?rev=774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7#774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7"
 dependencies = [
  "serde",
 ]
@@ -1316,7 +1343,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-normalization"
 version = "1.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
+source = "git+https://github.com/DataDog/libdatadog?rev=774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7#774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7"
 dependencies = [
  "anyhow",
  "libdd-trace-protobuf",
@@ -1325,7 +1352,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-obfuscation"
 version = "1.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
+source = "git+https://github.com/DataDog/libdatadog?rev=774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7#774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7"
 dependencies = [
  "anyhow",
  "libdd-common",
@@ -1342,7 +1369,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-protobuf"
 version = "1.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
+source = "git+https://github.com/DataDog/libdatadog?rev=774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7#774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7"
 dependencies = [
  "prost",
  "serde",
@@ -1350,9 +1377,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "libdd-trace-stats"
+version = "1.0.0"
+source = "git+https://github.com/DataDog/libdatadog?rev=774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7#774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7"
+dependencies = [
+ "hashbrown 0.15.2",
+ "libdd-ddsketch",
+ "libdd-trace-protobuf",
+ "libdd-trace-utils",
+]
+
+[[package]]
 name = "libdd-trace-utils"
 version = "1.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=435107c245112397914935c0f7148a18b91cafc6#435107c245112397914935c0f7148a18b91cafc6"
+source = "git+https://github.com/DataDog/libdatadog?rev=774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7#774f830c7ffa62122a2cf8f3eae8c64a3ca5a8d7"
 dependencies = [
  "anyhow",
  "bytes",
