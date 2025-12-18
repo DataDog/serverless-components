@@ -1,5 +1,0 @@
-# CODEOWNERS file for serverless-init-self-monitoring
-# All files in this repository are owned by the Serverless Azure and GCP team
-
-# Default owner for everything in the repo
-* @DataDog/serverless-azure-gcp

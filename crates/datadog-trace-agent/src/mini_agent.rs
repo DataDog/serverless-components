@@ -13,9 +13,9 @@ use std::time::Instant;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, error};
 
-use crate::http_utils::{verify_request_content_length, log_and_create_http_response};
-use crate::proxy_flusher::{ProxyRequest, ProxyFlusher};
-use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor };
+use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
+use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
+use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
