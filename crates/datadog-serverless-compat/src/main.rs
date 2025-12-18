@@ -16,9 +16,10 @@ use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 use zstd::zstd_safe::CompressionLevel;
 
+use datadog_serverless_config as config;
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
-    config, env_verifier, mini_agent, stats_flusher, stats_processor,
+    env_verifier, mini_agent, stats_flusher, stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
 };

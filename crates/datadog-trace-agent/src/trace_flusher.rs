@@ -11,7 +11,7 @@ use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
 use crate::aggregator::TraceAggregator;
-use crate::config::Config;
+use datadog_serverless_config::Config;
 
 #[async_trait]
 pub trait TraceFlusher {

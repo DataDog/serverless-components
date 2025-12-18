@@ -1,6 +1,12 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+#![cfg_attr(not(test), deny(clippy::panic))]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+#![cfg_attr(not(test), deny(clippy::expect_used))]
+#![cfg_attr(not(test), deny(clippy::todo))]
+#![cfg_attr(not(test), deny(clippy::unimplemented))]
+
 use libdd_common::Endpoint;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -21,6 +27,12 @@ const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 pub struct Tags {
     tags: HashMap<String, String>,
     function_tags_string: OnceLock<String>,
+}
+
+impl Default for Tags {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Tags {
@@ -168,14 +180,14 @@ mod tests {
     use std::collections::HashMap;
     use std::env;
 
-    use crate::config;
+    use crate::{Config, Tags};
 
     #[test]
     #[serial]
     fn test_error_if_unable_to_identify_env() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
 
-        let config = config::Config::new();
+        let config = Config::new();
         assert!(config.is_err());
         assert_eq!(
             config.unwrap_err().to_string(),
@@ -188,7 +200,7 @@ mod tests {
     #[serial]
     fn test_error_if_no_api_key_env_var() {
         env::remove_var("DD_API_KEY");
-        let config = config::Config::new();
+        let config = Config::new();
         assert!(config.is_err());
         assert_eq!(
             config.unwrap_err().to_string(),
@@ -201,7 +213,7 @@ mod tests {
     fn test_default_trace_and_trace_stats_urls() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("K_SERVICE", "function_name");
-        let config_res = config::Config::new();
+        let config_res = Config::new();
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
         assert_eq!(
@@ -231,7 +243,7 @@ mod tests {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("K_SERVICE", "function_name");
         env::set_var("DD_SITE", dd_site);
-        let config_res = config::Config::new();
+        let config_res = Config::new();
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
         assert_eq!(config.trace_intake.url, expected_url);
@@ -255,7 +267,7 @@ mod tests {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("K_SERVICE", "function_name");
         env::set_var("DD_SITE", dd_site);
-        let config_res = config::Config::new();
+        let config_res = Config::new();
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
         assert_eq!(config.trace_stats_intake.url, expected_url);
@@ -270,7 +282,7 @@ mod tests {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("K_SERVICE", "function_name");
         env::set_var("DD_APM_DD_URL", "http://127.0.0.1:3333");
-        let config_res = config::Config::new();
+        let config_res = Config::new();
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
         assert_eq!(
@@ -291,7 +303,7 @@ mod tests {
     fn test_default_dogstatsd_port() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        let config_res = config::Config::new();
+        let config_res = Config::new();
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
         assert_eq!(config.dd_dogstatsd_port, 8125);
@@ -305,7 +317,7 @@ mod tests {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
         env::set_var("DD_DOGSTATSD_PORT", "18125");
-        let config_res = config::Config::new();
+        let config_res = Config::new();
         println!("{:?}", config_res);
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
@@ -315,11 +327,11 @@ mod tests {
         env::remove_var("DD_DOGSTATSD_PORT");
     }
 
-    fn test_config_with_dd_tags(dd_tags: &str) -> config::Config {
+    fn test_config_with_dd_tags(dd_tags: &str) -> Config {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
         env::set_var("DD_TAGS", dd_tags);
-        let config_res = config::Config::new();
+        let config_res = Config::new();
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
         env::remove_var("DD_API_KEY");

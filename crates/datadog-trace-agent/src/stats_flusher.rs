@@ -9,7 +9,7 @@ use tracing::{debug, error};
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::stats_utils;
 
-use crate::config::Config;
+use datadog_serverless_config::Config;
 
 #[async_trait]
 pub trait StatsFlusher {
