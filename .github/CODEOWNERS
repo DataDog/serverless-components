@@ -1,0 +1,4 @@
+* @DataDog/serverless-azure-and-gcp @DataDog/serverless-aws
+
+crates/datadog-serverless-compat/ @DataDog/serverless-azure-and-gcp
+crates/datadog-trace-agent/ @DataDog/serverless-azure-and-gcp
