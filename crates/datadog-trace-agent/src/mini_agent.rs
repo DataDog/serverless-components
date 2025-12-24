@@ -20,7 +20,6 @@ use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
-const MINI_AGENT_PORT: usize = 8126;
 const TRACE_ENDPOINT_PATH: &str = "/v0.4/traces";
 const STATS_ENDPOINT_PATH: &str = "/v0.6/stats";
 const INFO_ENDPOINT_PATH: &str = "/info";
@@ -125,14 +124,54 @@ impl MiniAgent {
             )
         });
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], MINI_AGENT_PORT as u16));
-        let listener = tokio::net::TcpListener::bind(&addr).await?;
-
-        debug!("Mini Agent started: listening on port {MINI_AGENT_PORT}");
+        // Determine which transport to use based on configuration
+        if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
+            debug!("Mini Agent started: listening on named pipe {}", pipe_name);
+        } else {
+            debug!("Mini Agent started: listening on port {}", self.config.dd_apm_receiver_port);
+        }
         debug!(
-            "Time taken start the Mini Agent: {} ms",
+            "Time taken to start the Mini Agent: {} ms",
             now.elapsed().as_millis()
         );
+
+        if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
+            // Windows named pipe transport
+            #[cfg(windows)]
+            {
+                Self::serve_named_pipe(pipe_name, service).await?;
+            }
+
+            #[cfg(not(windows))]
+            {
+                error!("Named pipes are only supported on Windows, cannot use pipe: {}", pipe_name);
+                return Err("Named pipes are only supported on Windows".into());
+            }
+        } else {
+            // TCP transport
+            let addr = SocketAddr::from(([127, 0, 0, 1], self.config.dd_apm_receiver_port));
+            let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+            Self::serve_tcp(listener, service).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn serve_tcp<S>(
+        listener: tokio::net::TcpListener,
+        service: S,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        S: hyper::service::Service<
+                hyper::Request<hyper::body::Incoming>,
+                Response = hyper::Response<hyper_migration::Body>,
+            > + Clone
+            + Send
+            + 'static,
+        S::Future: Send,
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
         loop {
@@ -166,6 +205,81 @@ impl MiniAgent {
                     Ok(()) | Err(_) => continue,
                 },
             };
+            let conn = hyper_util::rt::TokioIo::new(conn);
+            let server = server.clone();
+            let service = service.clone();
+            joinset.spawn(async move {
+                if let Err(e) = server.serve_connection(conn, service).await {
+                    error!("Connection error: {e}");
+                }
+            });
+        }
+    }
+
+    #[cfg(windows)]
+    async fn serve_named_pipe<S>(
+        pipe_name: &str,
+        service: S,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        S: hyper::service::Service<
+                hyper::Request<hyper::body::Incoming>,
+                Response = hyper::Response<hyper_migration::Body>,
+            > + Clone
+            + Send
+            + 'static,
+        S::Future: Send,
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        let server = hyper::server::conn::http1::Builder::new();
+        let mut joinset = tokio::task::JoinSet::new();
+
+        loop {
+            // Create a new named pipe server instance for this connection
+            let pipe_server = ServerOptions::new()
+                .first_pipe_instance(false)
+                .create(pipe_name)?;
+
+            let conn_result = tokio::select! {
+                connect_res = pipe_server.connect() => {
+                    match connect_res {
+                        Ok(()) => Ok(pipe_server),
+                        Err(e) => Err(e),
+                    }
+                },
+                finished = async {
+                    match joinset.join_next().await {
+                        Some(finished) => finished,
+                        None => std::future::pending().await,
+                    }
+                } => match finished {
+                    Err(e) if e.is_panic() => {
+                        std::panic::resume_unwind(e.into_panic());
+                    },
+                    Ok(()) | Err(_) => continue,
+                },
+            };
+
+            let conn = match conn_result {
+                Ok(pipe) => pipe,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::ConnectionAborted
+                            | io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    continue;
+                }
+                Err(e) => {
+                    error!("Named pipe server error: {e}");
+                    return Err(e.into());
+                }
+            };
+
             let conn = hyper_util::rt::TokioIo::new(conn);
             let server = server.clone();
             let service = service.clone();
@@ -220,6 +334,8 @@ impl MiniAgent {
                 }
             }
             (_, INFO_ENDPOINT_PATH) => match Self::info_handler(
+                config.dd_apm_receiver_port,
+                config.dd_apm_windows_pipe_name.as_deref(),
                 config.dd_dogstatsd_port,
                 config.dd_dogstatsd_windows_pipe_name.as_deref(),
             ) {
@@ -291,12 +407,21 @@ impl MiniAgent {
     }
 
     fn info_handler(
+        dd_apm_receiver_port: u16,
+        dd_apm_windows_pipe_name: Option<&str>,
         dd_dogstatsd_port: u16,
         dd_dogstatsd_windows_pipe_name: Option<&str>,
     ) -> http::Result<hyper_migration::HttpResponse> {
         let mut config_json = serde_json::json!({
+            "apm_config": {
+                "receiver_port": dd_apm_receiver_port
+            },
             "statsd_port": dd_dogstatsd_port
         });
+
+        if let Some(pipe_name) = dd_apm_windows_pipe_name {
+            config_json["apm_config"]["receiver_windows_pipe_name"] = serde_json::json!(pipe_name);
+        }
 
         if let Some(pipe_name) = dd_dogstatsd_windows_pipe_name {
             config_json["statsd_windows_pipe_name"] = serde_json::json!(pipe_name);
