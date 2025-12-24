@@ -38,7 +38,7 @@ impl MiniAgent {
     pub async fn start_mini_agent(&self) -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
 
-        // verify we are in a google cloud funtion environment. if not, shut down the mini agent.
+        // verify we are in a serverless function environment. if not, shut down the mini agent.
         let mini_agent_metadata = Arc::new(
             self.env_verifier
                 .verify_environment(
@@ -64,7 +64,6 @@ impl MiniAgent {
         // flush to backend.
         let trace_flusher = self.trace_flusher.clone();
         tokio::spawn(async move {
-            let trace_flusher = trace_flusher.clone();
             trace_flusher.start_trace_flusher(trace_rx).await;
         });
 
@@ -78,7 +77,6 @@ impl MiniAgent {
         let stats_flusher = self.stats_flusher.clone();
         let stats_config = self.config.clone();
         tokio::spawn(async move {
-            let stats_flusher = stats_flusher.clone();
             stats_flusher
                 .start_stats_flusher(stats_config, stats_rx)
                 .await;
@@ -90,23 +88,22 @@ impl MiniAgent {
         let endpoint_config = self.config.clone();
 
         let service = service_fn(move |req| {
+            // called for each http request
             let trace_processor = trace_processor.clone();
             let trace_tx = trace_tx.clone();
-
             let stats_processor = stats_processor.clone();
             let stats_tx = stats_tx.clone();
-
             let endpoint_config = endpoint_config.clone();
             let mini_agent_metadata = Arc::clone(&mini_agent_metadata);
 
             MiniAgent::trace_endpoint_handler(
-                endpoint_config.clone(),
+                endpoint_config,
                 req.map(hyper_migration::Body::incoming),
-                trace_processor.clone(),
-                trace_tx.clone(),
-                stats_processor.clone(),
-                stats_tx.clone(),
-                Arc::clone(&mini_agent_metadata),
+                trace_processor,
+                trace_tx,
+                stats_processor,
+                stats_tx,
+                mini_agent_metadata,
             )
         });
 
