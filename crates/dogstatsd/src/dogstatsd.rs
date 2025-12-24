@@ -20,12 +20,15 @@ pub struct DogStatsDConfig {
     pub host: String,
     pub port: u16,
     pub metric_namespace: Option<String>,
+    pub windows_pipe_name: Option<String>,
 }
 
 enum BufferReader {
     UdpSocketReader(tokio::net::UdpSocket),
     #[allow(dead_code)]
     MirrorReader(Vec<u8>, SocketAddr),
+    #[cfg(windows)]
+    NamedPipeReader(tokio::net::windows::named_pipe::NamedPipeServer),
 }
 
 impl BufferReader {
@@ -45,6 +48,21 @@ impl BufferReader {
                 Ok((buf[..amt].to_owned(), src))
             }
             BufferReader::MirrorReader(data, socket) => Ok((data.clone(), *socket)),
+            #[cfg(windows)]
+            BufferReader::NamedPipeReader(pipe) => {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0; 8192];
+
+                #[allow(clippy::expect_used)]
+                let amt = pipe
+                    .read(&mut buf)
+                    .await
+                    .expect("didn't receive data from named pipe");
+
+                // Named pipes don't have a source address, use a dummy localhost address
+                let dummy_addr = "127.0.0.1:0".parse().expect("valid address");
+                Ok((buf[..amt].to_owned(), dummy_addr))
+            }
         }
     }
 }
@@ -56,17 +74,38 @@ impl DogStatsD {
         aggregator_handle: AggregatorHandle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> DogStatsD {
-        let addr = format!("{}:{}", config.host, config.port);
+        #[cfg_attr(not(windows), allow(unused_variables))]
+        let buffer_reader = if let Some(windows_pipe_name) = &config.windows_pipe_name {
+            // Named pipe is only supported on Windows
+            #[cfg(windows)]
+            {
+                use tokio::net::windows::named_pipe::ServerOptions;
+                #[allow(clippy::expect_used)]
+                let pipe = ServerOptions::new()
+                    .first_pipe_instance(true)
+                    .create(windows_pipe_name)
+                    .expect("couldn't create named pipe");
+                BufferReader::NamedPipeReader(pipe)
+            }
+            #[cfg(not(windows))]
+            {
+                panic!("Named pipes are only supported on Windows");
+            }
+        } else {
+            // UDP socket for all platforms
+            let addr = format!("{}:{}", config.host, config.port);
+            // TODO (UDS socket)
+            #[allow(clippy::expect_used)]
+            let socket = tokio::net::UdpSocket::bind(addr)
+                .await
+                .expect("couldn't bind to address");
+            BufferReader::UdpSocketReader(socket)
+        };
 
-        // TODO (UDS socket)
-        #[allow(clippy::expect_used)]
-        let socket = tokio::net::UdpSocket::bind(addr)
-            .await
-            .expect("couldn't bind to address");
         DogStatsD {
             cancel_token,
             aggregator_handle,
-            buffer_reader: BufferReader::UdpSocketReader(socket),
+            buffer_reader,
             metric_namespace: config.metric_namespace.clone(),
         }
     }
