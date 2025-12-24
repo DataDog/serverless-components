@@ -219,7 +219,10 @@ impl MiniAgent {
                     ),
                 }
             }
-            (_, INFO_ENDPOINT_PATH) => match Self::info_handler(config.dd_dogstatsd_port) {
+            (_, INFO_ENDPOINT_PATH) => match Self::info_handler(
+                config.dd_dogstatsd_port,
+                config.dd_dogstatsd_windows_pipe_name.as_deref(),
+            ) {
                 Ok(res) => Ok(res),
                 Err(err) => log_and_create_http_response(
                     &format!("Info endpoint error: {err}"),
@@ -287,7 +290,18 @@ impl MiniAgent {
         }
     }
 
-    fn info_handler(dd_dogstatsd_port: u16) -> http::Result<hyper_migration::HttpResponse> {
+    fn info_handler(
+        dd_dogstatsd_port: u16,
+        dd_dogstatsd_windows_pipe_name: Option<&str>,
+    ) -> http::Result<hyper_migration::HttpResponse> {
+        let mut config_json = serde_json::json!({
+            "statsd_port": dd_dogstatsd_port
+        });
+
+        if let Some(pipe_name) = dd_dogstatsd_windows_pipe_name {
+            config_json["statsd_windows_pipe_name"] = serde_json::json!(pipe_name);
+        }
+
         let response_json = json!(
             {
                 "endpoints": [
@@ -297,9 +311,7 @@ impl MiniAgent {
                     PROFILING_ENDPOINT_PATH
                 ],
                 "client_drop_p0s": true,
-                "config": {
-                    "statsd_port": dd_dogstatsd_port
-                }
+                "config": config_json
             }
         );
         Response::builder()

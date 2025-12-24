@@ -79,7 +79,10 @@ impl Tags {
 #[derive(Debug)]
 pub struct Config {
     pub dd_site: String,
+    pub dd_apm_receiver_port: u16,
+    pub dd_apm_windows_pipe_name: Option<String>,
     pub dd_dogstatsd_port: u16,
+    pub dd_dogstatsd_windows_pipe_name: Option<String>,
     pub env_type: trace_utils::EnvironmentType,
     pub app_name: Option<String>,
     pub max_request_content_length: usize,
@@ -119,6 +122,8 @@ impl Config {
             .ok()
             .and_then(|port| port.parse::<u16>().ok())
             .unwrap_or(DEFAULT_DOGSTATSD_PORT);
+        let dd_dogstatsd_windows_pipe_name: Option<String> =
+            env::var("DD_DOGSTATSD_WINDOWS_PIPE_NAME").ok();
         let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
 
         // construct the trace & trace stats intake urls based on DD_SITE env var (to flush traces &
@@ -166,6 +171,7 @@ impl Config {
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 100,
             dd_dogstatsd_port,
+            dd_dogstatsd_windows_pipe_name,
             dd_site,
             trace_intake: Endpoint {
                 url: hyper::Uri::from_str(&trace_intake_url).unwrap(),
@@ -343,6 +349,24 @@ mod tests {
         env::remove_var("DD_API_KEY");
         env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
         env::remove_var("DD_DOGSTATSD_PORT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_dogstatsd_windows_pipe_name() {
+        env::set_var("DD_API_KEY", "_not_a_real_key_");
+        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
+        env::set_var("DD_DOGSTATSD_WINDOWS_PIPE_NAME", r"\\.\pipe\dogstatsd");
+        let config_res = config::Config::new();
+        assert!(config_res.is_ok());
+        let config = config_res.unwrap();
+        assert_eq!(
+            config.dd_dogstatsd_windows_pipe_name,
+            Some(r"\\.\pipe\dogstatsd".to_string())
+        );
+        env::remove_var("DD_API_KEY");
+        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+        env::remove_var("DD_DOGSTATSD_WINDOWS_PIPE_NAME");
     }
 
     fn test_config_with_dd_tags(dd_tags: &str) -> config::Config {
