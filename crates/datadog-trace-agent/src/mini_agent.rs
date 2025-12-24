@@ -67,7 +67,7 @@ impl MiniAgent {
         // start our trace flusher. receives trace payloads and handles buffering + deciding when to
         // flush to backend.
         let trace_flusher = self.trace_flusher.clone();
-        tokio::spawn(async move {
+        let trace_flusher_handle = tokio::spawn(async move {
             trace_flusher.start_trace_flusher(trace_rx).await;
         });
 
@@ -80,7 +80,7 @@ impl MiniAgent {
         // start our stats flusher.
         let stats_flusher = self.stats_flusher.clone();
         let stats_config = self.config.clone();
-        tokio::spawn(async move {
+        let stats_flusher_handle = tokio::spawn(async move {
             stats_flusher
                 .start_stats_flusher(stats_config, stats_rx)
                 .await;
@@ -139,7 +139,13 @@ impl MiniAgent {
             // Windows named pipe transport
             #[cfg(windows)]
             {
-                Self::serve_named_pipe(pipe_name, service).await?;
+                Self::serve_named_pipe(
+                    pipe_name,
+                    service,
+                    trace_flusher_handle,
+                    stats_flusher_handle,
+                )
+                .await?;
             }
 
             #[cfg(not(windows))]
@@ -152,7 +158,8 @@ impl MiniAgent {
             let addr = SocketAddr::from(([127, 0, 0, 1], self.config.dd_apm_receiver_port));
             let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-            Self::serve_tcp(listener, service).await?;
+            Self::serve_tcp(listener, service, trace_flusher_handle, stats_flusher_handle)
+                .await?;
         }
 
         Ok(())
@@ -161,6 +168,8 @@ impl MiniAgent {
     async fn serve_tcp<S>(
         listener: tokio::net::TcpListener,
         service: S,
+        mut trace_flusher_handle: tokio::task::JoinHandle<()>,
+        mut stats_flusher_handle: tokio::task::JoinHandle<()>,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
         S: hyper::service::Service<
@@ -172,8 +181,13 @@ impl MiniAgent {
         S::Future: Send,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
+        use tokio::time::{sleep, Duration};
+
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
+        let mut consecutive_errors = 0u32;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+
         loop {
             let conn = tokio::select! {
                 con_res = listener.accept() => match con_res {
@@ -185,13 +199,29 @@ impl MiniAgent {
                                 | io::ErrorKind::ConnectionRefused
                         ) =>
                     {
+                        // Transient connection errors - just continue
+                        consecutive_errors = 0; // Reset on transient errors
                         continue;
                     }
                     Err(e) => {
-                        error!("Server error: {e}");
-                        return Err(e.into());
+                        // Log non-transient errors but don't immediately kill server
+                        error!("TCP listener error: {e}");
+                        consecutive_errors += 1;
+
+                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                            error!("Too many consecutive listener errors, shutting down");
+                            return Err(e.into());
+                        }
+
+                        // Exponential backoff before retry
+                        let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+                        sleep(Duration::from_millis(backoff_ms)).await;
+                        continue;
                     }
-                    Ok((conn, _)) => conn,
+                    Ok((conn, _)) => {
+                        consecutive_errors = 0; // Reset on success
+                        conn
+                    }
                 },
                 finished = async {
                     match joinset.join_next().await {
@@ -200,9 +230,19 @@ impl MiniAgent {
                     }
                 } => match finished {
                     Err(e) if e.is_panic() => {
-                        std::panic::resume_unwind(e.into_panic());
+                        // Don't kill server on panic - log and continue
+                        error!("Connection handler panicked: {:?}", e);
+                        continue;
                     },
                     Ok(()) | Err(_) => continue,
+                },
+                result = &mut trace_flusher_handle => {
+                    error!("Trace flusher task died: {:?}", result);
+                    return Err("Trace flusher task terminated unexpectedly".into());
+                },
+                result = &mut stats_flusher_handle => {
+                    error!("Stats flusher task died: {:?}", result);
+                    return Err("Stats flusher task terminated unexpectedly".into());
                 },
             };
             let conn = hyper_util::rt::TokioIo::new(conn);
@@ -220,6 +260,8 @@ impl MiniAgent {
     async fn serve_named_pipe<S>(
         pipe_name: &str,
         service: S,
+        mut trace_flusher_handle: tokio::task::JoinHandle<()>,
+        mut stats_flusher_handle: tokio::task::JoinHandle<()>,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
         S: hyper::service::Service<
@@ -232,20 +274,47 @@ impl MiniAgent {
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         use tokio::net::windows::named_pipe::ServerOptions;
+        use tokio::time::{sleep, Duration};
 
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
+        let mut consecutive_errors = 0u32;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+
+        // Pre-create first pipe instance to minimize connection gap
+        let mut current_pipe = loop {
+            match ServerOptions::new()
+                .first_pipe_instance(false)
+                .create(pipe_name)
+            {
+                Ok(pipe) => break pipe,
+                Err(e) => {
+                    consecutive_errors += 1;
+                    error!(
+                        "Failed to create initial named pipe (attempt {}/{}): {}",
+                        consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                    );
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        error!("Too many consecutive pipe creation failures during startup, shutting down");
+                        return Err(e.into());
+                    }
+
+                    // Exponential backoff: 10ms, 20ms, 40ms, 80ms, ...
+                    let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+                    sleep(Duration::from_millis(backoff_ms)).await;
+                }
+            }
+        };
+
+        // Reset error counter after successful creation
+        consecutive_errors = 0;
 
         loop {
-            // Create a new named pipe server instance for this connection
-            let pipe_server = ServerOptions::new()
-                .first_pipe_instance(false)
-                .create(pipe_name)?;
-
             let conn_result = tokio::select! {
-                connect_res = pipe_server.connect() => {
+                connect_res = current_pipe.connect() => {
                     match connect_res {
-                        Ok(()) => Ok(pipe_server),
+                        Ok(()) => Ok(current_pipe),
                         Err(e) => Err(e),
                     }
                 },
@@ -256,13 +325,23 @@ impl MiniAgent {
                     }
                 } => match finished {
                     Err(e) if e.is_panic() => {
-                        std::panic::resume_unwind(e.into_panic());
+                        // Don't kill server on panic - log and continue
+                        error!("Connection handler panicked: {:?}", e);
+                        continue;
                     },
                     Ok(()) | Err(_) => continue,
                 },
+                result = &mut trace_flusher_handle => {
+                    error!("Trace flusher task died: {:?}", result);
+                    return Err("Trace flusher task terminated unexpectedly".into());
+                },
+                result = &mut stats_flusher_handle => {
+                    error!("Stats flusher task died: {:?}", result);
+                    return Err("Stats flusher task terminated unexpectedly".into());
+                },
             };
 
-            let conn = match conn_result {
+            let connected_pipe = match conn_result {
                 Ok(pipe) => pipe,
                 Err(e)
                     if matches!(
@@ -272,15 +351,90 @@ impl MiniAgent {
                             | io::ErrorKind::ConnectionRefused
                     ) =>
                 {
+                    // Transient connection errors - recreate pipe and continue
+                    current_pipe = match ServerOptions::new()
+                        .first_pipe_instance(false)
+                        .create(pipe_name)
+                    {
+                        Ok(pipe) => {
+                            consecutive_errors = 0;
+                            pipe
+                        }
+                        Err(e) => {
+                            consecutive_errors += 1;
+                            error!(
+                                "Failed to recreate pipe after transient error (attempt {}/{}): {}",
+                                consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                            );
+
+                            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                return Err(e.into());
+                            }
+
+                            let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+                            sleep(Duration::from_millis(backoff_ms)).await;
+                            continue;
+                        }
+                    };
                     continue;
                 }
                 Err(e) => {
-                    error!("Named pipe server error: {e}");
-                    return Err(e.into());
+                    // Log non-transient errors but don't immediately kill server
+                    error!("Named pipe connection error: {e}");
+                    consecutive_errors += 1;
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        error!("Too many consecutive connection errors, shutting down");
+                        return Err(e.into());
+                    }
+
+                    // Recreate pipe with backoff
+                    let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+                    sleep(Duration::from_millis(backoff_ms)).await;
+
+                    current_pipe = match ServerOptions::new()
+                        .first_pipe_instance(false)
+                        .create(pipe_name)
+                    {
+                        Ok(pipe) => pipe,
+                        Err(e) => {
+                            error!("Failed to recreate pipe after error: {}", e);
+                            continue;
+                        }
+                    };
+                    continue;
                 }
             };
 
-            let conn = hyper_util::rt::TokioIo::new(conn);
+            // Connection successful! Immediately create next pipe instance
+            // to minimize gap where no pipe is available
+            let next_pipe = match ServerOptions::new()
+                .first_pipe_instance(false)
+                .create(pipe_name)
+            {
+                Ok(pipe) => {
+                    consecutive_errors = 0; // Reset on success
+                    pipe
+                }
+                Err(e) => {
+                    consecutive_errors += 1;
+                    error!(
+                        "Failed to create next pipe instance (attempt {}/{}): {}",
+                        consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                    );
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        return Err(e.into());
+                    }
+
+                    // Brief pause before retry
+                    sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+
+            // Spawn handler with connected_pipe (ownership moved to task)
+            let conn = hyper_util::rt::TokioIo::new(connected_pipe);
             let server = server.clone();
             let service = service.clone();
             joinset.spawn(async move {
@@ -288,6 +442,9 @@ impl MiniAgent {
                     error!("Connection error: {e}");
                 }
             });
+
+            // Use next_pipe for the next iteration
+            current_pipe = next_pipe;
         }
     }
 
@@ -337,7 +494,6 @@ impl MiniAgent {
                 config.dd_apm_receiver_port,
                 config.dd_apm_windows_pipe_name.as_deref(),
                 config.dd_dogstatsd_port,
-                config.dd_dogstatsd_windows_pipe_name.as_deref(),
             ) {
                 Ok(res) => Ok(res),
                 Err(err) => log_and_create_http_response(
@@ -410,7 +566,6 @@ impl MiniAgent {
         dd_apm_receiver_port: u16,
         dd_apm_windows_pipe_name: Option<&str>,
         dd_dogstatsd_port: u16,
-        dd_dogstatsd_windows_pipe_name: Option<&str>,
     ) -> http::Result<hyper_migration::HttpResponse> {
         let mut config_json = serde_json::json!({
             "apm_config": {
@@ -421,10 +576,6 @@ impl MiniAgent {
 
         if let Some(pipe_name) = dd_apm_windows_pipe_name {
             config_json["apm_config"]["receiver_windows_pipe_name"] = serde_json::json!(pipe_name);
-        }
-
-        if let Some(pipe_name) = dd_dogstatsd_windows_pipe_name {
-            config_json["statsd_windows_pipe_name"] = serde_json::json!(pipe_name);
         }
 
         let response_json = json!(
