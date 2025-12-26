@@ -9,6 +9,38 @@ use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
 use tracing::{debug, error, trace};
 
+// Windows-specific imports and constants
+#[cfg(windows)]
+use {
+    std::cell::RefCell,
+    tokio::io::AsyncReadExt,
+    tokio::net::windows::named_pipe::ServerOptions,
+    tokio::time::{sleep, Duration},
+};
+
+#[cfg(windows)]
+const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+
+/// Represents the source of a DogStatsD message
+#[derive(Debug, Clone)]
+pub enum MessageSource {
+    /// Message received from a network socket (UDP)
+    Network(SocketAddr),
+    /// Message received from a Windows named pipe
+    #[cfg(windows)]
+    NamedPipe(String),
+}
+
+impl std::fmt::Display for MessageSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Network(addr) => write!(f, "{}", addr),
+            #[cfg(windows)]
+            Self::NamedPipe(name) => write!(f, "{}", name),
+        }
+    }
+}
+
 pub struct DogStatsD {
     cancel_token: tokio_util::sync::CancellationToken,
     aggregator_handle: AggregatorHandle,
@@ -28,11 +60,73 @@ enum BufferReader {
     #[allow(dead_code)]
     MirrorReader(Vec<u8>, SocketAddr),
     #[cfg(windows)]
-    NamedPipeReader(tokio::net::windows::named_pipe::NamedPipeServer),
+    NamedPipeReader {
+        pipe_name: String,
+        current_pipe: RefCell<Option<tokio::net::windows::named_pipe::NamedPipeServer>>,
+        consecutive_errors: RefCell<u32>,
+    },
+}
+
+#[cfg(windows)]
+async fn create_and_connect_pipe(
+    pipe_name: &str,
+    consecutive_errors: &mut u32,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    // Create pipe with retry logic
+    let pipe = loop {
+        match ServerOptions::new()
+            .first_pipe_instance(false)
+            .create(pipe_name)
+        {
+            Ok(p) => {
+                *consecutive_errors = 0;
+                break p;
+            }
+            Err(e) => {
+                error!("Failed to create named pipe: {}", e);
+                *consecutive_errors += 1;
+
+                if *consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Too many consecutive pipe creation errors",
+                    ));
+                }
+
+                let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+                sleep(Duration::from_millis(backoff_ms)).await;
+                continue;
+            }
+        }
+    };
+
+    // Wait for client to connect
+    match pipe.connect().await {
+        Ok(()) => {
+            *consecutive_errors = 0;
+            debug!("Client connected to DogStatsD named pipe");
+            Ok(pipe)
+        }
+        Err(e) => {
+            error!("Failed to accept connection on named pipe: {}", e);
+            *consecutive_errors += 1;
+
+            if *consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Too many consecutive connection errors",
+                ));
+            }
+
+            let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+            sleep(Duration::from_millis(backoff_ms)).await;
+            Err(e)
+        }
+    }
 }
 
 impl BufferReader {
-    async fn read(&self) -> std::io::Result<(Vec<u8>, SocketAddr)> {
+    async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
         match self {
             BufferReader::UdpSocketReader(socket) => {
                 // TODO(astuyve) this should be dynamic
@@ -45,23 +139,71 @@ impl BufferReader {
                     .recv_from(&mut buf)
                     .await
                     .expect("didn't receive data");
-                Ok((buf[..amt].to_owned(), src))
+                Ok((buf[..amt].to_owned(), MessageSource::Network(src)))
             }
-            BufferReader::MirrorReader(data, socket) => Ok((data.clone(), *socket)),
+            BufferReader::MirrorReader(data, socket) => {
+                Ok((data.clone(), MessageSource::Network(*socket)))
+            }
             #[cfg(windows)]
-            BufferReader::NamedPipeReader(pipe) => {
-                use tokio::io::AsyncReadExt;
-                let mut buf = [0; 8192];
+            BufferReader::NamedPipeReader {
+                pipe_name,
+                current_pipe,
+                consecutive_errors,
+            } => {
+                loop {
+                    // Create pipe if needed
+                    if current_pipe.borrow().is_none() {
+                        let mut errors = consecutive_errors.borrow_mut();
+                        match create_and_connect_pipe(pipe_name, &mut errors).await {
+                            Ok(new_pipe) => {
+                                drop(errors);
+                                *current_pipe.borrow_mut() = Some(new_pipe);
+                            }
+                            Err(e) => {
+                                return Err(e);
+                            }
+                        }
+                    }
 
-                #[allow(clippy::expect_used)]
-                let amt = pipe
-                    .read(&mut buf)
-                    .await
-                    .expect("didn't receive data from named pipe");
+                    // Read from the connected pipe
+                    let mut buf = [0; 8192];
+                    let mut pipe_ref = current_pipe.borrow_mut();
+                    let pipe = pipe_ref.as_mut().unwrap();
 
-                // Named pipes don't have a source address, use a dummy localhost address
-                let dummy_addr = "127.0.0.1:0".parse().expect("valid address");
-                Ok((buf[..amt].to_owned(), dummy_addr))
+                    match pipe.read(&mut buf).await {
+                        Ok(0) => {
+                            *pipe_ref = None;
+                            drop(pipe_ref);
+                            continue;
+                        }
+                        Ok(amt) => {
+                            *consecutive_errors.borrow_mut() = 0;
+                            return Ok((
+                                buf[..amt].to_vec(),
+                                MessageSource::NamedPipe(pipe_name.to_string()),
+                            ));
+                        }
+                        Err(e) => {
+                            // Read error
+                            error!("Error reading from named pipe: {}", e);
+                            *consecutive_errors.borrow_mut() += 1;
+                            *pipe_ref = None;
+                            drop(pipe_ref);
+
+                            let current_errors = *consecutive_errors.borrow();
+                            if current_errors >= MAX_CONSECUTIVE_ERRORS {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "Too many consecutive read errors",
+                                ));
+                            }
+
+                            let backoff_ms = 10u64 * (1 << current_errors.min(6));
+                            sleep(Duration::from_millis(backoff_ms)).await;
+                            continue;
+                        }
+                    }
+                }
             }
         }
     }
@@ -74,22 +216,25 @@ impl DogStatsD {
         aggregator_handle: AggregatorHandle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> DogStatsD {
-        #[cfg_attr(not(windows), allow(unused_variables))]
-        let buffer_reader = if let Some(windows_pipe_name) = &config.windows_pipe_name {
-            // Named pipe is only supported on Windows
+        // Fail fast on non-Windows if pipe name is configured
+        #[cfg(not(windows))]
+        if config.windows_pipe_name.is_some() {
+            panic!("Named pipes are only supported on Windows");
+        }
+
+        #[allow(unused_variables)]  // pipe_name unused on non-Windows
+        let buffer_reader = if let Some(ref pipe_name) = config.windows_pipe_name {
             #[cfg(windows)]
             {
-                use tokio::net::windows::named_pipe::ServerOptions;
-                #[allow(clippy::expect_used)]
-                let pipe = ServerOptions::new()
-                    .first_pipe_instance(true)
-                    .create(windows_pipe_name)
-                    .expect("couldn't create named pipe");
-                BufferReader::NamedPipeReader(pipe)
+                BufferReader::NamedPipeReader {
+                    pipe_name: pipe_name.clone(),
+                    current_pipe: RefCell::new(None),
+                    consecutive_errors: RefCell::new(0),
+                }
             }
             #[cfg(not(windows))]
             {
-                panic!("Named pipes are only supported on Windows");
+                unreachable!("Windows pipe on non-Windows (checked above)")
             }
         } else {
             // UDP socket for all platforms
