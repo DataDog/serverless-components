@@ -1,6 +1,12 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+//! DogStatsD server implementation for receiving and processing metrics.
+//!
+//! This module implements a DogStatsD-compatible server that receives metric data from multiple
+//! transport mechanisms (UDP sockets, Windows named pipes), parses the metrics, applies optional
+//! namespacing, and forwards them to an aggregator for batching and shipping to Datadog.
+
 use std::net::SocketAddr;
 use std::str::Split;
 
@@ -9,28 +15,41 @@ use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
 use tracing::{debug, error, trace};
 
-// Windows-specific imports and constants
+// Windows-specific imports
 #[cfg(windows)]
 use {
+    std::sync::Arc,
     tokio::io::AsyncReadExt,
     tokio::net::windows::named_pipe::ServerOptions,
     tokio::time::{sleep, Duration},
 };
 
-// Maximum number of consecutive errors before giving up on named pipe operations.
-// Backoff formula: 10ms * 2^error_count, capped at 2^6
-// With MAX = 5: backoffs are 20ms, 40ms, 80ms, 160ms (total: 300ms before giving up)
-#[cfg(windows)]
-const MAX_NAMED_PIPE_ERRORS: u32 = 5;
+// DogStatsD buffer size for receiving metrics
+// TODO(astuyve) buf should be dynamic
+// Max buffer size is configurable in Go Agent with a default of 8KB
+// https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
+const BUFFER_SIZE: usize = 8192;
 
-/// Represents the source of a DogStatsD message
+/// Configuration for the DogStatsD server
+pub struct DogStatsDConfig {
+    /// Host to bind UDP socket to (e.g., "127.0.0.1")
+    pub host: String,
+    /// Port to bind UDP socket to (e.g., 8125), will be 0 if we're using a Named Pipe
+    pub port: u16,
+    /// Optional namespace to prepend to all metric names (e.g., "myapp")
+    pub metric_namespace: Option<String>,
+    /// Optional Windows named pipe path (e.g., "\\\\.\\pipe\\my_pipe")
+    pub windows_pipe_name: Option<String>,
+}
+
+/// Represents the source of a DogStatsD message. Varies by transport method.
 #[derive(Debug, Clone)]
 pub enum MessageSource {
     /// Message received from a network socket (UDP)
     Network(SocketAddr),
-    /// Message received from a Windows named pipe
+    /// Message received from a Windows named pipe (Arc for efficient cloning)
     #[cfg(windows)]
-    NamedPipe(String),
+    NamedPipe(Arc<String>),
 }
 
 impl std::fmt::Display for MessageSource {
@@ -43,42 +62,74 @@ impl std::fmt::Display for MessageSource {
     }
 }
 
-pub struct DogStatsD {
-    cancel_token: tokio_util::sync::CancellationToken,
-    aggregator_handle: AggregatorHandle,
-    buffer_reader: BufferReader,
-    metric_namespace: Option<String>,
-}
-
-pub struct DogStatsDConfig {
-    pub host: String,
-    pub port: u16,
-    pub metric_namespace: Option<String>,
-    pub windows_pipe_name: Option<String>,
-}
-
+// BufferReader abstracts transport methods for metric data.
 enum BufferReader {
+    /// UDP socket reader (cross-platform, default transport)
     UdpSocketReader(tokio::net::UdpSocket),
+
+    /// Mirror reader for testing - replays a fixed buffer
     #[allow(dead_code)]
     MirrorReader(Vec<u8>, SocketAddr),
+
+    /// Windows named pipe reader (Windows-only transport)
     #[cfg(windows)]
     NamedPipeReader {
-        pipe_name: String,
+        pipe_name: Arc<String>,
         cancel_token: tokio_util::sync::CancellationToken,
     },
 }
 
-// Creates a Windows named pipe and waits for a client to connect.
-//
-// Note: Windows named pipes have transient failures. Retries are centralized in the read function.
-// If most retries are pipe creation errors, we could optimize with additional retry logic here.
+impl BufferReader {
+    /// This is the main entry point for receiving metric data.
+    /// Note: Different transports have different blocking behaviors.
+    async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
+        match self {
+            BufferReader::UdpSocketReader(socket) => {
+                // UDP socket: blocks until a packet arrives
+                let mut buf = [0; BUFFER_SIZE];
+
+                #[allow(clippy::expect_used)]
+                let (amt, src) = socket
+                    .recv_from(&mut buf)
+                    .await
+                    .expect("didn't receive data");
+                Ok((buf[..amt].to_owned(), MessageSource::Network(src)))
+            }
+            BufferReader::MirrorReader(data, socket) => {
+                // Mirror Reader: returns immediately with stored data
+                Ok((data.clone(), MessageSource::Network(*socket)))
+            }
+            #[cfg(windows)]
+            BufferReader::NamedPipeReader {
+                pipe_name,
+                cancel_token,
+            } => {
+                // Named Pipe Reader: retries with backoff due to expected transient errors
+                let data = read_from_named_pipe(pipe_name, cancel_token).await.expect("didn't receive data");
+                Ok((data, MessageSource::NamedPipe(Arc::clone(pipe_name))))
+            }
+        }
+    }
+}
+
+// Maximum number of consecutive errors before giving up on named pipe operations.
+// Backoff formula: 10ms * 2^error_count, capped at 2^6
+// With MAX = 5: backoffs are 20ms, 40ms, 80ms, 160ms (total: 300ms before giving up)
+#[cfg(windows)]
+const MAX_NAMED_PIPE_ERRORS: u32 = 5;
+
+/// Creates a Windows named pipe and waits for a client to connect.
+///
+/// Note: Windows named pipes have transient failures. Retries are centralized in the read function.
+/// If most retries are pipe creation errors, we could optimize with additional retry logic here?
 #[cfg(windows)]
 async fn create_and_connect_named_pipe(
     pipe_name: &str,
 ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
-    // Create named pipe (single attempt)
     let named_pipe = ServerOptions::new()
+        .access_outbound(false)
         .first_pipe_instance(false)
+        .write_dac()
         .create(pipe_name)
         .map_err(|e| {
             error!("Failed to create named pipe: {}", e);
@@ -91,108 +142,101 @@ async fn create_and_connect_named_pipe(
     Ok(named_pipe)
 }
 
-impl BufferReader {
-    async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
-        match self {
-            BufferReader::UdpSocketReader(socket) => {
-                // TODO(astuyve) this should be dynamic
-                // Max buffer size is configurable in Go Agent and the default is 8KB
-                // https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
-                let mut buf = [0; 8192];
+/// Reads data from a Windows named pipe with retry logic.
+///
+/// Windows named pipes can experience transient failures (client disconnect, pipe errors).
+/// This function implements a retry loop with exponential backoff to handle these failures
+/// gracefully while allowing responsive shutdown via the cancel_token.
+#[cfg(windows)]
+async fn read_from_named_pipe(
+    pipe_name: &str,
+    cancel_token: &tokio_util::sync::CancellationToken,
+) -> std::io::Result<Vec<u8>> {
+    let mut consecutive_errors = 0;
+    let mut current_pipe: Option<tokio::net::windows::named_pipe::NamedPipeServer> = None;
 
-                #[allow(clippy::expect_used)]
-                let (amt, src) = socket
-                    .recv_from(&mut buf)
-                    .await
-                    .expect("didn't receive data");
-                Ok((buf[..amt].to_owned(), MessageSource::Network(src)))
-            }
-            #[cfg(windows)]
-            BufferReader::NamedPipeReader {
-                pipe_name,
-                cancel_token,
-            } => {
-                let mut consecutive_errors = 0;
-                let mut current_pipe: Option<tokio::net::windows::named_pipe::NamedPipeServer> =
-                    None;
+    loop {
+        // Check if cancelled between operations
+        if cancel_token.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Operation cancelled",
+            ));
+        }
 
-                loop {
-                    // Check if cancelled
-                    if cancel_token.is_cancelled() {
+        // Create pipe if needed (initial startup, after client disconnect, or after error)
+        if current_pipe.is_none() {
+            match create_and_connect_named_pipe(pipe_name).await {
+                Ok(new_pipe) => {
+                    consecutive_errors = 0;
+                    current_pipe = Some(new_pipe);
+                }
+                Err(e) => {
+                    // Handle pipe creation/connection errors with retry logic
+                    consecutive_errors += 1;
+
+                    if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
                         return Err(std::io::Error::new(
-                            std::io::ErrorKind::Interrupted,
-                            "Operation cancelled",
+                            std::io::ErrorKind::Other,
+                            format!("Too many consecutive pipe errors: {}", e),
                         ));
                     }
 
-                    // Create pipe if needed (initial startup, after client disconnect, or after error)
-                    if current_pipe.is_none() {
-                        match create_and_connect_named_pipe(pipe_name).await {
-                            Ok(new_pipe) => {
-                                consecutive_errors = 0;
-                                current_pipe = Some(new_pipe);
-                            }
-                            Err(e) => {
-                                // Handle pipe creation/connection errors with retry logic
-                                consecutive_errors += 1;
-
-                                if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
-                                    return Err(std::io::Error::new(
-                                        std::io::ErrorKind::Other,
-                                        format!("Too many consecutive pipe errors: {}", e),
-                                    ));
-                                }
-
-                                let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
-                                sleep(Duration::from_millis(backoff_ms)).await;
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Read from the connected pipe
-                    let mut buf = [0; 8192];
-                    let pipe = current_pipe.as_mut().unwrap();
-
-                    match pipe.read(&mut buf).await {
-                        Ok(0) => {
-                            current_pipe = None;
-                            continue;
-                        }
-                        Ok(amt) => {
-                            return Ok((
-                                buf[..amt].to_vec(),
-                                MessageSource::NamedPipe(pipe_name.to_string()),
-                            ));
-                        }
-                        Err(e) => {
-                            // Read error
-                            error!("Error reading from named pipe: {}", e);
-                            consecutive_errors += 1;
-                            current_pipe = None;
-
-                            if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
-                                return Err(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    "Too many consecutive read errors",
-                                ));
-                            }
-
-                            let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
-                            sleep(Duration::from_millis(backoff_ms)).await;
-                            continue;
-                        }
-                    }
+                    let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+                    sleep(Duration::from_millis(backoff_ms)).await;
+                    continue;
                 }
-            },
-            BufferReader::MirrorReader(data, socket) => {
-                Ok((data.clone(), MessageSource::Network(*socket)))
+            }
+        }
+
+        // Read from the connected pipe
+        let mut buf = [0; BUFFER_SIZE];
+        let pipe = current_pipe.as_mut().unwrap();
+
+        match pipe.read(&mut buf).await {
+            Ok(0) => {
+                // Client disconnected gracefully
+                current_pipe = None;
+                continue;
+            }
+            Ok(amt) => {
+                // Successfully read data
+                return Ok(buf[..amt].to_vec());
+            }
+            Err(e) => {
+                // Read error - retry with backoff
+                error!("Error reading from named pipe: {}", e);
+                consecutive_errors += 1;
+                current_pipe = None;
+
+                if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Too many consecutive read errors",
+                    ));
+                }
+
+                let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+                sleep(Duration::from_millis(backoff_ms)).await;
+                continue;
             }
         }
     }
 }
 
+/// TDogStatsD server to receive, parse, and forward metrics.
+pub struct DogStatsD {
+    cancel_token: tokio_util::sync::CancellationToken,
+    aggregator_handle: AggregatorHandle,
+    buffer_reader: BufferReader,
+    metric_namespace: Option<String>,
+}
+
 impl DogStatsD {
+    /// Creates a new DogStatsD server instance.
+    ///
+    /// The server will bind to either a UDP socket or Windows named pipe based on the config.
+    /// Metrics received will be forwarded to the provided aggregator_handle.
     #[must_use]
     pub async fn new(
         config: &DogStatsDConfig,
@@ -204,7 +248,7 @@ impl DogStatsD {
             #[cfg(windows)]
             {
                 BufferReader::NamedPipeReader {
-                    pipe_name: pipe_name.clone(),
+                    pipe_name: Arc::new(pipe_name.clone()),
                     cancel_token: cancel_token.clone(),
                 }
             }
@@ -232,6 +276,7 @@ impl DogStatsD {
         }
     }
 
+    /// Main event loop that continuously receives and processes metrics.
     pub async fn spin(self) {
         let mut spin_cancelled = false;
         while !spin_cancelled {
@@ -240,6 +285,7 @@ impl DogStatsD {
         }
     }
 
+    /// Receive one batch of metrics from the transport layer and process them.
     async fn consume_statsd(&self) {
         #[allow(clippy::expect_used)]
         let (buf, src) = self
@@ -255,12 +301,7 @@ impl DogStatsD {
         self.insert_metrics(statsd_metric_strings);
     }
 
-    fn prepend_namespace(namespace: &str, metric: &mut Metric) {
-        let new_name = format!("{}.{}", namespace, metric.name);
-        metric.name = ustr::Ustr::from(&new_name);
-        metric.id = id(metric.name, &metric.tags, metric.timestamp);
-    }
-
+    /// Parses metrics from raw DogStatsD format and forwards them to the aggregator.
     fn insert_metrics(&self, msg: Split<char>) {
         let namespace = self.metric_namespace.as_deref();
         let all_valid_metrics: Vec<Metric> = msg
@@ -300,6 +341,13 @@ impl DogStatsD {
                 error!("Failed to send metrics to aggregator: {}", e);
             }
         }
+    }
+
+    /// Prepends a namespace to a metric's name and updates its ID.
+    fn prepend_namespace(namespace: &str, metric: &mut Metric) {
+        let new_name = format!("{}.{}", namespace, metric.name);
+        metric.name = ustr::Ustr::from(&new_name);
+        metric.id = id(metric.name, &metric.tags, metric.timestamp);
     }
 }
 
