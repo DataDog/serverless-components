@@ -71,18 +71,17 @@ enum BufferReader {
     },
 }
 
-// Creates a named pipe and waits for a client to connect.
-// Retry logic is handled by the caller to maintain consistency across all error types.
+// Creates a Windows named pipe and waits for a client to connect.
 //
-// Note: If profiling shows that pipe creation errors dominate retry scenarios,
-// we could optimize by adding targeted retry logic here for creation-specific failures.
+// Note: Windows named pipes have transient failures. Retries are centralized in the read function.
+// If most retries are pipe creation errors, we could optimize with additional retry logic here.
 #[cfg(windows)]
-async fn create_and_connect_pipe(
+async fn create_and_connect_named_pipe(
     pipe_name: &str,
     cancel_token: &tokio_util::sync::CancellationToken,
 ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
-    // Create pipe (single attempt)
-    let pipe = ServerOptions::new()
+    // Create named pipe (single attempt)
+    let named_pipe = ServerOptions::new()
         .first_pipe_instance(false)
         .create(pipe_name)
         .map_err(|e| {
@@ -90,9 +89,9 @@ async fn create_and_connect_pipe(
             e
         })?;
 
-    // Wait for client to connect
+    // Wait for client to connect to named pipe
     let connect_result = tokio::select! {
-        result = pipe.connect() => result,
+        result = named_pipe.connect() => result,
         _ = cancel_token.cancelled() => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
@@ -104,7 +103,7 @@ async fn create_and_connect_pipe(
     match connect_result {
         Ok(()) => {
             debug!("Client connected to DogStatsD named pipe");
-            Ok(pipe)
+            Ok(named_pipe)
         }
         Err(e) => {
             error!("Failed to accept connection on named pipe: {}", e);
@@ -129,9 +128,6 @@ impl BufferReader {
                     .expect("didn't receive data");
                 Ok((buf[..amt].to_owned(), MessageSource::Network(src)))
             }
-            BufferReader::MirrorReader(data, socket) => {
-                Ok((data.clone(), MessageSource::Network(*socket)))
-            }
             #[cfg(windows)]
             BufferReader::NamedPipeReader {
                 pipe_name,
@@ -148,9 +144,9 @@ impl BufferReader {
                         ));
                     }
 
-                    // Create pipe if needed
+                    // Create pipe if needed (initial startup, after client disconnect, or after error)
                     if current_pipe.borrow().is_none() {
-                        match create_and_connect_pipe(pipe_name, cancel_token).await {
+                        match create_and_connect_named_pipe(pipe_name, cancel_token).await {
                             Ok(new_pipe) => {
                                 *consecutive_errors.borrow_mut() = 0;
                                 *current_pipe.borrow_mut() = Some(new_pipe);
@@ -239,6 +235,9 @@ impl BufferReader {
                         }
                     }
                 }
+            },
+            BufferReader::MirrorReader(data, socket) => {
+                Ok((data.clone(), MessageSource::Network(*socket)))
             }
         }
     }
@@ -251,12 +250,6 @@ impl DogStatsD {
         aggregator_handle: AggregatorHandle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> DogStatsD {
-        // Fail fast on non-Windows if pipe name is configured
-        #[cfg(not(windows))]
-        if config.windows_pipe_name.is_some() {
-            panic!("Named pipes are only supported on Windows");
-        }
-
         #[allow(unused_variables)] // pipe_name unused on non-Windows
         let buffer_reader = if let Some(ref pipe_name) = config.windows_pipe_name {
             #[cfg(windows)]
@@ -269,8 +262,9 @@ impl DogStatsD {
                 }
             }
             #[cfg(not(windows))]
+            #[allow(clippy::panic)]
             {
-                panic!("Named pipes are only supported on Windows")
+                panic!("Named pipes are only supported on Windows.")
             }
         } else {
             // UDP socket for all platforms
