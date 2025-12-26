@@ -12,7 +12,6 @@ use tracing::{debug, error, trace};
 // Windows-specific imports and constants
 #[cfg(windows)]
 use {
-    std::cell::RefCell,
     tokio::io::AsyncReadExt,
     tokio::net::windows::named_pipe::ServerOptions,
     tokio::time::{sleep, Duration},
@@ -65,8 +64,6 @@ enum BufferReader {
     #[cfg(windows)]
     NamedPipeReader {
         pipe_name: String,
-        current_pipe: RefCell<Option<tokio::net::windows::named_pipe::NamedPipeServer>>,
-        consecutive_errors: RefCell<u32>,
         cancel_token: tokio_util::sync::CancellationToken,
     },
 }
@@ -78,7 +75,6 @@ enum BufferReader {
 #[cfg(windows)]
 async fn create_and_connect_named_pipe(
     pipe_name: &str,
-    cancel_token: &tokio_util::sync::CancellationToken,
 ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
     // Create named pipe (single attempt)
     let named_pipe = ServerOptions::new()
@@ -90,26 +86,9 @@ async fn create_and_connect_named_pipe(
         })?;
 
     // Wait for client to connect to named pipe
-    let connect_result = tokio::select! {
-        result = named_pipe.connect() => result,
-        _ = cancel_token.cancelled() => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "Operation cancelled",
-            ));
-        }
-    };
-
-    match connect_result {
-        Ok(()) => {
-            debug!("Client connected to DogStatsD named pipe");
-            Ok(named_pipe)
-        }
-        Err(e) => {
-            error!("Failed to accept connection on named pipe: {}", e);
-            Err(e)
-        }
-    }
+    named_pipe.connect().await?;
+    debug!("Client connected to DogStatsD named pipe");
+    Ok(named_pipe)
 }
 
 impl BufferReader {
@@ -131,10 +110,12 @@ impl BufferReader {
             #[cfg(windows)]
             BufferReader::NamedPipeReader {
                 pipe_name,
-                current_pipe,
-                consecutive_errors,
                 cancel_token,
             } => {
+                let mut consecutive_errors = 0;
+                let mut current_pipe: Option<tokio::net::windows::named_pipe::NamedPipeServer> =
+                    None;
+
                 loop {
                     // Check if cancelled
                     if cancel_token.is_cancelled() {
@@ -145,34 +126,25 @@ impl BufferReader {
                     }
 
                     // Create pipe if needed (initial startup, after client disconnect, or after error)
-                    if current_pipe.borrow().is_none() {
-                        match create_and_connect_named_pipe(pipe_name, cancel_token).await {
+                    if current_pipe.is_none() {
+                        match create_and_connect_named_pipe(pipe_name).await {
                             Ok(new_pipe) => {
-                                *consecutive_errors.borrow_mut() = 0;
-                                *current_pipe.borrow_mut() = Some(new_pipe);
+                                consecutive_errors = 0;
+                                current_pipe = Some(new_pipe);
                             }
                             Err(e) => {
                                 // Handle pipe creation/connection errors with retry logic
-                                *consecutive_errors.borrow_mut() += 1;
-                                let current_errors = *consecutive_errors.borrow();
+                                consecutive_errors += 1;
 
-                                if current_errors >= MAX_NAMED_PIPE_ERRORS {
+                                if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
                                     return Err(std::io::Error::new(
                                         std::io::ErrorKind::Other,
                                         format!("Too many consecutive pipe errors: {}", e),
                                     ));
                                 }
 
-                                let backoff_ms = 10u64 * (1 << current_errors.min(6));
-                                tokio::select! {
-                                    _ = sleep(Duration::from_millis(backoff_ms)) => {},
-                                    _ = cancel_token.cancelled() => {
-                                        return Err(std::io::Error::new(
-                                            std::io::ErrorKind::Interrupted,
-                                            "Operation cancelled",
-                                        ));
-                                    }
-                                }
+                                let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+                                sleep(Duration::from_millis(backoff_ms)).await;
                                 continue;
                             }
                         }
@@ -180,27 +152,14 @@ impl BufferReader {
 
                     // Read from the connected pipe
                     let mut buf = [0; 8192];
-                    let mut pipe_ref = current_pipe.borrow_mut();
-                    let pipe = pipe_ref.as_mut().unwrap();
+                    let pipe = current_pipe.as_mut().unwrap();
 
-                    let read_result = tokio::select! {
-                        result = pipe.read(&mut buf) => result,
-                        _ = cancel_token.cancelled() => {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Interrupted,
-                                "Operation cancelled",
-                            ));
-                        }
-                    };
-
-                    match read_result {
+                    match pipe.read(&mut buf).await {
                         Ok(0) => {
-                            *pipe_ref = None;
-                            drop(pipe_ref);
+                            current_pipe = None;
                             continue;
                         }
                         Ok(amt) => {
-                            *consecutive_errors.borrow_mut() = 0;
                             return Ok((
                                 buf[..amt].to_vec(),
                                 MessageSource::NamedPipe(pipe_name.to_string()),
@@ -209,28 +168,18 @@ impl BufferReader {
                         Err(e) => {
                             // Read error
                             error!("Error reading from named pipe: {}", e);
-                            *consecutive_errors.borrow_mut() += 1;
-                            *pipe_ref = None;
-                            drop(pipe_ref);
+                            consecutive_errors += 1;
+                            current_pipe = None;
 
-                            let current_errors = *consecutive_errors.borrow();
-                            if current_errors >= MAX_NAMED_PIPE_ERRORS {
+                            if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
                                 return Err(std::io::Error::new(
                                     std::io::ErrorKind::Other,
                                     "Too many consecutive read errors",
                                 ));
                             }
 
-                            let backoff_ms = 10u64 * (1 << current_errors.min(6));
-                            tokio::select! {
-                                _ = sleep(Duration::from_millis(backoff_ms)) => {},
-                                _ = cancel_token.cancelled() => {
-                                    return Err(std::io::Error::new(
-                                        std::io::ErrorKind::Interrupted,
-                                        "Operation cancelled",
-                                    ));
-                                }
-                            }
+                            let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
+                            sleep(Duration::from_millis(backoff_ms)).await;
                             continue;
                         }
                     }
@@ -256,8 +205,6 @@ impl DogStatsD {
             {
                 BufferReader::NamedPipeReader {
                     pipe_name: pipe_name.clone(),
-                    current_pipe: RefCell::new(None),
-                    consecutive_errors: RefCell::new(0),
                     cancel_token: cancel_token.clone(),
                 }
             }
