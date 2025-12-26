@@ -18,8 +18,11 @@ use {
     tokio::time::{sleep, Duration},
 };
 
+// Maximum number of consecutive errors before giving up on named pipe operations.
+// Backoff formula: 10ms * 2^error_count, capped at 2^6
+// With MAX = 5: backoffs are 20ms, 40ms, 80ms, 160ms (total: 300ms before giving up)
 #[cfg(windows)]
-const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+const MAX_NAMED_PIPE_ERRORS: u32 = 5;
 
 /// Represents the source of a DogStatsD message
 #[derive(Debug, Clone)]
@@ -64,62 +67,47 @@ enum BufferReader {
         pipe_name: String,
         current_pipe: RefCell<Option<tokio::net::windows::named_pipe::NamedPipeServer>>,
         consecutive_errors: RefCell<u32>,
+        cancel_token: tokio_util::sync::CancellationToken,
     },
 }
 
+// Creates a named pipe and waits for a client to connect.
+// Retry logic is handled by the caller to maintain consistency across all error types.
+//
+// Note: If profiling shows that pipe creation errors dominate retry scenarios,
+// we could optimize by adding targeted retry logic here for creation-specific failures.
 #[cfg(windows)]
 async fn create_and_connect_pipe(
     pipe_name: &str,
-    consecutive_errors: &mut u32,
+    cancel_token: &tokio_util::sync::CancellationToken,
 ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
-    // Create pipe with retry logic
-    let pipe = loop {
-        match ServerOptions::new()
-            .first_pipe_instance(false)
-            .create(pipe_name)
-        {
-            Ok(p) => {
-                *consecutive_errors = 0;
-                break p;
-            }
-            Err(e) => {
-                error!("Failed to create named pipe: {}", e);
-                *consecutive_errors += 1;
+    // Create pipe (single attempt)
+    let pipe = ServerOptions::new()
+        .first_pipe_instance(false)
+        .create(pipe_name)
+        .map_err(|e| {
+            error!("Failed to create named pipe: {}", e);
+            e
+        })?;
 
-                if *consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "Too many consecutive pipe creation errors",
-                    ));
-                }
-
-                let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
-                sleep(Duration::from_millis(backoff_ms)).await;
-                continue;
-            }
+    // Wait for client to connect
+    let connect_result = tokio::select! {
+        result = pipe.connect() => result,
+        _ = cancel_token.cancelled() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Operation cancelled",
+            ));
         }
     };
 
-    // Wait for client to connect
-    match pipe.connect().await {
+    match connect_result {
         Ok(()) => {
-            *consecutive_errors = 0;
             debug!("Client connected to DogStatsD named pipe");
             Ok(pipe)
         }
         Err(e) => {
             error!("Failed to accept connection on named pipe: {}", e);
-            *consecutive_errors += 1;
-
-            if *consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Too many consecutive connection errors",
-                ));
-            }
-
-            let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
-            sleep(Duration::from_millis(backoff_ms)).await;
             Err(e)
         }
     }
@@ -149,18 +137,47 @@ impl BufferReader {
                 pipe_name,
                 current_pipe,
                 consecutive_errors,
+                cancel_token,
             } => {
                 loop {
+                    // Check if cancelled
+                    if cancel_token.is_cancelled() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "Operation cancelled",
+                        ));
+                    }
+
                     // Create pipe if needed
                     if current_pipe.borrow().is_none() {
-                        let mut errors = consecutive_errors.borrow_mut();
-                        match create_and_connect_pipe(pipe_name, &mut errors).await {
+                        match create_and_connect_pipe(pipe_name, cancel_token).await {
                             Ok(new_pipe) => {
-                                drop(errors);
+                                *consecutive_errors.borrow_mut() = 0;
                                 *current_pipe.borrow_mut() = Some(new_pipe);
                             }
                             Err(e) => {
-                                return Err(e);
+                                // Handle pipe creation/connection errors with retry logic
+                                *consecutive_errors.borrow_mut() += 1;
+                                let current_errors = *consecutive_errors.borrow();
+
+                                if current_errors >= MAX_NAMED_PIPE_ERRORS {
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("Too many consecutive pipe errors: {}", e),
+                                    ));
+                                }
+
+                                let backoff_ms = 10u64 * (1 << current_errors.min(6));
+                                tokio::select! {
+                                    _ = sleep(Duration::from_millis(backoff_ms)) => {},
+                                    _ = cancel_token.cancelled() => {
+                                        return Err(std::io::Error::new(
+                                            std::io::ErrorKind::Interrupted,
+                                            "Operation cancelled",
+                                        ));
+                                    }
+                                }
+                                continue;
                             }
                         }
                     }
@@ -170,7 +187,17 @@ impl BufferReader {
                     let mut pipe_ref = current_pipe.borrow_mut();
                     let pipe = pipe_ref.as_mut().unwrap();
 
-                    match pipe.read(&mut buf).await {
+                    let read_result = tokio::select! {
+                        result = pipe.read(&mut buf) => result,
+                        _ = cancel_token.cancelled() => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::Interrupted,
+                                "Operation cancelled",
+                            ));
+                        }
+                    };
+
+                    match read_result {
                         Ok(0) => {
                             *pipe_ref = None;
                             drop(pipe_ref);
@@ -191,7 +218,7 @@ impl BufferReader {
                             drop(pipe_ref);
 
                             let current_errors = *consecutive_errors.borrow();
-                            if current_errors >= MAX_CONSECUTIVE_ERRORS {
+                            if current_errors >= MAX_NAMED_PIPE_ERRORS {
                                 return Err(std::io::Error::new(
                                     std::io::ErrorKind::Other,
                                     "Too many consecutive read errors",
@@ -199,7 +226,15 @@ impl BufferReader {
                             }
 
                             let backoff_ms = 10u64 * (1 << current_errors.min(6));
-                            sleep(Duration::from_millis(backoff_ms)).await;
+                            tokio::select! {
+                                _ = sleep(Duration::from_millis(backoff_ms)) => {},
+                                _ = cancel_token.cancelled() => {
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::Interrupted,
+                                        "Operation cancelled",
+                                    ));
+                                }
+                            }
                             continue;
                         }
                     }
@@ -222,7 +257,7 @@ impl DogStatsD {
             panic!("Named pipes are only supported on Windows");
         }
 
-        #[allow(unused_variables)]  // pipe_name unused on non-Windows
+        #[allow(unused_variables)] // pipe_name unused on non-Windows
         let buffer_reader = if let Some(ref pipe_name) = config.windows_pipe_name {
             #[cfg(windows)]
             {
@@ -230,11 +265,12 @@ impl DogStatsD {
                     pipe_name: pipe_name.clone(),
                     current_pipe: RefCell::new(None),
                     consecutive_errors: RefCell::new(0),
+                    cancel_token: cancel_token.clone(),
                 }
             }
             #[cfg(not(windows))]
             {
-                unreachable!("Windows pipe on non-Windows (checked above)")
+                panic!("Named pipes are only supported on Windows")
             }
         } else {
             // UDP socket for all platforms
