@@ -105,7 +105,9 @@ impl BufferReader {
                 cancel_token,
             } => {
                 // Named Pipe Reader: retries with backoff due to expected transient errors
-                let data = read_from_named_pipe(pipe_name, cancel_token).await.expect("didn't receive data");
+                let data = read_from_named_pipe(pipe_name, cancel_token)
+                    .await
+                    .expect("didn't receive data");
                 Ok((data, MessageSource::NamedPipe(Arc::clone(pipe_name))))
             }
         }

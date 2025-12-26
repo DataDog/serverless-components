@@ -20,6 +20,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use zstd::zstd_safe::CompressionLevel;
 
+#[cfg(windows)]
+use tokio::{io::AsyncWriteExt, net::windows::named_pipe::ClientOptions};
+
 #[cfg(test)]
 #[tokio::test]
 async fn dogstatsd_server_ships_series() {
@@ -280,4 +283,162 @@ async fn test_send_with_retry_immediate_failure_after_one_attempt() {
 
     // Verify that the mock was called exactly once
     mock.assert_async().await;
+}
+
+#[cfg(test)]
+#[cfg(windows)]
+#[tokio::test]
+async fn test_named_pipe_basic_communication() {
+    let pipe_name = r"\\.\pipe\test_dogstatsd_basic";
+    let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
+        .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+
+    let cancel_token = CancellationToken::new();
+
+    // Start DogStatsD server
+    let dogstatsd_task = {
+        let handle = handle.clone();
+        let cancel_token = cancel_token.clone();
+        tokio::spawn(async move {
+            let dogstatsd = DogStatsD::new(
+                &DogStatsDConfig {
+                    host: String::new(),
+                    port: 0,
+                    metric_namespace: None,
+                    windows_pipe_name: Some(pipe_name.to_string()),
+                },
+                handle,
+                cancel_token,
+            )
+            .await;
+            dogstatsd.spin().await;
+        })
+    };
+
+    sleep(Duration::from_millis(100)).await;
+
+    // Connect client and send metric
+    let mut client = ClientOptions::new().open(pipe_name).expect("client open");
+    client
+        .write_all(b"test.metric:42|c\n")
+        .await
+        .expect("write failed");
+    client.flush().await.expect("flush failed");
+
+    sleep(Duration::from_millis(100)).await;
+
+    // Verify metric was received
+    let response = handle.flush().await.expect("flush failed");
+    assert_eq!(response.series.len(), 1);
+    assert_eq!(response.series[0].series[0].metric, "test.metric");
+
+    // Cleanup
+    cancel_token.cancel();
+    drop(client);
+    let _ = timeout(Duration::from_millis(500), dogstatsd_task).await;
+    handle.shutdown().expect("shutdown failed");
+}
+
+#[cfg(test)]
+#[cfg(windows)]
+#[tokio::test]
+async fn test_named_pipe_disconnect_reconnect() {
+    let pipe_name = r"\\.\pipe\test_dogstatsd_reconnect";
+    let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
+        .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+
+    let cancel_token = CancellationToken::new();
+
+    // Start DogStatsD server
+    let dogstatsd_task = {
+        let handle = handle.clone();
+        let cancel_token = cancel_token.clone();
+        tokio::spawn(async move {
+            let dogstatsd = DogStatsD::new(
+                &DogStatsDConfig {
+                    host: String::new(),
+                    port: 0,
+                    metric_namespace: None,
+                    windows_pipe_name: Some(pipe_name.to_string()),
+                },
+                handle,
+                cancel_token,
+            )
+            .await;
+            dogstatsd.spin().await;
+        })
+    };
+
+    sleep(Duration::from_millis(100)).await;
+
+    // First client - connect, send, disconnect
+    {
+        let mut client1 = ClientOptions::new().open(pipe_name).expect("client1 open");
+        client1.write_all(b"metric1:1|c\n").await.expect("write1");
+        client1.flush().await.expect("flush1");
+    } // client1 drops here (disconnect)
+
+    sleep(Duration::from_millis(200)).await;
+
+    // Second client - reconnect and send
+    let mut client2 = ClientOptions::new().open(pipe_name).expect("client2 open");
+    client2.write_all(b"metric2:2|c\n").await.expect("write2");
+    client2.flush().await.expect("flush2");
+
+    sleep(Duration::from_millis(100)).await;
+
+    // Verify both metrics received
+    let response = handle.flush().await.expect("flush failed");
+    assert_eq!(response.series.len(), 2);
+
+    // Cleanup
+    cancel_token.cancel();
+    drop(client2);
+    let _ = timeout(Duration::from_millis(500), dogstatsd_task).await;
+    handle.shutdown().expect("shutdown failed");
+}
+
+#[cfg(test)]
+#[cfg(windows)]
+#[tokio::test]
+async fn test_named_pipe_cancellation() {
+    let pipe_name = r"\\.\pipe\test_dogstatsd_cancel";
+    let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
+        .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+
+    let cancel_token = CancellationToken::new();
+
+    // Start DogStatsD server
+    let dogstatsd_task = {
+        let handle = handle.clone();
+        let cancel_token = cancel_token.clone();
+        tokio::spawn(async move {
+            let dogstatsd = DogStatsD::new(
+                &DogStatsDConfig {
+                    host: String::new(),
+                    port: 0,
+                    metric_namespace: None,
+                    windows_pipe_name: Some(pipe_name.to_string()),
+                },
+                handle,
+                cancel_token,
+            )
+            .await;
+            dogstatsd.spin().await;
+        })
+    };
+
+    sleep(Duration::from_millis(100)).await;
+
+    // Cancel immediately
+    cancel_token.cancel();
+
+    // Task should complete quickly
+    let result = timeout(Duration::from_millis(500), dogstatsd_task).await;
+    assert!(result.is_ok(), "task should complete after cancellation");
+
+    handle.shutdown().expect("shutdown failed");
 }
