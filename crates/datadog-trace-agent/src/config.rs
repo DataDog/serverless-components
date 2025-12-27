@@ -122,13 +122,19 @@ impl Config {
         let mut trace_intake_url = trace_intake_url(&dd_site);
         let mut trace_stats_intake_url = trace_stats_url(&dd_site);
 
-        let profiling_intake_url = format!("https://intake.profile.{}/api/v2/profile", dd_site);
-
         // DD_APM_DD_URL env var will primarily be used for integration tests
         // overrides the entire trace/trace stats intake url prefix
         if let Ok(endpoint_prefix) = env::var("DD_APM_DD_URL") {
             trace_intake_url = trace_intake_url_prefixed(&endpoint_prefix);
             trace_stats_intake_url = trace_stats_url_prefixed(&endpoint_prefix);
+        };
+
+        // TODO: Create helper functions for this in libdatadog
+        let mut profiling_intake_url = format!("https://intake.profile.{}/api/v2/profile", dd_site);
+        // DD_APM_PROFILING_DD_URL env var will primarily be used for integration tests
+        // overrides the entire profiling intake url prefix
+        if let Ok(endpoint_prefix) = env::var("DD_APM_PROFILING_DD_URL") {
+            profiling_intake_url = format!("{endpoint_prefix}/api/v2/profile");
         };
 
         let obfuscation_config = obfuscation_config::ObfuscationConfig::new().map_err(|err| {
