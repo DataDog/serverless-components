@@ -11,8 +11,18 @@ use tracing::{debug, error};
 use crate::config::Config;
 use crate::http_utils::build_client;
 use core::time::Duration;
+use libdd_trace_utils::trace_utils;
 
 const DD_ADDITIONAL_TAGS_HEADER: &str = "X-Datadog-Additional-Tags";
+
+/// Returns the appropriate _dd.origin value based on the environment type
+fn get_dd_origin(env_type: &trace_utils::EnvironmentType) -> &'static str {
+    match env_type {
+        trace_utils::EnvironmentType::AzureFunction => "azurefunction",
+        trace_utils::EnvironmentType::CloudFunction => "cloudrun",
+        _ => "unknown",
+    }
+}
 
 pub struct ProxyRequest {
     pub headers: HeaderMap,
@@ -82,7 +92,10 @@ impl ProxyFlusher {
             "functionname:{}",
             self.config.app_name.as_deref().unwrap_or_default()
         ));
-        tag_parts.push("_dd.origin:azurefunction".to_string());
+        tag_parts.push(format!(
+            "_dd.origin:{}",
+            get_dd_origin(&self.config.env_type)
+        ));
 
         let additional_tags = tag_parts.join(",");
         match additional_tags.parse() {
