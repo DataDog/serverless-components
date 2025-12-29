@@ -151,7 +151,7 @@ impl ProxyFlusher {
                     let url = r.url().to_string();
                     let status = r.status();
                     let body = r.text().await;
-                    if status == 202 || status == 200 {
+                    if status == 202 {
                         debug!(
                             "Proxy Flusher | Successfully sent request in {} ms to {url}",
                             elapsed.as_millis()
