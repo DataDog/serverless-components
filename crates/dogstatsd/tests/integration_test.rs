@@ -292,8 +292,6 @@ async fn test_send_with_retry_immediate_failure_after_one_attempt() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_named_pipe_basic_communication() {
-    let _ = env_logger::builder().is_test(true).try_init();
-
     let pipe_name = r"\\.\pipe\test_dogstatsd_basic";
     let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
         .expect("aggregator service creation failed");
@@ -348,8 +346,6 @@ async fn test_named_pipe_basic_communication() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_named_pipe_disconnect_reconnect() {
-    let _ = env_logger::builder().is_test(true).try_init();
-
     let pipe_name = r"\\.\pipe\test_dogstatsd_reconnect";
     let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
         .expect("aggregator service creation failed");
@@ -370,7 +366,7 @@ async fn test_named_pipe_disconnect_reconnect() {
                     windows_pipe_name: Some(pipe_name.to_string()),
                 },
                 handle,
-                cancel_token_clone.child_token(),
+                cancel_token_clone,
             )
             .await;
             dogstatsd.spin().await;
@@ -419,8 +415,6 @@ async fn test_named_pipe_disconnect_reconnect() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_named_pipe_cancellation() {
-    let _ = env_logger::builder().is_test(true).try_init();
-
     let pipe_name = r"\\.\pipe\test_dogstatsd_cancel";
     let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
         .expect("aggregator service creation failed");
@@ -441,7 +435,7 @@ async fn test_named_pipe_cancellation() {
                     windows_pipe_name: Some(pipe_name.to_string()),
                 },
                 handle,
-                cancel_token_clone.child_token(),
+                cancel_token_clone,
             )
             .await;
             dogstatsd.spin().await;
@@ -457,5 +451,67 @@ async fn test_named_pipe_cancellation() {
     let result = timeout(Duration::from_millis(500), dogstatsd_task).await;
     assert!(result.is_ok(), "task should complete after cancellation");
 
+    handle.shutdown().expect("shutdown failed");
+}
+
+#[cfg(test)]
+#[cfg(windows)]
+#[tokio::test]
+async fn test_named_pipe_max_errors() {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let pipe_name = r"\\.\pipe\test_dogstatsd_max_errors";
+    let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
+        .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+
+    let cancel_token = CancellationToken::new();
+
+    // Create a pipe with first_pipe_instance(true) to block other instances
+    let _blocking_pipe = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(pipe_name)
+        .expect("failed to create blocking pipe");
+
+    // Start DogStatsD server - should fail to create pipe due to existing instance
+    let dogstatsd_task = {
+        let handle = handle.clone();
+        let cancel_token_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            let dogstatsd = DogStatsD::new(
+                &DogStatsDConfig {
+                    host: String::new(),
+                    port: 0,
+                    metric_namespace: None,
+                    windows_pipe_name: Some(pipe_name.to_string()),
+                },
+                handle,
+                cancel_token_clone,
+            )
+            .await;
+            dogstatsd.spin().await;
+        })
+    };
+
+    // Task should complete after exceeding MAX_NAMED_PIPE_ERRORS (5) attempts
+    // With backoff: 20ms + 40ms + 80ms + 160ms + 320ms = ~620ms + overhead
+    let result = timeout(Duration::from_millis(1500), dogstatsd_task).await;
+
+    // The task should panic because read_from_named_pipe returns an error after max retries
+    assert!(
+        result.is_ok(),
+        "task should complete (panic) after exceeding max errors"
+    );
+
+    // Verify the task actually panicked (completed with error)
+    if let Ok(join_result) = result {
+        assert!(
+            join_result.is_err(),
+            "task should have panicked after exceeding max consecutive errors"
+        );
+    }
+
+    // Cleanup
+    cancel_token.cancel();
     handle.shutdown().expect("shutdown failed");
 }

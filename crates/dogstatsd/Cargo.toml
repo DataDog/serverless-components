@@ -28,7 +28,6 @@ datadog-fips = { path = "../datadog-fips", default-features = false }
 rustls-pemfile = { version = "2.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-env_logger = "0.11"
 mockito = { version = "1.5.0", default-features = false }
 proptest = "1.4.0"
 tracing-test = { version = "0.2.5", default-features = false }

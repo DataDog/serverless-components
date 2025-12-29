@@ -115,7 +115,7 @@ impl BufferReader {
                 let data = read_from_named_pipe(pipe_name, cancel_token)
                     .await
                     .expect("didn't receive data");
-                Ok((data, MessageSource::NamedPipe(Arc::clone(pipe_name))))
+                Ok((data, MessageSource::NamedPipe(pipe_name.clone())))
             }
         }
     }
@@ -131,6 +131,10 @@ async fn handle_pipe_error_with_backoff(
     cancel_token: &tokio_util::sync::CancellationToken,
 ) -> std::io::Result<bool> {
     *consecutive_errors += 1;
+    debug!(
+        "Named pipe error for {} (attempt {}): {}.",
+        error_type, consecutive_errors, error
+    );
 
     if *consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
         return Err(std::io::Error::other(format!(
@@ -166,7 +170,6 @@ async fn read_from_named_pipe(
     while !cancel_token.is_cancelled() {
         // Create pipe if needed (initial startup or after error)
         if current_pipe.is_none() {
-            debug!("Creating named pipe: {}", pipe_name);
             match ServerOptions::new().create(pipe_name) {
                 Ok(new_pipe) => {
                     consecutive_errors = 0; // Reset on successful pipe creation
@@ -174,8 +177,7 @@ async fn read_from_named_pipe(
                     needs_connection = true;
                 }
                 Err(e) => {
-                    error!("Failed to create named pipe: {}", e);
-                    if !handle_pipe_error_with_backoff(
+                    match handle_pipe_error_with_backoff(
                         &mut consecutive_errors,
                         "pipe creation",
                         &e,
@@ -183,9 +185,9 @@ async fn read_from_named_pipe(
                     )
                     .await?
                     {
-                        break;
+                        true => continue,
+                        false => break,
                     }
-                    continue;
                 }
             }
         }
@@ -195,7 +197,6 @@ async fn read_from_named_pipe(
             #[allow(clippy::expect_used)]
             let pipe = current_pipe.as_ref().expect("pipe must exist");
 
-            debug!("Waiting for client connection on named pipe");
             let connect_result = tokio::select! {
                 result = pipe.connect() => result,
                 _ = cancel_token.cancelled() => {
@@ -205,14 +206,16 @@ async fn read_from_named_pipe(
 
             match connect_result {
                 Ok(()) => {
-                    debug!("Client connected to DogStatsD named pipe");
                     consecutive_errors = 0;
                     needs_connection = false;
                 }
                 Err(e) => {
-                    // Connection failed - recreate pipe on next iteration
+                    // Connection failed - disconnect and recreate pipe on next iteration
+                    if let Some(pipe) = current_pipe.as_ref() {
+                        let _ = pipe.disconnect(); // Ignore disconnect errors, we're recreating anyway
+                    }
                     current_pipe = None;
-                    if !handle_pipe_error_with_backoff(
+                    match handle_pipe_error_with_backoff(
                         &mut consecutive_errors,
                         "connection",
                         &e,
@@ -220,15 +223,14 @@ async fn read_from_named_pipe(
                     )
                     .await?
                     {
-                        break;
+                        true => continue,
+                        false => break,
                     }
-                    continue;
                 }
             }
         }
 
         // Read from the connected pipe
-        debug!("Starting read from named pipe");
         let mut buf = [0; BUFFER_SIZE];
 
         #[allow(clippy::expect_used)]
@@ -246,25 +248,27 @@ async fn read_from_named_pipe(
         match read_result {
             Ok(0) => {
                 // Client disconnected - reuse pipe by disconnecting and waiting for new client
-                debug!("Client disconnected, preparing for reconnection");
-                if let Err(e) = pipe.disconnect() {
-                    error!("Failed to disconnect pipe: {}", e);
+                if let Err(_e) = pipe.disconnect() {
                     current_pipe = None; // Recreate on error
                 } else {
                     needs_connection = true; // Wait for new client on same pipe
                 }
+                debug!(
+                    "Client disconnected from named pipe. Needs connection: {}",
+                    needs_connection
+                );
                 continue;
             }
             Ok(amt) => {
                 // this is the success state: we read some data from the pipe
-                debug!("Read {} bytes from named pipe", amt);
                 return Ok(buf[..amt].to_vec());
             }
             Err(e) => {
-                error!("Error reading from named pipe: {}", e);
-                current_pipe = None; // Recreate pipe on read error
+                // Disconnect before recreating pipe on read error
+                let _ = pipe.disconnect(); // Ignore disconnect errors, we're recreating anyway
+                current_pipe = None;
 
-                if !handle_pipe_error_with_backoff(
+                match handle_pipe_error_with_backoff(
                     &mut consecutive_errors,
                     "read",
                     &e,
@@ -272,9 +276,9 @@ async fn read_from_named_pipe(
                 )
                 .await?
                 {
-                    break;
+                    true => continue,
+                    false => break,
                 }
-                continue;
             }
         }
     }
@@ -360,7 +364,12 @@ impl DogStatsD {
         self.insert_metrics(statsd_metric_strings);
     }
 
-    /// Parses metrics from raw DogStatsD format and forwards them to the aggregator.
+    fn prepend_namespace(namespace: &str, metric: &mut Metric) {
+        let new_name = format!("{}.{}", namespace, metric.name);
+        metric.name = ustr::Ustr::from(&new_name);
+        metric.id = id(metric.name, &metric.tags, metric.timestamp);
+    }
+
     fn insert_metrics(&self, msg: Split<char>) {
         let namespace = self.metric_namespace.as_deref();
         let all_valid_metrics: Vec<Metric> = msg
@@ -395,25 +404,11 @@ impl DogStatsD {
             })
             .collect();
         if !all_valid_metrics.is_empty() {
-            debug!(
-                "Inserting {} metrics into aggregator",
-                all_valid_metrics.len()
-            );
-            for metric in &all_valid_metrics {
-                debug!("  - {}: {:?}", metric.name, metric.value);
-            }
             // Send metrics through the channel - no lock needed!
             if let Err(e) = self.aggregator_handle.insert_batch(all_valid_metrics) {
                 error!("Failed to send metrics to aggregator: {}", e);
             }
         }
-    }
-
-    /// Prepends a namespace to a metric's name and updates its ID.
-    fn prepend_namespace(namespace: &str, metric: &mut Metric) {
-        let new_name = format!("{}.{}", namespace, metric.name);
-        metric.name = ustr::Ustr::from(&new_name);
-        metric.id = id(metric.name, &metric.tags, metric.timestamp);
     }
 }
 

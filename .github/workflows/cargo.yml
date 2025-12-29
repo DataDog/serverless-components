@@ -84,8 +84,6 @@ jobs:
     name: Test
     needs: setup
     runs-on: ${{ inputs.runner }}
-    env:
-      RUST_LOG: debug
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: taiki-e/install-action@9ba3ac3fd006a70c6e186a683577abc1ccf0ff3a # v2.54.0
