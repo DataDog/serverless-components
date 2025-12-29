@@ -65,15 +65,15 @@ impl std::fmt::Display for MessageSource {
 // BufferReader abstracts transport methods for metric data.
 enum BufferReader {
     /// UDP socket reader (cross-platform, default transport)
-    UdpSocketReader(tokio::net::UdpSocket),
+    UdpSocket(tokio::net::UdpSocket),
 
     /// Mirror reader for testing - replays a fixed buffer
     #[allow(dead_code)]
-    MirrorReader(Vec<u8>, SocketAddr),
+    MirrorTest(Vec<u8>, SocketAddr),
 
     /// Windows named pipe reader (Windows-only transport)
     #[cfg(windows)]
-    NamedPipeReader {
+    NamedPipe {
         pipe_name: Arc<String>,
         cancel_token: tokio_util::sync::CancellationToken,
     },
@@ -84,7 +84,7 @@ impl BufferReader {
     /// Note: Different transports have different blocking behaviors.
     async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
         match self {
-            BufferReader::UdpSocketReader(socket) => {
+            BufferReader::UdpSocket(socket) => {
                 // UDP socket: blocks until a packet arrives
                 let mut buf = [0; BUFFER_SIZE];
 
@@ -95,16 +95,17 @@ impl BufferReader {
                     .expect("didn't receive data");
                 Ok((buf[..amt].to_owned(), MessageSource::Network(src)))
             }
-            BufferReader::MirrorReader(data, socket) => {
+            BufferReader::MirrorTest(data, socket) => {
                 // Mirror Reader: returns immediately with stored data
                 Ok((data.clone(), MessageSource::Network(*socket)))
             }
             #[cfg(windows)]
-            BufferReader::NamedPipeReader {
+            BufferReader::NamedPipe {
                 pipe_name,
                 cancel_token,
             } => {
                 // Named Pipe Reader: retries with backoff due to expected transient errors
+                #[allow(clippy::expect_used)]
                 let data = read_from_named_pipe(pipe_name, cancel_token)
                     .await
                     .expect("didn't receive data");
@@ -127,28 +128,35 @@ const MAX_NAMED_PIPE_ERRORS: u32 = 5;
 #[cfg(windows)]
 async fn create_and_connect_named_pipe(
     pipe_name: &str,
+    cancel_token: &tokio_util::sync::CancellationToken,
 ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
     let named_pipe = ServerOptions::new()
         .access_outbound(false)
         .first_pipe_instance(false)
-        .write_dac()
         .create(pipe_name)
         .map_err(|e| {
             error!("Failed to create named pipe: {}", e);
             e
         })?;
 
-    // Wait for client to connect to named pipe
-    named_pipe.connect().await?;
-    debug!("Client connected to DogStatsD named pipe");
-    Ok(named_pipe)
+    // Wait for client to connect to named pipe, or for cancellation
+    tokio::select! {
+        result = named_pipe.connect() => {
+            result?;
+            debug!("Client connected to DogStatsD named pipe");
+            Ok(named_pipe)
+        }
+        _ = cancel_token.cancelled() => {
+            Err(std::io::Error::other("Server Shutdown, do not create a named pipe."))
+        }
+    }
 }
 
 /// Reads data from a Windows named pipe with retry logic.
 ///
 /// Windows named pipes can experience transient failures (client disconnect, pipe errors).
 /// This function implements a retry loop with exponential backoff to handle these failures
-/// gracefully while allowing responsive shutdown via the cancel_token.
+/// and has additional logic to allow clean shutdown via cancel_token.
 #[cfg(windows)]
 async fn read_from_named_pipe(
     pipe_name: &str,
@@ -157,31 +165,29 @@ async fn read_from_named_pipe(
     let mut consecutive_errors = 0;
     let mut current_pipe: Option<tokio::net::windows::named_pipe::NamedPipeServer> = None;
 
-    loop {
-        // Check if cancelled between operations
-        if cancel_token.is_cancelled() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "Operation cancelled",
-            ));
-        }
-
+    // Let named pipes cancel cleanly when the server is shut down
+    'reading_named_pipe: while !cancel_token.is_cancelled() {
         // Create pipe if needed (initial startup, after client disconnect, or after error)
         if current_pipe.is_none() {
-            match create_and_connect_named_pipe(pipe_name).await {
+            match create_and_connect_named_pipe(pipe_name, cancel_token).await {
                 Ok(new_pipe) => {
                     consecutive_errors = 0;
                     current_pipe = Some(new_pipe);
                 }
                 Err(e) => {
+                    // Check for cancellation before retrying
+                    if cancel_token.is_cancelled() {
+                        break 'reading_named_pipe;
+                    }
+
                     // Handle pipe creation/connection errors with retry logic
                     consecutive_errors += 1;
 
                     if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("Too many consecutive pipe errors: {}", e),
-                        ));
+                        return Err(std::io::Error::other(format!(
+                            "Too many consecutive pipe errors: {}",
+                            e
+                        )));
                     }
 
                     let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
@@ -191,11 +197,24 @@ async fn read_from_named_pipe(
             }
         }
 
-        // Read from the connected pipe
+        // Read from the connected pipe. Use select! to allow cancellation during blocking read operation.
         let mut buf = [0; BUFFER_SIZE];
-        let pipe = current_pipe.as_mut().unwrap();
 
-        match pipe.read(&mut buf).await {
+        #[allow(clippy::expect_used)]
+        let pipe = current_pipe
+            .as_mut()
+            .expect("did not create and connect to a named pipe");
+
+        // Allow read operation to be interrupted by cancellation token for clean shutdown
+        let read_result = tokio::select! {
+            result = pipe.read(&mut buf) => result,
+            _ = cancel_token.cancelled() => {
+                // Server shutdown requested during read operation
+                return Err(std::io::Error::other("Server shutdown during pipe read"));
+            }
+        };
+
+        match read_result {
             Ok(0) => {
                 // Client disconnected gracefully
                 current_pipe = None;
@@ -208,14 +227,19 @@ async fn read_from_named_pipe(
             Err(e) => {
                 // Read error - retry with backoff
                 error!("Error reading from named pipe: {}", e);
-                consecutive_errors += 1;
                 current_pipe = None;
 
+                // Check for cancellation before retrying
+                if cancel_token.is_cancelled() {
+                    break 'reading_named_pipe;
+                }
+
+                consecutive_errors += 1;
                 if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "Too many consecutive read errors",
-                    ));
+                    return Err(std::io::Error::other(format!(
+                        "Too many consecutive read errors: {}",
+                        e
+                    )));
                 }
 
                 let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
@@ -224,6 +248,9 @@ async fn read_from_named_pipe(
             }
         }
     }
+
+    // If we exit due to cancellation, return an empty result.
+    Ok(Vec::new())
 }
 
 /// TDogStatsD server to receive, parse, and forward metrics.
@@ -249,7 +276,7 @@ impl DogStatsD {
         let buffer_reader = if let Some(ref pipe_name) = config.windows_pipe_name {
             #[cfg(windows)]
             {
-                BufferReader::NamedPipeReader {
+                BufferReader::NamedPipe {
                     pipe_name: Arc::new(pipe_name.clone()),
                     cancel_token: cancel_token.clone(),
                 }
@@ -267,7 +294,7 @@ impl DogStatsD {
             let socket = tokio::net::UdpSocket::bind(addr)
                 .await
                 .expect("couldn't bind to address");
-            BufferReader::UdpSocketReader(socket)
+            BufferReader::UdpSocket(socket)
         };
 
         DogStatsD {
@@ -460,7 +487,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         let dogstatsd = DogStatsD {
             cancel_token,
             aggregator_handle: handle.clone(),
-            buffer_reader: BufferReader::MirrorReader(
+            buffer_reader: BufferReader::MirrorTest(
                 statsd_string.as_bytes().to_vec(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
             ),
