@@ -30,6 +30,12 @@ use {
 // https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
 const BUFFER_SIZE: usize = 8192;
 
+// Maximum number of consecutive errors before giving up on named pipe operations.
+// Backoff formula: 10ms * 2^error_count, capped at MAX to prevent overflow
+// With MAX = 5: backoffs are 20ms, 40ms, 80ms, 160ms, 320ms (total: ~600ms before giving up)
+#[cfg(windows)]
+const MAX_NAMED_PIPE_ERRORS: u32 = 5;
+
 /// Configuration for the DogStatsD server
 pub struct DogStatsDConfig {
     /// Host to bind UDP socket to (e.g., "127.0.0.1")
@@ -115,47 +121,37 @@ impl BufferReader {
     }
 }
 
-// Maximum number of consecutive errors before giving up on named pipe operations.
-// Backoff formula: 10ms * 2^error_count, capped at 2^6
-// With MAX = 5: backoffs are 20ms, 40ms, 80ms, 160ms (total: 300ms before giving up)
+/// Helper to handle retry logic with exponential backoff for named pipe errors.
+/// Returns true if should continue retrying, false if should break (cancelled).
 #[cfg(windows)]
-const MAX_NAMED_PIPE_ERRORS: u32 = 5;
-
-/// Creates a Windows named pipe and waits for a client to connect.
-///
-/// Note: Windows named pipes have transient failures. Retries are centralized in the read function.
-/// If most retries are pipe creation errors, we could optimize with additional retry logic here?
-#[cfg(windows)]
-async fn create_and_connect_named_pipe(
-    pipe_name: &str,
+async fn handle_pipe_error_with_backoff(
+    consecutive_errors: &mut u32,
+    error_type: &str,
+    error: &std::io::Error,
     cancel_token: &tokio_util::sync::CancellationToken,
-) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
-    let named_pipe = ServerOptions::new()
-        .access_outbound(false)
-        .first_pipe_instance(false)
-        .create(pipe_name)
-        .map_err(|e| {
-            error!("Failed to create named pipe: {}", e);
-            e
-        })?;
+) -> std::io::Result<bool> {
+    *consecutive_errors += 1;
 
-    // Wait for client to connect to named pipe, or for cancellation
+    if *consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
+        return Err(std::io::Error::other(format!(
+            "Too many consecutive {} errors: {}",
+            error_type, error
+        )));
+    }
+
+    let backoff_ms = 10u64 * (1 << *consecutive_errors);
+
+    // Sleep with cancellation support for clean, fast shutdown
     tokio::select! {
-        result = named_pipe.connect() => {
-            result?;
-            debug!("Client connected to DogStatsD named pipe");
-            Ok(named_pipe)
-        }
-        _ = cancel_token.cancelled() => {
-            Err(std::io::Error::other("Server Shutdown, do not create a named pipe."))
-        }
+        _ = sleep(Duration::from_millis(backoff_ms)) => Ok(true),
+        _ = cancel_token.cancelled() => Ok(false),
     }
 }
 
 /// Reads data from a Windows named pipe with retry logic.
 ///
 /// Windows named pipes can experience transient failures (client disconnect, pipe errors).
-/// This function implements a retry loop with exponential backoff to handle these failures
+/// This function uses a retry loop with exponential backoff to handle these failures
 /// and has additional logic to allow clean shutdown via cancel_token.
 #[cfg(windows)]
 async fn read_from_named_pipe(
@@ -164,96 +160,130 @@ async fn read_from_named_pipe(
 ) -> std::io::Result<Vec<u8>> {
     let mut consecutive_errors = 0;
     let mut current_pipe: Option<tokio::net::windows::named_pipe::NamedPipeServer> = None;
+    let mut needs_connection = true; // Track whether we need to wait for a client
 
     // Let named pipes cancel cleanly when the server is shut down
-    'reading_named_pipe: while !cancel_token.is_cancelled() {
-        // Create pipe if needed (initial startup, after client disconnect, or after error)
+    while !cancel_token.is_cancelled() {
+        // Create pipe if needed (initial startup or after error)
         if current_pipe.is_none() {
-            match create_and_connect_named_pipe(pipe_name, cancel_token).await {
+            debug!("Creating named pipe: {}", pipe_name);
+            match ServerOptions::new().create(pipe_name) {
                 Ok(new_pipe) => {
-                    consecutive_errors = 0;
+                    consecutive_errors = 0; // Reset on successful pipe creation
                     current_pipe = Some(new_pipe);
+                    needs_connection = true;
                 }
                 Err(e) => {
-                    // Check for cancellation before retrying
-                    if cancel_token.is_cancelled() {
-                        break 'reading_named_pipe;
+                    error!("Failed to create named pipe: {}", e);
+                    if !handle_pipe_error_with_backoff(
+                        &mut consecutive_errors,
+                        "pipe creation",
+                        &e,
+                        cancel_token,
+                    )
+                    .await?
+                    {
+                        break;
                     }
-
-                    // Handle pipe creation/connection errors with retry logic
-                    consecutive_errors += 1;
-
-                    if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
-                        return Err(std::io::Error::other(format!(
-                            "Too many consecutive pipe errors: {}",
-                            e
-                        )));
-                    }
-
-                    let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
-                    sleep(Duration::from_millis(backoff_ms)).await;
                     continue;
                 }
             }
         }
 
-        // Read from the connected pipe. Use select! to allow cancellation during blocking read operation.
+        // Wait for client connection if needed (after creation or after disconnect)
+        if needs_connection {
+            #[allow(clippy::expect_used)]
+            let pipe = current_pipe.as_ref().expect("pipe must exist");
+
+            debug!("Waiting for client connection on named pipe");
+            let connect_result = tokio::select! {
+                result = pipe.connect() => result,
+                _ = cancel_token.cancelled() => {
+                    break;
+                }
+            };
+
+            match connect_result {
+                Ok(()) => {
+                    debug!("Client connected to DogStatsD named pipe");
+                    consecutive_errors = 0;
+                    needs_connection = false;
+                }
+                Err(e) => {
+                    // Connection failed - recreate pipe on next iteration
+                    current_pipe = None;
+                    if !handle_pipe_error_with_backoff(
+                        &mut consecutive_errors,
+                        "connection",
+                        &e,
+                        cancel_token,
+                    )
+                    .await?
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        // Read from the connected pipe
+        debug!("Starting read from named pipe");
         let mut buf = [0; BUFFER_SIZE];
 
         #[allow(clippy::expect_used)]
         let pipe = current_pipe
             .as_mut()
-            .expect("did not create and connect to a named pipe");
+            .expect("pipe must exist and be connected");
 
-        // Allow read operation to be interrupted by cancellation token for clean shutdown
         let read_result = tokio::select! {
             result = pipe.read(&mut buf) => result,
             _ = cancel_token.cancelled() => {
-                // Server shutdown requested during read operation
-                return Err(std::io::Error::other("Server shutdown during pipe read"));
+                return Ok(Vec::new());
             }
         };
 
         match read_result {
             Ok(0) => {
-                // Client disconnected gracefully
-                current_pipe = None;
+                // Client disconnected - reuse pipe by disconnecting and waiting for new client
+                debug!("Client disconnected, preparing for reconnection");
+                if let Err(e) = pipe.disconnect() {
+                    error!("Failed to disconnect pipe: {}", e);
+                    current_pipe = None; // Recreate on error
+                } else {
+                    needs_connection = true; // Wait for new client on same pipe
+                }
                 continue;
             }
             Ok(amt) => {
-                // Successfully read data
+                // this is the success state: we read some data from the pipe
+                debug!("Read {} bytes from named pipe", amt);
                 return Ok(buf[..amt].to_vec());
             }
             Err(e) => {
-                // Read error - retry with backoff
                 error!("Error reading from named pipe: {}", e);
-                current_pipe = None;
+                current_pipe = None; // Recreate pipe on read error
 
-                // Check for cancellation before retrying
-                if cancel_token.is_cancelled() {
-                    break 'reading_named_pipe;
+                if !handle_pipe_error_with_backoff(
+                    &mut consecutive_errors,
+                    "read",
+                    &e,
+                    cancel_token,
+                )
+                .await?
+                {
+                    break;
                 }
-
-                consecutive_errors += 1;
-                if consecutive_errors >= MAX_NAMED_PIPE_ERRORS {
-                    return Err(std::io::Error::other(format!(
-                        "Too many consecutive read errors: {}",
-                        e
-                    )));
-                }
-
-                let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
-                sleep(Duration::from_millis(backoff_ms)).await;
                 continue;
             }
         }
     }
 
-    // If we exit due to cancellation, return an empty result.
+    // If we exit due to cancellation, return an empty result for a clean shutdown.
     Ok(Vec::new())
 }
 
-/// TDogStatsD server to receive, parse, and forward metrics.
+/// DogStatsD server to receive, parse, and forward metrics.
 pub struct DogStatsD {
     cancel_token: tokio_util::sync::CancellationToken,
     aggregator_handle: AggregatorHandle,
@@ -365,6 +395,13 @@ impl DogStatsD {
             })
             .collect();
         if !all_valid_metrics.is_empty() {
+            debug!(
+                "Inserting {} metrics into aggregator",
+                all_valid_metrics.len()
+            );
+            for metric in &all_valid_metrics {
+                debug!("  - {}: {:?}", metric.name, metric.value);
+            }
             // Send metrics through the channel - no lock needed!
             if let Err(e) = self.aggregator_handle.insert_batch(all_valid_metrics) {
                 error!("Failed to send metrics to aggregator: {}", e);
