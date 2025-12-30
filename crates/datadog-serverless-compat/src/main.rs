@@ -67,12 +67,20 @@ pub async fn main() {
     let dd_api_key: Option<String> = env::var("DD_API_KEY").ok();
 
     // Windows named pipe name for DogStatsD.
-    // Can be either a simple name (e.g., "dd_dogstatsd") or a full path (e.g., "\\.\pipe\dd_dogstatsd").
-    // The DogStatsD server will normalize a simple name to the full path format.
+    // Normalize by adding \\.\pipe\ prefix if not present
     let dd_dogstatsd_windows_pipe_name: Option<String> = {
         #[cfg(windows)]
         {
-            env::var("DD_DOGSTATSD_WINDOWS_PIPE_NAME").ok()
+            env::var("DD_DOGSTATSD_WINDOWS_PIPE_NAME")
+                .ok()
+                .map(|pipe_name| {
+                    if pipe_name.starts_with("\\\\.\\pipe\\") || pipe_name.starts_with(r"\\.\pipe\")
+                    {
+                        pipe_name
+                    } else {
+                        format!(r"\\.\pipe\{}", pipe_name)
+                    }
+                })
         }
         #[cfg(not(windows))]
         {

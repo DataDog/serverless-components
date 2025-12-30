@@ -46,7 +46,7 @@ async fn dogstatsd_server_ships_series() {
     // Start the service in a background task
     tokio::spawn(service.run());
 
-    let cancel_token = start_dogstatsd(handle.clone()).await;
+    let _ = start_dogstatsd(handle.clone()).await;
 
     let api_key_factory = ApiKeyFactory::new("mock-api-key");
 
@@ -93,9 +93,6 @@ async fn dogstatsd_server_ships_series() {
         Ok(_) => mock.assert(),
         Err(_) => panic!("timed out before server received metric flush"),
     }
-
-    // Cleanup
-    cancel_token.cancel();
 }
 
 async fn start_dogstatsd(aggregator_handle: AggregatorHandle) -> CancellationToken {
