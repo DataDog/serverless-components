@@ -17,12 +17,7 @@ use tracing::{debug, error, trace};
 
 // Windows-specific imports
 #[cfg(windows)]
-use {
-    std::sync::Arc,
-    tokio::io::AsyncReadExt,
-    tokio::net::windows::named_pipe::ServerOptions,
-    tokio::time::{sleep, Duration},
-};
+use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
 
 // DogStatsD buffer size for receiving metrics
 // TODO(astuyve) buf should be dynamic
@@ -36,6 +31,10 @@ const BUFFER_SIZE: usize = 8192;
 #[cfg(windows)]
 const MAX_NAMED_PIPE_ERRORS: u32 = 5;
 
+// Windows named pipe prefix. All named pipes on Windows must start with this prefix.
+#[cfg(windows)]
+const NAMED_PIPE_PREFIX: &str = "\\\\.\\pipe\\";
+
 /// Configuration for the DogStatsD server
 pub struct DogStatsDConfig {
     /// Host to bind UDP socket to (e.g., "127.0.0.1")
@@ -44,7 +43,8 @@ pub struct DogStatsDConfig {
     pub port: u16,
     /// Optional namespace to prepend to all metric names (e.g., "myapp")
     pub metric_namespace: Option<String>,
-    /// Optional Windows named pipe path (e.g., "\\\\.\\pipe\\my_pipe")
+    /// Optional Windows named pipe name. Can be either a simple name (e.g., "my_pipe")
+    /// or a full path (e.g., "\\\\.\\pipe\\my_pipe"). The prefix will be added automatically if missing.
     pub windows_pipe_name: Option<String>,
 }
 
@@ -149,6 +149,18 @@ async fn handle_pipe_error_with_backoff(
     tokio::select! {
         _ = tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)) => Ok(true),
         _ = cancel_token.cancelled() => Ok(false),
+    }
+}
+
+/// Normalizes a Windows named pipe name by adding the required prefix if missing.
+///
+/// Windows named pipes must have the format `\\.\pipe\{name}`.
+#[cfg(windows)]
+fn normalize_pipe_name(pipe_name: &str) -> String {
+    if pipe_name.starts_with(NAMED_PIPE_PREFIX) {
+        pipe_name.to_string()
+    } else {
+        format!("{}{}", NAMED_PIPE_PREFIX, pipe_name)
     }
 }
 
@@ -310,8 +322,10 @@ impl DogStatsD {
         let buffer_reader = if let Some(ref pipe_name) = config.windows_pipe_name {
             #[cfg(windows)]
             {
+                // Normalize pipe name to ensure it has the \\.\pipe\ prefix
+                let normalized_pipe_name = normalize_pipe_name(pipe_name);
                 BufferReader::NamedPipe {
-                    pipe_name: Arc::new(pipe_name.clone()),
+                    pipe_name: Arc::new(normalized_pipe_name),
                     cancel_token: cancel_token.clone(),
                 }
             }
@@ -546,6 +560,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     #[cfg(windows)]
     #[tokio::test]
     async fn test_handle_pipe_error_with_backoff_max_errors() {
+        use super::handle_pipe_error_with_backoff;
         let cancel_token = CancellationToken::new();
         let mut consecutive_errors = 0;
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "test error");
@@ -585,6 +600,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     #[cfg(windows)]
     #[tokio::test]
     async fn test_handle_pipe_error_with_backoff_cancellation() {
+        use super::handle_pipe_error_with_backoff;
         let cancel_token = CancellationToken::new();
         let mut consecutive_errors = 0;
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "test error");
@@ -592,7 +608,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         // Spawn task to cancel after 10ms
         let cancel_clone = cancel_token.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             cancel_clone.cancel();
         });
 
@@ -605,5 +621,62 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         assert!(result.is_ok(), "Should succeed even when cancelled");
         assert_eq!(result.unwrap(), false, "Should return false when cancelled");
         assert_eq!(consecutive_errors, 1, "Error count should be 1");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_normalize_pipe_name() {
+        use super::normalize_pipe_name;
+
+        // Test cases: (input, expected_output, description)
+        let test_cases = vec![
+            // Names without prefix should get it added
+            (
+                "my_pipe",
+                "\\\\.\\pipe\\my_pipe",
+                "simple name without prefix",
+            ),
+            (
+                "dd_dogstatsd",
+                "\\\\.\\pipe\\dd_dogstatsd",
+                "dd_dogstatsd without prefix",
+            ),
+            (
+                "datadog_statsd",
+                "\\\\.\\pipe\\datadog_statsd",
+                "datadog_statsd without prefix",
+            ),
+            (
+                "test-pipe_123",
+                "\\\\.\\pipe\\test-pipe_123",
+                "name with hyphens and underscores",
+            ),
+            ("", "\\\\.\\pipe\\", "empty string"),
+            // Names with prefix should remain unchanged
+            (
+                "\\\\.\\pipe\\my_pipe",
+                "\\\\.\\pipe\\my_pipe",
+                "already has prefix",
+            ),
+            (
+                "\\\\.\\pipe\\dd_dogstatsd",
+                "\\\\.\\pipe\\dd_dogstatsd",
+                "dd_dogstatsd with prefix",
+            ),
+            (
+                "\\\\.\\pipe\\test",
+                "\\\\.\\pipe\\test",
+                "short name with prefix",
+            ),
+        ];
+
+        for (input, expected, description) in test_cases {
+            assert_eq!(
+                normalize_pipe_name(input),
+                expected,
+                "Failed for test case: {}",
+                description
+            );
+        }
     }
 }
