@@ -17,7 +17,11 @@ use tracing::{debug, error, trace};
 
 // Windows-specific imports
 #[cfg(windows)]
-use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
+use {
+    std::sync::Arc,
+    tokio::io::AsyncReadExt,
+    tokio::net::windows::named_pipe::{ClientOptions, ServerOptions},
+};
 
 // DogStatsD buffer size for receiving metrics
 // TODO(astuyve) buf should be dynamic
@@ -164,6 +168,31 @@ fn normalize_pipe_name(pipe_name: &str) -> String {
     }
 }
 
+/// Checks if a named pipe already exists by attempting to open it as a client.
+#[cfg(windows)]
+async fn pipe_exists(pipe_name: &str) -> std::io::Result<bool> {
+    match ClientOptions::new().open(pipe_name) {
+        Ok(_client) => Ok(true),
+        Err(e) => match e.raw_os_error() {
+            Some(2) => {
+                // ERROR_FILE_NOT_FOUND - pipe doesn't exist
+                debug!("Named pipe '{}' does not exist (error 2)", pipe_name);
+                Ok(false)
+            }
+            _ => {
+                // Other errors (access denied, invalid handle, etc.)
+                debug!(
+                    "Unable to check if pipe '{}' exists: {} (error code: {:?})",
+                    pipe_name,
+                    e,
+                    e.raw_os_error()
+                );
+                Err(e)
+            }
+        },
+    }
+}
+
 /// Reads data from a Windows named pipe with retry logic.
 ///
 /// Windows named pipes can experience transient failures (client disconnect, pipe errors).
@@ -180,8 +209,15 @@ async fn read_from_named_pipe(
 
     // Let named pipes cancel cleanly when the server is shut down
     while !cancel_token.is_cancelled() {
-        // Create pipe if needed (initial startup or after error)
+        // Create server if needed (initial startup or after error)
         if current_pipe.is_none() {
+            // First, check if pipe already exists (e.g. multiple dogstatsd instances)
+            if let Ok(true) = pipe_exists(pipe_name).await {
+                debug!("DogStatsD server with named pipe '{}' exists, pipe can be shared.", pipe_name);
+                return Ok(());
+            }
+
+            // Attempt to create the pipe server
             match ServerOptions::new().create(pipe_name) {
                 Ok(new_pipe) => {
                     consecutive_errors = 0; // Reset on successful pipe creation
