@@ -147,7 +147,7 @@ async fn handle_pipe_error_with_backoff(
 
     // Sleep with cancellation support for clean, fast shutdown
     tokio::select! {
-        _ = sleep(Duration::from_millis(backoff_ms)) => Ok(true),
+        _ = tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)) => Ok(true),
         _ = cancel_token.cancelled() => Ok(false),
     }
 }
@@ -421,6 +421,12 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use tracing_test::traced_test;
 
+    #[cfg(windows)]
+    use {
+        super::handle_pipe_error_with_backoff, std::time::Duration,
+        tokio_util::sync::CancellationToken,
+    };
+
     #[tokio::test]
     async fn test_dogstatsd_multi_distribution() {
         let response = setup_and_consume_dogstatsd(
@@ -535,5 +541,69 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         service_task.await.expect("Service task failed");
 
         response
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_handle_pipe_error_with_backoff_max_errors() {
+        let cancel_token = CancellationToken::new();
+        let mut consecutive_errors = 0;
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "test error");
+
+        // First 4 errors should return Ok(true) to continue
+        for i in 1..=4 {
+            let result = handle_pipe_error_with_backoff(
+                &mut consecutive_errors,
+                "test",
+                &error,
+                &cancel_token,
+            )
+            .await;
+            assert!(result.is_ok(), "Error {} should succeed", i);
+            assert_eq!(result.unwrap(), true, "Error {} should return true", i);
+            assert_eq!(consecutive_errors, i, "Error count should be {}", i);
+        }
+
+        // 5th error should return Err because MAX_NAMED_PIPE_ERRORS is 5
+        let result =
+            handle_pipe_error_with_backoff(&mut consecutive_errors, "test", &error, &cancel_token)
+                .await;
+        assert!(
+            result.is_err(),
+            "5th error should fail with max errors exceeded"
+        );
+        assert_eq!(consecutive_errors, 5, "Error count should be 5");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Too many consecutive"),
+            "Error message should mention too many errors: {}",
+            err_msg
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_handle_pipe_error_with_backoff_cancellation() {
+        let cancel_token = CancellationToken::new();
+        let mut consecutive_errors = 0;
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "test error");
+
+        // Spawn task to cancel after 10ms
+        let cancel_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            cancel_clone.cancel();
+        });
+
+        // First error increments count and sleeps for 20ms (10 * 2^1)
+        let result =
+            handle_pipe_error_with_backoff(&mut consecutive_errors, "test", &error, &cancel_token)
+                .await;
+
+        // Should return Ok(false) because token was cancelled during backoff sleep
+        assert!(result.is_ok(), "Should succeed even when cancelled");
+        assert_eq!(result.unwrap(), false, "Should return false when cancelled");
+        assert_eq!(consecutive_errors, 1, "Error count should be 1");
     }
 }
