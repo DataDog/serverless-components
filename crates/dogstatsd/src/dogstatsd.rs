@@ -307,6 +307,7 @@ async fn run_named_pipe_server(
         // Spawn task to handle this client
         let sender_clone = sender.clone();
         let cancel_clone = cancel_token.clone();
+        let pipe_name_clone = pipe_name.clone();
         tokio::spawn(async move {
             let mut buf = [0u8; BUFFER_SIZE];
             let mut server = server;
@@ -338,19 +339,22 @@ async fn run_named_pipe_server(
                 let complete_message_size = buf[..end_index]
                     .iter()
                     .rposition(|&b| b == b'\n')
-                    .map(|pos| pos + 1)  // \n is part of that last message, so +1
+                    .map(|pos| pos + 1) // \n is part of that last message, so +1
                     .unwrap_or(0);
 
                 if complete_message_size > 0 {
                     // Send complete messages
-                    match sender_clone.send(buf[..message_size].to_vec()) {
+                    match sender_clone.send(buf[..complete_message_size].to_vec()) {
                         Err(e) => {
                             error!("Failed to send data from '{}': {}", pipe_name_clone, e);
                             break;
                         }
-                        Ok(msg_str) => {
-                            std::str::from_utf8(&buf[..message_size]) {
-                                debug!("Sent {} bytes from '{}'", message_size, pipe_name_clone);
+                        Ok(_) => {
+                            if let Ok(_) = std::str::from_utf8(&buf[..complete_message_size]) {
+                                debug!(
+                                    "Sent {} bytes from '{}'",
+                                    complete_message_size, pipe_name_clone
+                                );
                             }
                         }
                     }
@@ -364,7 +368,7 @@ async fn run_named_pipe_server(
                     start_write_index = 0;
                 } else if start_write_index > 0 {
                     // Keep incomplete data in the buffer
-                    buf.copy_within(message_size..end_index, 0);
+                    buf.copy_within(complete_message_size..end_index, 0);
                 }
             }
             // Server instance is dropped here, automatically cleaned up
