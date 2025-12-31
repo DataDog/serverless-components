@@ -199,6 +199,12 @@ impl DogStatsD {
             .await
             .expect("didn't receive data");
 
+        // Skip empty buffers (e.g., from channel close)
+        if buf.is_empty() {
+            debug!("Received empty buffer from {}, skipping", src);
+            return;
+        }
+
         #[allow(clippy::expect_used)]
         let msgs = std::str::from_utf8(&buf).expect("couldn't parse as string");
         trace!("Received message: {} from {}", msgs, src);
@@ -270,10 +276,10 @@ async fn run_named_pipe_server(
             break;
         }
 
-        // Create new server instance
+        // Create new named pipe server
         let server = match ServerOptions::new().create(&*pipe_name) {
             Ok(s) => {
-                debug!("Created pipe server instance '{}'", pipe_name);
+                debug!("Created pipe server instance '{}' in byte mode", pipe_name);
                 s
             }
             Err(e) => {
@@ -300,35 +306,65 @@ async fn run_named_pipe_server(
 
         // Spawn task to handle this client
         let sender_clone = sender.clone();
-        let pipe_name_clone = pipe_name.clone();
         let cancel_clone = cancel_token.clone();
         tokio::spawn(async move {
             let mut buf = [0u8; BUFFER_SIZE];
             let mut server = server;
+            // Byte mode requires manual buffering to handle messages split across reads
+            // so let's track where we're writing each read in the buffer
+            let mut start_write_index = 0;
 
             loop {
-                // Read with cancellation support
                 let read_result = tokio::select! {
-                    result = server.read(&mut buf) => result,
+                    result = server.read(&mut buf[start_write_index..]) => result,
                     _ = cancel_clone.cancelled() => break,
                 };
 
-                let n = match read_result {
-                    Ok(0) => {
-                        debug!("Client disconnected from '{}'", pipe_name_clone);
-                        break; // Client disconnected
-                    }
-                    Ok(n) => n,
+                let bytes_read = match read_result {
                     Err(e) => {
                         error!("Read error on '{}': {}", pipe_name_clone, e);
                         break;
                     }
+                    Ok(0) => {
+                        debug!("Client disconnected from '{}'", pipe_name_clone);
+                        break;
+                    }
+                    Ok(n) => n,
                 };
 
-                // Send data to the main read function / processing loop
-                if sender_clone.send(buf[..n].to_vec()).is_err() {
-                    error!("Failed to send data from '{}'", pipe_name_clone);
-                    break;
+                let end_index = start_write_index + bytes_read;
+
+                // From the start of the buffer to the end of the last complete message
+                let complete_message_size = buf[..end_index]
+                    .iter()
+                    .rposition(|&b| b == b'\n')
+                    .map(|pos| pos + 1)  // \n is part of that last message, so +1
+                    .unwrap_or(0);
+
+                if complete_message_size > 0 {
+                    // Send complete messages
+                    match sender_clone.send(buf[..message_size].to_vec()) {
+                        Err(e) => {
+                            error!("Failed to send data from '{}': {}", pipe_name_clone, e);
+                            break;
+                        }
+                        Ok(msg_str) => {
+                            std::str::from_utf8(&buf[..message_size]) {
+                                debug!("Sent {} bytes from '{}'", message_size, pipe_name_clone);
+                            }
+                        }
+                    }
+                }
+
+                // Complete message has been sent, so we can write over it.
+                start_write_index = end_index - complete_message_size;
+
+                // If the message is bigger than the buffer size, drop it and go on.
+                if start_write_index >= BUFFER_SIZE {
+                    start_write_index = 0;
+                } else if start_write_index > 0 {
+                    // Keep incomplete data in the buffer
+                    buf.copy_within(message_size..end_index, 0);
                 }
             }
             // Server instance is dropped here, automatically cleaned up
