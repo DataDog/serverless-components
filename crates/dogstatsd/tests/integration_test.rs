@@ -450,3 +450,74 @@ async fn test_named_pipe_cancellation() {
 
     handle.shutdown().expect("shutdown failed");
 }
+
+#[cfg(test)]
+#[cfg(windows)]
+#[tokio::test]
+async fn test_buffer_split_message() {
+    let pipe_name = r"\\.\pipe\test_dogstatsd_buffer_split";
+    let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
+        .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+
+    let cancel_token = CancellationToken::new();
+
+    // Start DogStatsD server
+    let dogstatsd_task = {
+        let handle = handle.clone();
+        let cancel_token_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            let dogstatsd = DogStatsD::new(
+                &DogStatsDConfig {
+                    host: String::new(),
+                    port: 0,
+                    metric_namespace: None,
+                    windows_pipe_name: Some(pipe_name.to_string()),
+                },
+                handle,
+                cancel_token_clone,
+            )
+            .await;
+            dogstatsd.spin().await;
+        })
+    };
+
+    sleep(Duration::from_millis(100)).await;
+
+    // Connect client and send partial message (no newline)
+    let mut client = ClientOptions::new().open(pipe_name).expect("client open");
+    client
+        .write_all(b"test.split:1|")
+        .await
+        .expect("write partial");
+    client.flush().await.expect("flush partial");
+
+    // Wait briefly to simulate message arriving in separate reads
+    sleep(Duration::from_millis(50)).await;
+
+    // Verify no metrics yet - buffer should be holding incomplete message
+    let response = handle.flush().await.expect("flush failed");
+    assert!(
+        response.series.is_empty(),
+        "Expected no series from incomplete message without newline"
+    );
+
+    // Send the completion of the message
+    client.write_all(b"c\n").await.expect("write completion");
+    client.flush().await.expect("flush completion");
+
+    sleep(Duration::from_millis(100)).await;
+
+    // Verify metric was received and aggregated
+    let response = handle.flush().await.expect("flush failed");
+    assert!(
+        !response.series.is_empty(),
+        "Expected at least one series with metrics from buffered split message"
+    );
+
+    // Cleanup
+    cancel_token.cancel();
+    let result = timeout(Duration::from_millis(500), dogstatsd_task).await;
+    assert!(result.is_ok(), "tasks should complete after cancellation");
+    handle.shutdown().expect("shutdown failed");
+}
