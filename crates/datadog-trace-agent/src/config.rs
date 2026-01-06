@@ -88,7 +88,7 @@ pub struct Config {
     pub trace_stats_intake: Endpoint,
     /// Profiling intake endpoint (for proxying profiling data to Datadog)
     pub profiling_intake: Endpoint,
-    /// timeout for each proxy request, in seconds
+    /// Timeout for each proxy request, in seconds
     pub proxy_request_timeout_secs: u64,
     /// Maximum number of retry attempts for failed proxy requests
     pub proxy_request_max_retries: u32,
@@ -130,7 +130,7 @@ impl Config {
         // TODO: Create helper functions for this in libdatadog
         let mut profiling_intake_url = format!("https://intake.profile.{}/api/v2/profile", dd_site);
         // DD_APM_PROFILING_DD_URL env var will primarily be used for integration tests
-        // overrides the entire profiling intake url prefix
+        // overrides the prefix of the profiling intake url
         if let Ok(endpoint_prefix) = env::var("DD_APM_PROFILING_DD_URL") {
             profiling_intake_url = format!("{endpoint_prefix}/api/v2/profile");
         };
