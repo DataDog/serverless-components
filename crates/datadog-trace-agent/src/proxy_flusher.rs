@@ -43,7 +43,7 @@ impl ProxyFlusher {
         );
         let client = build_client(
             config.proxy_url.as_deref(),
-            Duration::from_secs(config.proxy_client_timeout),
+            Duration::from_secs(config.proxy_request_timeout_secs),
         )
         .unwrap_or_else(|e| {
             error!(
@@ -117,13 +117,13 @@ impl ProxyFlusher {
             .post(&request.target_url)
             .headers(headers)
             .timeout(std::time::Duration::from_secs(
-                self.config.proxy_request_timeout,
+                self.config.proxy_request_timeout_secs,
             ))
             .body(request.body.clone()))
     }
 
     async fn send_request(&self, request: ProxyRequest, api_key: &str) {
-        let max_retries = self.config.proxy_max_retries;
+        let max_retries = self.config.proxy_request_max_retries;
         let mut attempts = 0;
 
         loop {
@@ -176,7 +176,7 @@ impl ProxyFlusher {
                     }
                     // Exponential backoff before retry
                     let backoff_ms =
-                        self.config.proxy_retry_backoff_base_ms * (2_u64.pow(attempts - 1));
+                        self.config.proxy_request_retry_backoff_base_ms * (2_u64.pow(attempts - 1));
                     debug!("Proxy Flusher | Retrying after {}ms backoff", backoff_ms);
                     tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }

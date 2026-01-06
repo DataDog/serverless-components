@@ -47,7 +47,7 @@ impl MiniAgent {
         let mini_agent_metadata = Arc::new(
             self.env_verifier
                 .verify_environment(
-                    self.config.verify_env_timeout,
+                    self.config.verify_env_timeout_ms,
                     &self.config.env_type,
                     &self.config.os,
                 )

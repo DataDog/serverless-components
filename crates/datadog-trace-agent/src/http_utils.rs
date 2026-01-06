@@ -115,7 +115,7 @@ pub fn verify_request_content_length(
 }
 
 /// Builds a reqwest client with optional proxy configuration and timeout.
-/// Uses FIPS-compliant TLS when the fips feature is enabled.
+/// Uses rustls TLS by default. FIPS-compliant TLS is available via the fips feature
 pub fn build_client(
     proxy_url: Option<&str>,
     timeout: Duration,

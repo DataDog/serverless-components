@@ -81,23 +81,21 @@ pub struct Config {
     pub os: String,
     pub tags: Tags,
     /// how often to flush stats, in seconds
-    pub stats_flush_interval: u64,
+    pub stats_flush_interval_secs: u64,
     /// how often to flush traces, in seconds
-    pub trace_flush_interval: u64,
+    pub trace_flush_interval_secs: u64,
     pub trace_intake: Endpoint,
     pub trace_stats_intake: Endpoint,
     /// Profiling intake endpoint (for proxying profiling data to Datadog)
     pub profiling_intake: Endpoint,
-    /// HTTP client timeout for proxy requests, in milliseconds
-    pub proxy_client_timeout: u64,
-    /// Individual request timeout for proxy requests, in seconds
-    pub proxy_request_timeout: u64,
+    /// timeout for each proxy request, in seconds
+    pub proxy_request_timeout_secs: u64,
     /// Maximum number of retry attempts for failed proxy requests
-    pub proxy_max_retries: u32,
-    /// Base backoff duration for proxy retries, in milliseconds
-    pub proxy_retry_backoff_base_ms: u64,
+    pub proxy_request_max_retries: u32,
+    /// Base backoff duration for proxy request retries, in milliseconds
+    pub proxy_request_retry_backoff_base_ms: u64,
     /// timeout for environment verification, in milliseconds
-    pub verify_env_timeout: u64,
+    pub verify_env_timeout_ms: u64,
     pub proxy_url: Option<String>,
 }
 
@@ -155,13 +153,12 @@ impl Config {
             env_type,
             os: env::consts::OS.to_string(),
             max_request_content_length: 10 * 1024 * 1024, // 10MB in Bytes
-            trace_flush_interval: 3,
-            stats_flush_interval: 3,
-            proxy_client_timeout: 30,
-            proxy_request_timeout: 5,
-            proxy_max_retries: 3,
-            proxy_retry_backoff_base_ms: 100,
-            verify_env_timeout: 100,
+            trace_flush_interval_secs: 3,
+            stats_flush_interval_secs: 3,
+            proxy_request_timeout_secs: 30,
+            proxy_request_max_retries: 3,
+            proxy_request_retry_backoff_base_ms: 100,
+            verify_env_timeout_ms: 100,
             dd_dogstatsd_port,
             dd_site,
             trace_intake: Endpoint {
