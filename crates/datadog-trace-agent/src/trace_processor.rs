@@ -42,9 +42,12 @@ struct ChunkProcessor {
 
 impl TraceChunkProcessor for ChunkProcessor {
     fn process(&mut self, chunk: &mut pb::TraceChunk, root_span_index: usize) {
+        // Clone app_name once instead of once per span
+        let app_name = self.config.app_name.clone();
+
         trace_utils::set_serverless_root_span_tags(
             &mut chunk.spans[root_span_index],
-            self.config.app_name.clone(),
+            app_name.clone(),
             &self.config.env_type,
         );
         for span in chunk.spans.iter_mut() {
@@ -54,7 +57,7 @@ impl TraceChunkProcessor for ChunkProcessor {
                 trace_utils::enrich_span_with_google_cloud_function_metadata(
                     span,
                     &self.mini_agent_metadata,
-                    self.config.app_name.clone(),
+                    app_name.clone(),
                 );
             }
             obfuscate_span(span, &self.config.obfuscation_config);
