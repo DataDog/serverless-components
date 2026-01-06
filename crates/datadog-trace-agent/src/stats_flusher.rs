@@ -47,7 +47,7 @@ impl StatsFlusher for ServerlessStatsFlusher {
         });
 
         loop {
-            tokio::time::sleep(time::Duration::from_secs(config.stats_flush_interval)).await;
+            tokio::time::sleep(time::Duration::from_secs(config.stats_flush_interval_secs)).await;
 
             let mut buffer = buffer_consumer.lock().await;
             if !buffer.is_empty() {

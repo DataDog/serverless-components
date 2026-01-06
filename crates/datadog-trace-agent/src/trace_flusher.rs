@@ -54,7 +54,10 @@ impl TraceFlusher for ServerlessTraceFlusher {
         });
 
         loop {
-            tokio::time::sleep(time::Duration::from_secs(self.config.trace_flush_interval)).await;
+            tokio::time::sleep(time::Duration::from_secs(
+                self.config.trace_flush_interval_secs,
+            ))
+            .await;
             self.flush(None).await;
         }
     }
