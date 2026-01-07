@@ -14,7 +14,8 @@ use reqwest::{Client, Response};
 use serde::{Serialize, Serializer};
 use serde_json;
 use std::error::Error;
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufReader, Write};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tracing::{debug, error};
@@ -148,11 +149,12 @@ impl DdApi {
         api_key: String,
         metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
         https_proxy: Option<String>,
+        ca_cert_path: Option<String>,
         timeout: Duration,
         retry_strategy: RetryStrategy,
         compression_level: CompressionLevel,
     ) -> Self {
-        let client = build_client(https_proxy, timeout)
+        let client = build_client(https_proxy, ca_cert_path, timeout)
             .inspect_err(|e| {
                 error!("Unable to create client {:?}", e);
             })
@@ -290,12 +292,57 @@ pub enum RetryStrategy {
     LinearBackoff(u64, u64), // attempts, delay
 }
 
-fn build_client(https_proxy: Option<String>, timeout: Duration) -> Result<Client, Box<dyn Error>> {
+fn build_client(
+    https_proxy: Option<String>,
+    ca_cert_path: Option<String>,
+    timeout: Duration,
+) -> Result<Client, Box<dyn Error>> {
     let mut builder = create_reqwest_client_builder()?.timeout(timeout);
+
+    // Load custom TLS certificate if configured
+    if let Some(cert_path) = &ca_cert_path {
+        match load_custom_cert(cert_path) {
+            Ok(certs) => {
+                let cert_count = certs.len();
+                for cert in certs {
+                    builder = builder.add_root_certificate(cert);
+                }
+                debug!(
+                    "HTTP | Added {} root certificate(s) from {}",
+                    cert_count, cert_path
+                );
+            }
+            Err(e) => {
+                error!(
+                    "Failed to load TLS certificate from {}: {}, continuing without custom cert",
+                    cert_path, e
+                );
+            }
+        }
+    }
+
     if let Some(proxy) = https_proxy {
         builder = builder.proxy(reqwest::Proxy::https(proxy)?);
     }
     Ok(builder.build()?)
+}
+
+fn load_custom_cert(cert_path: &str) -> Result<Vec<reqwest::Certificate>, Box<dyn Error>> {
+    let file = File::open(cert_path)?;
+    let mut reader = BufReader::new(file);
+
+    // Parse PEM certificates
+    let certs = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+
+    if certs.is_empty() {
+        return Err("No certificates found in file".into());
+    }
+
+    // Convert all certificates found in the file
+    certs
+        .into_iter()
+        .map(|cert| reqwest::Certificate::from_der(cert.as_ref()).map_err(Into::into))
+        .collect()
 }
 
 #[derive(Debug, Serialize, Clone, Copy)]
