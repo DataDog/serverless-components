@@ -19,10 +19,10 @@ use std::time::Duration;
 use common::helpers::send_named_pipe_request;
 
 /// Create a test config with TCP transport
-pub fn create_tcp_test_config() -> Config {
+pub fn create_tcp_test_config(port: u16) -> Config {
     Config {
         dd_site: "mock-datadoghq.com".to_string(),
-        dd_apm_receiver_port: 8126,
+        dd_apm_receiver_port: port,
         dd_apm_windows_pipe_name: None,
         dd_dogstatsd_port: 8125,
         env_type: trace_utils::EnvironmentType::AzureFunction,
@@ -45,7 +45,7 @@ pub fn create_tcp_test_config() -> Config {
 #[tokio::test]
 #[serial]
 async fn test_mini_agent_tcp_handles_requests() {
-    let config = Arc::new(create_tcp_test_config());
+    let config = Arc::new(create_tcp_test_config(8126));
     let test_port = config.dd_apm_receiver_port;
     let mini_agent = MiniAgent {
         config,
@@ -93,7 +93,7 @@ async fn test_mini_agent_tcp_handles_requests() {
 #[tokio::test]
 async fn test_mini_agent_named_pipe_handles_requests() {
     let pipe_name = r"\\.\pipe\dd_trace_integration_test";
-    let mut config = create_tcp_test_config();
+    let mut config = create_tcp_test_config(0);
     config.dd_apm_windows_pipe_name = Some(pipe_name.to_string());
     config.dd_apm_receiver_port = 0;
     let config = Arc::new(config);
@@ -161,7 +161,7 @@ async fn test_mini_agent_with_real_flushers() {
     let trace_url = format!("{}/api/v0.2/traces", mock_server.url());
     let stats_url = format!("{}/api/v0.6/stats", mock_server.url());
 
-    let mut config = create_tcp_test_config();
+    let mut config = create_tcp_test_config(8127);
     config.trace_intake = libdd_common::Endpoint {
         url: trace_url.parse().unwrap(),
         api_key: Some("test-api-key".into()),
@@ -198,8 +198,21 @@ async fn test_mini_agent_with_real_flushers() {
         let _ = mini_agent.start_mini_agent().await;
     });
 
-    // Give server time to start
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for server to be ready by polling /info endpoint
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None).await {
+            if response.status().is_success() {
+                server_ready = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
 
     // Send trace data through the mini agent
     let trace_payload = create_test_trace_payload();
@@ -283,7 +296,7 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     let trace_url = format!("{}/api/v0.2/traces", mock_server.url());
     let stats_url = format!("{}/api/v0.6/stats", mock_server.url());
 
-    let mut config = create_tcp_test_config();
+    let mut config = create_tcp_test_config(0);
     config.trace_intake = libdd_common::Endpoint {
         url: trace_url.parse().unwrap(),
         api_key: Some("test-api-key".into()),
@@ -324,8 +337,21 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
         let _ = mini_agent.start_mini_agent().await;
     });
 
-    // Give server time to create pipe
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for server to be ready by polling /info endpoint
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_named_pipe_request(pipe_name, "/info", "GET", None).await {
+            if response.status().is_success() {
+                server_ready = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent named pipe server failed to start within timeout"
+    );
 
     // Send trace data through the mini agent via named pipe
     let trace_payload = create_test_trace_payload();
