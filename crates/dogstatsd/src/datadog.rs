@@ -308,13 +308,13 @@ fn build_client(
                     builder = builder.add_root_certificate(cert);
                 }
                 debug!(
-                    "HTTP | Added {} root certificate(s) from {}",
+                    "DOGSTATSD | Added {} root certificate(s) from {}",
                     cert_count, cert_path
                 );
             }
             Err(e) => {
                 error!(
-                    "Failed to load TLS certificate from {}: {}, continuing without custom cert",
+                    "DOGSTATSD | Failed to load TLS certificate from {}: {}, continuing without custom cert",
                     cert_path, e
                 );
             }
