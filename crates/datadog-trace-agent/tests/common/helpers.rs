@@ -65,7 +65,8 @@ pub async fn send_named_pipe_request(
 ) -> Result<Response<hyper::body::Incoming>, Box<dyn std::error::Error>> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
-    let client = timeout(Duration::from_secs(2), ClientOptions::new().open(pipe_name)).await??;
+    // Note: open() is synchronous on Windows, not async
+    let client = ClientOptions::new().open(pipe_name)?;
 
     let io = TokioIo::new(client);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
