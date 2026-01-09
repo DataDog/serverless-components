@@ -40,7 +40,6 @@ use tokio_util::sync::CancellationToken;
 
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
-const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 const AGENT_HOST: &str = "0.0.0.0";
 
 #[tokio::main]
@@ -65,36 +64,6 @@ pub async fn main() {
     };
 
     let dd_api_key: Option<String> = env::var("DD_API_KEY").ok();
-
-    // Windows named pipe name for DogStatsD.
-    // Normalize by adding \\.\pipe\ prefix if not present
-    let dd_dogstatsd_windows_pipe_name: Option<String> = {
-        #[cfg(windows)]
-        {
-            env::var("DD_DOGSTATSD_WINDOWS_PIPE_NAME")
-                .ok()
-                .map(|pipe_name| {
-                    if pipe_name.starts_with("\\\\.\\pipe\\") || pipe_name.starts_with(r"\\.\pipe\")
-                    {
-                        pipe_name
-                    } else {
-                        format!(r"\\.\pipe\{}", pipe_name)
-                    }
-                })
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
-    };
-    let dd_dogstatsd_port: u16 = if dd_dogstatsd_windows_pipe_name.is_some() {
-        0 // Override to 0 when using Windows named pipe
-    } else {
-        env::var("DD_DOGSTATSD_PORT")
-            .ok()
-            .and_then(|port| port.parse::<u16>().ok())
-            .unwrap_or(DEFAULT_DOGSTATSD_PORT)
-    };
     let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
     let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")
         .map(|val| val.to_lowercase() != "false")
@@ -172,19 +141,22 @@ pub async fn main() {
     let (mut metrics_flusher, _aggregator_handle) = if dd_use_dogstatsd {
         debug!("Starting dogstatsd");
         let (_, metrics_flusher, aggregator_handle) = start_dogstatsd(
-            dd_dogstatsd_port,
+            config.dd_dogstatsd_port,
             dd_api_key,
             dd_site,
             https_proxy,
             dogstatsd_tags,
             dd_statsd_metric_namespace,
-            dd_dogstatsd_windows_pipe_name.clone(),
+            config.dd_dogstatsd_windows_pipe_name.clone(),
         )
         .await;
-        if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
+        if let Some(ref windows_pipe_name) = config.dd_dogstatsd_windows_pipe_name {
             info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
         } else {
-            info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
+            info!(
+                "dogstatsd-udp: starting to listen on port {}",
+                config.dd_dogstatsd_port
+            );
         }
         (metrics_flusher, Some(aggregator_handle))
     } else {
