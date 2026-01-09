@@ -15,6 +15,10 @@ use tracing::{debug, error};
 
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
 use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
+
+#[cfg(windows)]
+use tokio::{net::windows::named_pipe::ServerOptions, time::{sleep, Duration}};
+
 use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils;
@@ -181,12 +185,8 @@ impl MiniAgent {
         S::Future: Send,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
-        use tokio::time::{sleep, Duration};
-
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
-        let mut consecutive_errors = 0u32;
-        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
         loop {
             let conn = tokio::select! {
@@ -199,29 +199,13 @@ impl MiniAgent {
                                 | io::ErrorKind::ConnectionRefused
                         ) =>
                     {
-                        // Transient connection errors - just continue
-                        consecutive_errors = 0; // Reset on transient errors
                         continue;
                     }
                     Err(e) => {
-                        // Log non-transient errors but don't immediately kill server
-                        error!("TCP listener error: {e}");
-                        consecutive_errors += 1;
-
-                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                            error!("Too many consecutive listener errors, shutting down");
-                            return Err(e.into());
-                        }
-
-                        // Exponential backoff before retry
-                        let backoff_ms = 10u64 * (1 << consecutive_errors.min(6));
-                        sleep(Duration::from_millis(backoff_ms)).await;
-                        continue;
+                        error!("Server error: {e}");
+                        return Err(e.into());
                     }
-                    Ok((conn, _)) => {
-                        consecutive_errors = 0; // Reset on success
-                        conn
-                    }
+                    Ok((conn, _)) => conn,
                 },
                 finished = async {
                     match joinset.join_next().await {
@@ -273,9 +257,6 @@ impl MiniAgent {
         S::Future: Send,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
-        use tokio::net::windows::named_pipe::ServerOptions;
-        use tokio::time::{sleep, Duration};
-
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
         let mut consecutive_errors = 0u32;
@@ -568,15 +549,10 @@ impl MiniAgent {
         dd_dogstatsd_port: u16,
     ) -> http::Result<hyper_migration::HttpResponse> {
         let mut config_json = serde_json::json!({
-            "apm_config": {
-                "receiver_port": dd_apm_receiver_port
-            },
-            "statsd_port": dd_dogstatsd_port
+            "receiver_port": dd_apm_receiver_port,
+            "statsd_port": dd_dogstatsd_port,
+            "receiver_socket": serde_json::json!(dd_apm_windows_pipe_name.unwrap_or(""))
         });
-
-        if let Some(pipe_name) = dd_apm_windows_pipe_name {
-            config_json["apm_config"]["receiver_windows_pipe_name"] = serde_json::json!(pipe_name);
-        }
 
         let response_json = json!(
             {
