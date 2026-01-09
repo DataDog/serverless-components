@@ -6,12 +6,12 @@ mod common;
 use common::helpers::{create_test_trace_payload, send_tcp_request};
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
-    config::Config, mini_agent::MiniAgent, proxy_flusher::ProxyFlusher,
-    trace_flusher::TraceFlusher, trace_processor::ServerlessTraceProcessor,
+    config::test_helpers::create_tcp_test_config, mini_agent::MiniAgent,
+    proxy_flusher::ProxyFlusher, trace_flusher::TraceFlusher,
+    trace_processor::ServerlessTraceProcessor,
 };
 use http_body_util::BodyExt;
 use hyper::StatusCode;
-use libdd_trace_utils::trace_utils;
 use serde_json::Value;
 use serial_test::serial;
 use std::sync::Arc;
@@ -19,36 +19,6 @@ use std::time::Duration;
 
 #[cfg(all(windows, feature = "windows-pipes"))]
 use common::helpers::send_named_pipe_request;
-
-/// Create a test config with TCP transport
-pub fn create_tcp_test_config(port: u16) -> Config {
-    Config {
-        dd_site: "mock-datadoghq.com".to_string(),
-        dd_apm_receiver_port: 8126,
-        #[cfg(any(all(windows, feature = "windows-pipes"), test))]
-        dd_apm_windows_pipe_name: None,
-        dd_dogstatsd_port: 8125,
-        #[cfg(any(all(windows, feature = "windows-pipes"), test))]
-        dd_dogstatsd_windows_pipe_name: None,
-        env_type: trace_utils::EnvironmentType::AzureFunction,
-        app_name: Some("test-app".to_string()),
-        max_request_content_length: 10_000_000,
-        obfuscation_config: libdd_trace_obfuscation::obfuscation_config::ObfuscationConfig::new()
-            .unwrap(),
-        os: std::env::consts::OS.to_string(),
-        tags: datadog_trace_agent::config::Tags::new(),
-        stats_flush_interval_secs: 10,
-        trace_flush_interval_secs: 5,
-        trace_intake: libdd_common::Endpoint::default(),
-        trace_stats_intake: libdd_common::Endpoint::default(),
-        profiling_intake: libdd_common::Endpoint::default(),
-        proxy_request_timeout_secs: 30,
-        proxy_request_max_retries: 3,
-        proxy_request_retry_backoff_base_ms: 100,
-        verify_env_timeout_ms: 1000,
-        proxy_url: None,
-    }
-}
 
 #[cfg(test)]
 #[tokio::test]

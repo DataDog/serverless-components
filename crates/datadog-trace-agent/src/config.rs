@@ -560,3 +560,38 @@ mod tests {
         assert_eq!(config.tags.function_tags(), None);
     }
 }
+
+/// Test helpers for creating Config instances in tests
+#[cfg(any(test, debug_assertions))]
+pub mod test_helpers {
+    use super::*;
+
+    /// Create a test config with TCP transport
+    pub fn create_tcp_test_config(port: u16) -> Config {
+        Config {
+            dd_site: "mock-datadoghq.com".to_string(),
+            dd_apm_receiver_port: port,
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
+            dd_apm_windows_pipe_name: None,
+            dd_dogstatsd_port: 8125,
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
+            dd_dogstatsd_windows_pipe_name: None,
+            env_type: trace_utils::EnvironmentType::AzureFunction,
+            app_name: Some("test-app".to_string()),
+            max_request_content_length: 10_000_000,
+            obfuscation_config: obfuscation_config::ObfuscationConfig::new().unwrap(),
+            os: std::env::consts::OS.to_string(),
+            tags: Tags::new(),
+            stats_flush_interval_secs: 10,
+            trace_flush_interval_secs: 5,
+            trace_intake: Endpoint::default(),
+            trace_stats_intake: Endpoint::default(),
+            profiling_intake: Endpoint::default(),
+            proxy_request_timeout_secs: 30,
+            proxy_request_max_retries: 3,
+            proxy_request_retry_backoff_base_ms: 100,
+            verify_env_timeout_ms: 1000,
+            proxy_url: None,
+        }
+    }
+}
