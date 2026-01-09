@@ -59,6 +59,7 @@ async fn dogstatsd_server_ships_series() {
         )
         .expect("failed to create URL"),
         https_proxy: None,
+        ca_cert_path: None,
         timeout: std::time::Duration::from_secs(5),
         retry_strategy: RetryStrategy::Immediate(3),
         compression_level: CompressionLevel::try_from(6)
@@ -139,6 +140,7 @@ async fn test_send_with_retry_immediate_failure() {
         )
         .expect("failed to create URL"),
         None,
+        None,
         Duration::from_secs(1),
         retry_strategy.clone(),
         6,
@@ -195,6 +197,7 @@ async fn test_send_with_retry_linear_backoff_success() {
         )
         .expect("failed to create URL"),
         None,
+        None,
         Duration::from_secs(1),
         retry_strategy.clone(),
         6,
@@ -249,6 +252,7 @@ async fn test_send_with_retry_immediate_failure_after_one_attempt() {
             ),
         )
         .expect("failed to create URL"),
+        None,
         None,
         Duration::from_secs(1),
         retry_strategy.clone(),

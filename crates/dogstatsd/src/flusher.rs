@@ -17,6 +17,7 @@ pub struct Flusher {
     api_key_factory: Arc<ApiKeyFactory>,
     metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     https_proxy: Option<String>,
+    ca_cert_path: Option<String>,
     timeout: Duration,
     retry_strategy: RetryStrategy,
     aggregator_handle: AggregatorHandle,
@@ -29,6 +30,7 @@ pub struct FlusherConfig {
     pub aggregator_handle: AggregatorHandle,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
     pub https_proxy: Option<String>,
+    pub ca_cert_path: Option<String>,
     pub timeout: Duration,
     pub retry_strategy: RetryStrategy,
     pub compression_level: CompressionLevel,
@@ -40,6 +42,7 @@ impl Flusher {
             api_key_factory: Arc::clone(&config.api_key_factory),
             metrics_intake_url_prefix: config.metrics_intake_url_prefix,
             https_proxy: config.https_proxy,
+            ca_cert_path: config.ca_cert_path,
             timeout: config.timeout,
             retry_strategy: config.retry_strategy,
             aggregator_handle: config.aggregator_handle,
@@ -57,6 +60,7 @@ impl Flusher {
                         api_key.to_string(),
                         self.metrics_intake_url_prefix.clone(),
                         self.https_proxy.clone(),
+                        self.ca_cert_path.clone(),
                         self.timeout,
                         self.retry_strategy.clone(),
                         self.compression_level,
@@ -283,6 +287,7 @@ mod tests {
             )
             .expect("failed to create URL"),
             https_proxy: None,
+            ca_cert_path: None,
             timeout: Duration::from_secs(5),
             retry_strategy: RetryStrategy::Immediate(1),
             compression_level: CompressionLevel::try_from(6)
@@ -329,6 +334,7 @@ mod tests {
             )
             .expect("failed to create URL"),
             https_proxy: None,
+            ca_cert_path: None,
             timeout: Duration::from_secs(5),
             retry_strategy: RetryStrategy::Immediate(1),
             compression_level: CompressionLevel::try_from(6)
@@ -378,6 +384,7 @@ mod tests {
             )
             .expect("failed to create URL"),
             https_proxy: None,
+            ca_cert_path: None,
             timeout: Duration::from_secs(5),
             retry_strategy: RetryStrategy::Immediate(1),
             compression_level: CompressionLevel::try_from(6)
