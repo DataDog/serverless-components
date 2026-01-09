@@ -132,7 +132,10 @@ impl MiniAgent {
         if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
             debug!("Mini Agent started: listening on named pipe {}", pipe_name);
         } else {
-            debug!("Mini Agent started: listening on port {}", self.config.dd_apm_receiver_port);
+            debug!(
+                "Mini Agent started: listening on port {}",
+                self.config.dd_apm_receiver_port
+            );
         }
         debug!(
             "Time taken to start the Mini Agent: {} ms",
@@ -154,7 +157,10 @@ impl MiniAgent {
 
             #[cfg(not(windows))]
             {
-                error!("Named pipes are only supported on Windows, cannot use pipe: {}", pipe_name);
+                error!(
+                    "Named pipes are only supported on Windows, cannot use pipe: {}",
+                    pipe_name
+                );
                 return Err("Named pipes are only supported on Windows".into());
             }
         } else {
@@ -162,8 +168,13 @@ impl MiniAgent {
             let addr = SocketAddr::from(([127, 0, 0, 1], self.config.dd_apm_receiver_port));
             let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-            Self::serve_tcp(listener, service, trace_flusher_handle, stats_flusher_handle)
-                .await?;
+            Self::serve_tcp(
+                listener,
+                service,
+                trace_flusher_handle,
+                stats_flusher_handle,
+            )
+            .await?;
         }
 
         Ok(())

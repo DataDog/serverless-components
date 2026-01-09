@@ -112,8 +112,7 @@ impl Config {
             anyhow::anyhow!("Unable to identify environment. Shutting down Mini Agent.")
         })?;
 
-        let dd_apm_windows_pipe_name: Option<String> =
-            env::var("DD_APM_WINDOWS_PIPE_NAME").ok();
+        let dd_apm_windows_pipe_name: Option<String> = env::var("DD_APM_WINDOWS_PIPE_NAME").ok();
         let dd_apm_receiver_port: u16 = if dd_apm_windows_pipe_name.is_some() {
             0 // Override to 0 when using Windows named pipe
         } else {
