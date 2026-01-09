@@ -4,9 +4,7 @@
 mod common;
 
 use common::helpers::{create_test_trace_payload, send_tcp_request};
-use common::mocks::{
-    MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher,
-};
+use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
     config::Config, mini_agent::MiniAgent, trace_processor::ServerlessTraceProcessor,
 };
@@ -126,9 +124,10 @@ async fn test_mini_agent_named_pipe_handles_requests() {
 
     // Test /v0.4/traces endpoint with real trace data
     let trace_payload = create_test_trace_payload();
-    let trace_response = send_named_pipe_request(pipe_name, "/v0.4/traces", "POST", Some(trace_payload))
-        .await
-        .expect("Failed to send /v0.4/traces request over named pipe");
+    let trace_response =
+        send_named_pipe_request(pipe_name, "/v0.4/traces", "POST", Some(trace_payload))
+            .await
+            .expect("Failed to send /v0.4/traces request over named pipe");
     assert_eq!(
         trace_response.status(),
         StatusCode::OK,

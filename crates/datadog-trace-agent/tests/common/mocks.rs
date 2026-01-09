@@ -4,12 +4,8 @@
 //! Mock implementations of trace agent components for testing
 
 use datadog_trace_agent::{
-    config::Config,
-    env_verifier::EnvVerifier,
-    stats_flusher::StatsFlusher,
-    stats_processor::StatsProcessor,
-    trace_flusher::TraceFlusher,
-    trace_processor::TraceProcessor,
+    config::Config, env_verifier::EnvVerifier, stats_flusher::StatsFlusher,
+    stats_processor::StatsProcessor, trace_flusher::TraceFlusher, trace_processor::TraceProcessor,
 };
 use libdd_common::hyper_migration;
 use libdd_trace_protobuf::pb;
