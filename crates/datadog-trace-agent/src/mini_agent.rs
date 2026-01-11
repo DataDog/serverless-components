@@ -13,7 +13,8 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, error};
 
 use crate::http_utils::log_and_create_http_response;
-use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
+use crate::{env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
+use datadog_serverless_config::Config;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
@@ -26,7 +27,7 @@ const TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const STATS_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 
 pub struct MiniAgent {
-    pub config: Arc<config::Config>,
+    pub config: Arc<Config>,
     pub trace_processor: Arc<dyn trace_processor::TraceProcessor + Send + Sync>,
     pub trace_flusher: Arc<dyn trace_flusher::TraceFlusher + Send + Sync>,
     pub stats_processor: Arc<dyn stats_processor::StatsProcessor + Send + Sync>,
@@ -160,7 +161,7 @@ impl MiniAgent {
     }
 
     async fn trace_endpoint_handler(
-        config: Arc<config::Config>,
+        config: Arc<Config>,
         req: hyper_migration::HttpRequest,
         trace_processor: Arc<dyn trace_processor::TraceProcessor + Send + Sync>,
         trace_tx: Sender<SendData>,
