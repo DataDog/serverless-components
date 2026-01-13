@@ -186,9 +186,12 @@ mod tests {
         Config {
             app_name: Some("dummy_function_name".to_string()),
             max_request_content_length: 10 * 1024 * 1024,
-            trace_flush_interval: 3,
-            stats_flush_interval: 3,
-            verify_env_timeout: 100,
+            trace_flush_interval_secs: 3,
+            stats_flush_interval_secs: 3,
+            proxy_request_timeout_secs: 30,
+            proxy_request_max_retries: 3,
+            proxy_request_retry_backoff_base_ms: 100,
+            verify_env_timeout_ms: 100,
             trace_intake: Endpoint {
                 url: hyper::Uri::from_static("https://trace.agent.notdog.com/traces"),
                 api_key: Some("dummy_api_key".into()),
@@ -205,6 +208,11 @@ mod tests {
             os: "linux".to_string(),
             obfuscation_config: ObfuscationConfig::new().unwrap(),
             proxy_url: None,
+            profiling_intake: Endpoint {
+                url: hyper::Uri::from_static("https://proxy.agent.notdog.com/proxy"),
+                api_key: Some("dummy_api_key".into()),
+                ..Default::default()
+            },
             tags: Tags::from_env_string("env:test,service:my-service"),
         }
     }

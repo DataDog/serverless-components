@@ -18,7 +18,7 @@ use zstd::zstd_safe::CompressionLevel;
 
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
-    config, env_verifier, mini_agent, stats_flusher, stats_processor,
+    config, env_verifier, mini_agent, proxy_flusher, stats_flusher, stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
 };
@@ -124,6 +124,8 @@ pub async fn main() {
         Arc::clone(&config),
     ));
 
+    let proxy_flusher = Arc::new(proxy_flusher::ProxyFlusher::new(Arc::clone(&config)));
+
     let mini_agent = Box::new(mini_agent::MiniAgent {
         config: Arc::clone(&config),
         env_verifier,
@@ -131,6 +133,7 @@ pub async fn main() {
         trace_flusher,
         stats_processor,
         stats_flusher,
+        proxy_flusher,
     });
 
     tokio::spawn(async move {

@@ -1,6 +1,8 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+use core::time::Duration;
+use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use hyper::{
     header,
     http::{self, HeaderMap},
@@ -8,6 +10,7 @@ use hyper::{
 };
 use libdd_common::hyper_migration;
 use serde_json::json;
+use std::error::Error;
 use tracing::{debug, error};
 
 /// Does two things:
@@ -109,6 +112,19 @@ pub fn verify_request_content_length(
         ));
     }
     None
+}
+
+/// Builds a reqwest client with optional proxy configuration and timeout.
+/// Uses rustls TLS by default. FIPS-compliant TLS is available via the fips feature
+pub fn build_client(
+    proxy_url: Option<&str>,
+    timeout: Duration,
+) -> Result<reqwest::Client, Box<dyn Error>> {
+    let mut builder = create_reqwest_client_builder()?.timeout(timeout);
+    if let Some(proxy) = proxy_url {
+        builder = builder.proxy(reqwest::Proxy::https(proxy)?);
+    }
+    Ok(builder.build()?)
 }
 
 #[cfg(test)]

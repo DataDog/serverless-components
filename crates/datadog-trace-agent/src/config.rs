@@ -81,13 +81,21 @@ pub struct Config {
     pub os: String,
     pub tags: Tags,
     /// how often to flush stats, in seconds
-    pub stats_flush_interval: u64,
+    pub stats_flush_interval_secs: u64,
     /// how often to flush traces, in seconds
-    pub trace_flush_interval: u64,
+    pub trace_flush_interval_secs: u64,
     pub trace_intake: Endpoint,
     pub trace_stats_intake: Endpoint,
+    /// Profiling intake endpoint (for proxying profiling data to Datadog)
+    pub profiling_intake: Endpoint,
+    /// Timeout for each proxy request, in seconds
+    pub proxy_request_timeout_secs: u64,
+    /// Maximum number of retry attempts for failed proxy requests
+    pub proxy_request_max_retries: u32,
+    /// Base backoff duration for proxy request retries, in milliseconds
+    pub proxy_request_retry_backoff_base_ms: u64,
     /// timeout for environment verification, in milliseconds
-    pub verify_env_timeout: u64,
+    pub verify_env_timeout_ms: u64,
     pub proxy_url: Option<String>,
 }
 
@@ -119,6 +127,14 @@ impl Config {
             trace_stats_intake_url = trace_stats_url_prefixed(&endpoint_prefix);
         };
 
+        // TODO: Create helper functions for this in libdatadog
+        let mut profiling_intake_url = format!("https://intake.profile.{}/api/v2/profile", dd_site);
+        // DD_APM_PROFILING_DD_URL env var will primarily be used for integration tests
+        // overrides the prefix of the profiling intake url
+        if let Ok(endpoint_prefix) = env::var("DD_APM_PROFILING_DD_URL") {
+            profiling_intake_url = format!("{endpoint_prefix}/api/v2/profile");
+        };
+
         let obfuscation_config = obfuscation_config::ObfuscationConfig::new().map_err(|err| {
             anyhow::anyhow!(
                 "Error creating obfuscation config, Mini Agent will not start. Error: {err}",
@@ -137,9 +153,12 @@ impl Config {
             env_type,
             os: env::consts::OS.to_string(),
             max_request_content_length: 10 * 1024 * 1024, // 10MB in Bytes
-            trace_flush_interval: 3,
-            stats_flush_interval: 3,
-            verify_env_timeout: 100,
+            trace_flush_interval_secs: 3,
+            stats_flush_interval_secs: 3,
+            proxy_request_timeout_secs: 30,
+            proxy_request_max_retries: 3,
+            proxy_request_retry_backoff_base_ms: 100,
+            verify_env_timeout_ms: 100,
             dd_dogstatsd_port,
             dd_site,
             trace_intake: Endpoint {
@@ -149,6 +168,11 @@ impl Config {
             },
             trace_stats_intake: Endpoint {
                 url: hyper::Uri::from_str(&trace_stats_intake_url).unwrap(),
+                api_key: Some(api_key.clone()),
+                ..Default::default()
+            },
+            profiling_intake: Endpoint {
+                url: hyper::Uri::from_str(&profiling_intake_url).unwrap(),
                 api_key: Some(api_key),
                 ..Default::default()
             },
