@@ -94,7 +94,6 @@ impl MiniAgent {
         // start our proxy flusher for profiling requests
         let proxy_flusher = self.proxy_flusher.clone();
         tokio::spawn(async move {
-            let proxy_flusher = proxy_flusher.clone();
             proxy_flusher.start_proxy_flusher(proxy_rx).await;
         });
 
@@ -117,12 +116,12 @@ impl MiniAgent {
             MiniAgent::trace_endpoint_handler(
                 endpoint_config,
                 req.map(hyper_migration::Body::incoming),
-                trace_processor.clone(),
-                trace_tx.clone(),
-                stats_processor.clone(),
-                stats_tx.clone(),
-                Arc::clone(&mini_agent_metadata),
-                proxy_tx.clone(),
+                trace_processor,
+                trace_tx,
+                stats_processor,
+                stats_tx,
+                mini_agent_metadata,
+                proxy_tx,
             )
         });
 
