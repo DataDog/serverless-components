@@ -137,10 +137,7 @@ impl ProxyFlusher {
                 }
             };
 
-            debug!(
-                "Sending request (attempt {}/{})",
-                attempts, max_retries
-            );
+            debug!("Sending request (attempt {}/{})", attempts, max_retries);
 
             let time = std::time::Instant::now();
             let response = request_builder.send().await;
@@ -163,10 +160,7 @@ impl ProxyFlusher {
                 }
                 Err(e) => {
                     // Only retry on network errors
-                    error!(
-                        "Network error (attempt {}): {:?}",
-                        attempts, e
-                    );
+                    error!("Network error (attempt {}): {:?}", attempts, e);
                     if attempts >= max_retries {
                         error!(
                             "Failed to send request after {} attempts: {:?}",
