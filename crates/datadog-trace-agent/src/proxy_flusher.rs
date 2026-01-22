@@ -38,7 +38,7 @@ pub struct ProxyFlusher {
 impl ProxyFlusher {
     pub fn new(config: Arc<Config>) -> Self {
         debug!(
-            "Proxy Flusher | Creating new proxy flusher with target URL: {}",
+            "Creating new proxy flusher with target URL: {}",
             config.profiling_intake.url
         );
         let client = build_client(
@@ -58,15 +58,15 @@ impl ProxyFlusher {
     /// Starts the proxy flusher that listens for proxy payloads from the channel and forwards them to Datadog
     pub async fn start_proxy_flusher(&self, mut rx: Receiver<ProxyRequest>) {
         let Some(api_key) = self.config.profiling_intake.api_key.as_ref() else {
-            error!("Proxy Flusher | No API key configured, cannot start");
+            error!("No API key configured, cannot start");
             return;
         };
 
-        debug!("Proxy Flusher | Started, listening for requests");
+        debug!("Started, listening for requests");
 
         while let Some(proxy_payload) = rx.recv().await {
             debug!(
-                "Proxy Flusher | Received request from channel, body size: {} bytes",
+                "Received request from channel, body size: {} bytes",
                 proxy_payload.body.len()
             );
             self.send_request(proxy_payload, api_key).await;
@@ -132,15 +132,12 @@ impl ProxyFlusher {
             let request_builder = match self.create_request(&request, api_key).await {
                 Ok(builder) => builder,
                 Err(e) => {
-                    error!("Proxy Flusher | {}", e);
+                    error!("{}", e);
                     return;
                 }
             };
 
-            debug!(
-                "Proxy Flusher | Sending request (attempt {}/{})",
-                attempts, max_retries
-            );
+            debug!("Sending request (attempt {}/{})", attempts, max_retries);
 
             let time = std::time::Instant::now();
             let response = request_builder.send().await;
@@ -153,23 +150,20 @@ impl ProxyFlusher {
                     let body = r.text().await;
                     if status == 202 {
                         debug!(
-                            "Proxy Flusher | Successfully sent request in {} ms to {url}",
+                            "Successfully sent request in {} ms to {url}",
                             elapsed.as_millis()
                         );
                     } else {
-                        error!("Proxy Flusher | Request failed with status {status}: {body:?}");
+                        error!("Request failed with status {status}: {body:?}");
                     }
                     return;
                 }
                 Err(e) => {
                     // Only retry on network errors
-                    error!(
-                        "Proxy Flusher | Network error (attempt {}): {:?}",
-                        attempts, e
-                    );
+                    error!("Network error (attempt {}): {:?}", attempts, e);
                     if attempts >= max_retries {
                         error!(
-                            "Proxy Flusher | Failed to send request after {} attempts: {:?}",
+                            "Failed to send request after {} attempts: {:?}",
                             attempts, e
                         );
                         return;
@@ -177,7 +171,7 @@ impl ProxyFlusher {
                     // Exponential backoff before retry
                     let backoff_ms =
                         self.config.proxy_request_retry_backoff_base_ms * (2_u64.pow(attempts - 1));
-                    debug!("Proxy Flusher | Retrying after {}ms backoff", backoff_ms);
+                    debug!("Retrying after {}ms backoff", backoff_ms);
                     tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }
             }
