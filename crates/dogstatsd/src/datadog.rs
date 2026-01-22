@@ -18,7 +18,7 @@ use std::fs::File;
 use std::io::{BufReader, Write};
 use std::sync::OnceLock;
 use std::time::Duration;
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 use zstd::stream::write::Encoder;
 use zstd::zstd_safe::CompressionLevel;
 
@@ -173,7 +173,7 @@ impl DdApi {
         let url = format!("{}/api/v2/series", &self.metrics_intake_url_prefix);
         let safe_body = serde_json::to_vec(&series)
             .map_err(|e| ShippingError::Payload(format!("Failed to serialize series: {e}")))?;
-        debug!("Sending body: {:?}", &series);
+        trace!("Sending body: {:?}", &series);
         self.ship_data(url, safe_body, "application/json").await
     }
 
@@ -185,7 +185,7 @@ impl DdApi {
         let safe_body = sketches
             .write_to_bytes()
             .map_err(|e| ShippingError::Payload(format!("Failed to serialize series: {e}")))?;
-        debug!("Sending distributions: {:?}", &sketches);
+        trace!("Sending distributions: {:?}", &sketches);
         self.ship_data(url, safe_body, "application/x-protobuf")
             .await
         // TODO maybe go to coded output stream if we incrementally
