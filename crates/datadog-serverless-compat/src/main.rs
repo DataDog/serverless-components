@@ -94,7 +94,7 @@ pub async fn main() {
         .with_thread_ids(false)
         .with_line_number(false)
         .with_file(false)
-        .with_target(false)
+        .with_target(true)
         .without_time()
         .finish();
 
