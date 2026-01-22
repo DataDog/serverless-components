@@ -177,6 +177,7 @@ impl MiniAgent {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn trace_endpoint_handler(
         config: Arc<config::Config>,
         req: hyper_migration::HttpRequest,
