@@ -7,7 +7,7 @@ use std::str::Split;
 use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 pub struct DogStatsD {
     cancel_token: tokio_util::sync::CancellationToken,
@@ -89,7 +89,7 @@ impl DogStatsD {
 
         #[allow(clippy::expect_used)]
         let msgs = std::str::from_utf8(&buf).expect("couldn't parse as string");
-        debug!("Received message: {} from {}", msgs, src);
+        trace!("Received message: {} from {}", msgs, src);
         let statsd_metric_strings = msgs.split('\n');
         self.insert_metrics(statsd_metric_strings);
     }
