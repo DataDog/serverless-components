@@ -8,8 +8,10 @@ use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockT
 use datadog_trace_agent::{
     config::Config, mini_agent::MiniAgent, trace_processor::ServerlessTraceProcessor,
 };
+use http_body_util::BodyExt;
 use hyper::StatusCode;
 use libdd_trace_utils::trace_utils;
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -71,6 +73,48 @@ async fn test_mini_agent_tcp_handles_requests() {
         "Expected 200 OK from /info endpoint"
     );
 
+    // Verify /info endpoint response content
+    let body = info_response
+        .into_body()
+        .collect()
+        .await
+        .expect("Failed to read /info response body")
+        .to_bytes();
+    let json: Value = serde_json::from_slice(&body)
+        .expect("Failed to parse /info response as JSON");
+
+    // Check endpoints array
+    assert_eq!(
+        json["endpoints"],
+        serde_json::json!(["/v0.4/traces", "/v0.6/stats", "/info"]),
+        "Expected endpoints array"
+    );
+
+    // Check client_drop_p0s flag
+    assert_eq!(
+        json["client_drop_p0s"],
+        true,
+        "Expected client_drop_p0s to be true"
+    );
+
+    // Check config object
+    let config = &json["config"];
+    assert_eq!(
+        config["receiver_port"],
+        test_port,
+        "Expected receiver_port to match test port"
+    );
+    assert_eq!(
+        config["statsd_port"],
+        8125,
+        "Expected statsd_port to be 8125"
+    );
+    assert_eq!(
+        config["receiver_socket"],
+        "",
+        "Expected empty receiver_socket for TCP"
+    );
+
     // Test /v0.4/traces endpoint with real trace data
     let trace_payload = create_test_trace_payload();
     let trace_response = send_tcp_request(test_port, "/v0.4/traces", "POST", Some(trace_payload))
@@ -120,6 +164,34 @@ async fn test_mini_agent_named_pipe_handles_requests() {
         info_response.status(),
         StatusCode::OK,
         "Expected 200 OK from /info endpoint over named pipe"
+    );
+
+    // Verify /info endpoint response content
+    let body = info_response
+        .into_body()
+        .collect()
+        .await
+        .expect("Failed to read /info response body")
+        .to_bytes();
+    let json: Value = serde_json::from_slice(&body)
+        .expect("Failed to parse /info response as JSON");
+
+    // Check config object specific to named pipe
+    let config_value = &json["config"];
+    assert_eq!(
+        config_value["receiver_port"],
+        0,
+        "Expected receiver_port to be 0 for named pipe"
+    );
+    assert_eq!(
+        config_value["statsd_port"],
+        8125,
+        "Expected statsd_port to be 8125"
+    );
+    assert_eq!(
+        config_value["receiver_socket"],
+        pipe_name,
+        "Expected receiver_socket to match pipe name"
     );
 
     // Test /v0.4/traces endpoint with real trace data
