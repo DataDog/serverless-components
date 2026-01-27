@@ -32,9 +32,6 @@ const TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const STATS_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 
-#[cfg(windows)]
-const PIPE_NAME_PREFIX: &str = r"\\.\pipe\";
-
 pub struct MiniAgent {
     pub config: Arc<config::Config>,
     pub trace_processor: Arc<dyn trace_processor::TraceProcessor + Send + Sync>,
@@ -270,8 +267,8 @@ impl MiniAgent {
         S::Future: Send,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
-        // Prepend \\.\pipe\ prefix to match datadog-agent behavior
-        let pipe_path = format!("{}{}", PIPE_NAME_PREFIX, pipe_name);
+        // pipe_name already includes \\.\pipe\ prefix from config
+        let pipe_path = pipe_name;
 
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
@@ -464,14 +461,8 @@ impl MiniAgent {
         dd_apm_windows_pipe_name: Option<&str>,
         dd_dogstatsd_port: u16,
     ) -> http::Result<hyper_migration::HttpResponse> {
-        // Prepend \\.\pipe\ prefix to pipe name if present, matching datadog-agent behavior
-        let receiver_socket = match dd_apm_windows_pipe_name {
-            #[cfg(windows)]
-            Some(pipe_name) => format!("{}{}", PIPE_NAME_PREFIX, pipe_name),
-            #[cfg(not(windows))]
-            Some(pipe_name) => pipe_name.to_string(),
-            None => String::new(),
-        };
+        // pipe_name already includes \\.\pipe\ prefix from config
+        let receiver_socket = dd_apm_windows_pipe_name.unwrap_or("");
 
         let config_json = serde_json::json!({
             "receiver_port": dd_apm_receiver_port,

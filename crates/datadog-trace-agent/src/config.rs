@@ -112,7 +112,11 @@ impl Config {
             anyhow::anyhow!("Unable to identify environment. Shutting down Mini Agent.")
         })?;
 
-        let dd_apm_windows_pipe_name: Option<String> = env::var("DD_APM_WINDOWS_PIPE_NAME").ok();
+        let dd_apm_windows_pipe_name: Option<String> =
+            env::var("DD_APM_WINDOWS_PIPE_NAME").ok().map(|pipe_name| {
+                // Prepend \\.\pipe\ prefix to match datadog-agent behavior
+                format!(r"\\.\pipe\{}", pipe_name)
+            });
         let dd_apm_receiver_port: u16 = if dd_apm_windows_pipe_name.is_some() {
             0 // Override to 0 when using Windows named pipe
         } else {
@@ -359,13 +363,13 @@ mod tests {
     fn test_apm_windows_pipe_name() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_APM_WINDOWS_PIPE_NAME", r"\\.\pipe\trace-agent");
+        env::set_var("DD_APM_WINDOWS_PIPE_NAME", r"test_pipe");
         let config_res = config::Config::new();
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
         assert_eq!(
             config.dd_apm_windows_pipe_name,
-            Some(r"\\.\pipe\trace-agent".to_string())
+            Some(r"\\.\pipe\test_pipe".to_string())
         );
         // Port should be overridden to 0 when pipe is set
         assert_eq!(config.dd_apm_receiver_port, 0);
