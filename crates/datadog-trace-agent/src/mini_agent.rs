@@ -15,12 +15,15 @@ use tracing::{debug, error};
 
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
 use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
+
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::ServerOptions;
+
 use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
-const MINI_AGENT_PORT: usize = 8126;
 const TRACE_ENDPOINT_PATH: &str = "/v0.4/traces";
 const STATS_ENDPOINT_PATH: &str = "/v0.6/stats";
 const INFO_ENDPOINT_PATH: &str = "/info";
@@ -68,7 +71,7 @@ impl MiniAgent {
         // start our trace flusher. receives trace payloads and handles buffering + deciding when to
         // flush to backend.
         let trace_flusher = self.trace_flusher.clone();
-        tokio::spawn(async move {
+        let trace_flusher_handle = tokio::spawn(async move {
             trace_flusher.start_trace_flusher(trace_rx).await;
         });
 
@@ -81,7 +84,7 @@ impl MiniAgent {
         // start our stats flusher.
         let stats_flusher = self.stats_flusher.clone();
         let stats_config = self.config.clone();
-        tokio::spawn(async move {
+        let stats_flusher_handle = tokio::spawn(async move {
             stats_flusher
                 .start_stats_flusher(stats_config, stats_rx)
                 .await;
@@ -125,16 +128,77 @@ impl MiniAgent {
             )
         });
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], MINI_AGENT_PORT as u16));
-        let listener = tokio::net::TcpListener::bind(&addr).await?;
-
-        debug!("Mini Agent started: listening on port {MINI_AGENT_PORT}");
+        // Determine which transport to use based on configuration
+        if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
+            debug!("Mini Agent started: listening on named pipe {}", pipe_name);
+        } else {
+            debug!(
+                "Mini Agent started: listening on port {}",
+                self.config.dd_apm_receiver_port
+            );
+        }
         debug!(
-            "Time taken start the Mini Agent: {} ms",
+            "Time taken to start the Mini Agent: {} ms",
             now.elapsed().as_millis()
         );
+
+        if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
+            // Windows named pipe transport
+            #[cfg(windows)]
+            {
+                Self::serve_named_pipe(
+                    pipe_name,
+                    service,
+                    trace_flusher_handle,
+                    stats_flusher_handle,
+                )
+                .await?;
+            }
+
+            #[cfg(not(windows))]
+            {
+                error!(
+                    "Named pipes are only supported on Windows, cannot use pipe: {}",
+                    pipe_name
+                );
+                return Err("Named pipes are only supported on Windows".into());
+            }
+        } else {
+            // TCP transport
+            let addr = SocketAddr::from(([127, 0, 0, 1], self.config.dd_apm_receiver_port));
+            let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+            Self::serve_tcp(
+                listener,
+                service,
+                trace_flusher_handle,
+                stats_flusher_handle,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn serve_tcp<S>(
+        listener: tokio::net::TcpListener,
+        service: S,
+        mut trace_flusher_handle: tokio::task::JoinHandle<()>,
+        mut stats_flusher_handle: tokio::task::JoinHandle<()>,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        S: hyper::service::Service<
+                hyper::Request<hyper::body::Incoming>,
+                Response = hyper::Response<hyper_migration::Body>,
+            > + Clone
+            + Send
+            + 'static,
+        S::Future: Send,
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
+
         loop {
             let conn = tokio::select! {
                 con_res = listener.accept() => match con_res {
@@ -165,7 +229,108 @@ impl MiniAgent {
                     },
                     Ok(()) | Err(_) => continue,
                 },
+                // If there's some error in the background tasks, we can't send data
+                result = &mut trace_flusher_handle => {
+                    error!("Trace flusher task died: {:?}", result);
+                    return Err("Trace flusher task terminated unexpectedly".into());
+                },
+                result = &mut stats_flusher_handle => {
+                    error!("Stats flusher task died: {:?}", result);
+                    return Err("Stats flusher task terminated unexpectedly".into());
+                },
             };
+            let conn = hyper_util::rt::TokioIo::new(conn);
+            let server = server.clone();
+            let service = service.clone();
+            joinset.spawn(async move {
+                if let Err(e) = server.serve_connection(conn, service).await {
+                    error!("Connection error: {e}");
+                }
+            });
+        }
+    }
+
+    #[cfg(windows)]
+    async fn serve_named_pipe<S>(
+        pipe_name: &str,
+        service: S,
+        mut trace_flusher_handle: tokio::task::JoinHandle<()>,
+        mut stats_flusher_handle: tokio::task::JoinHandle<()>,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        S: hyper::service::Service<
+                hyper::Request<hyper::body::Incoming>,
+                Response = hyper::Response<hyper_migration::Body>,
+            > + Clone
+            + Send
+            + 'static,
+        S::Future: Send,
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
+        // pipe_name already includes \\.\pipe\ prefix from config
+        let pipe_path = pipe_name;
+
+        let server = hyper::server::conn::http1::Builder::new();
+        let mut joinset = tokio::task::JoinSet::new();
+
+        loop {
+            // Create a new pipe instance
+            let pipe = match ServerOptions::new().create(&pipe_path) {
+                Ok(pipe) => {
+                    debug!("Created pipe server instance '{}' in byte mode", pipe_path);
+                    pipe
+                }
+                Err(e) => {
+                    error!("Failed to create named pipe: {e}");
+                    return Err(e.into());
+                }
+            };
+
+            // Wait for client connection
+            let conn = tokio::select! {
+                connect_res = pipe.connect() => match connect_res {
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::ConnectionAborted
+                                | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::ConnectionRefused
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(e) => {
+                        error!("Named pipe connection error: {e}");
+                        return Err(e.into());
+                    }
+                    Ok(()) => {
+                        debug!("Client connected to '{}'", pipe_path);
+                        pipe
+                    }
+                },
+                finished = async {
+                    match joinset.join_next().await {
+                        Some(finished) => finished,
+                        None => std::future::pending().await,
+                    }
+                } => match finished {
+                    Err(e) if e.is_panic() => {
+                        std::panic::resume_unwind(e.into_panic());
+                    },
+                    Ok(()) | Err(_) => continue,
+                },
+                // If there's some error in the background tasks, we can't send data
+                result = &mut trace_flusher_handle => {
+                    error!("Trace flusher task died: {:?}", result);
+                    return Err("Trace flusher task terminated unexpectedly".into());
+                },
+                result = &mut stats_flusher_handle => {
+                    error!("Stats flusher task died: {:?}", result);
+                    return Err("Stats flusher task terminated unexpectedly".into());
+                },
+            };
+
+            // Hyper http parser handles buffering pipe data
             let conn = hyper_util::rt::TokioIo::new(conn);
             let server = server.clone();
             let service = service.clone();
@@ -219,7 +384,11 @@ impl MiniAgent {
                     ),
                 }
             }
-            (_, INFO_ENDPOINT_PATH) => match Self::info_handler(config.dd_dogstatsd_port) {
+            (_, INFO_ENDPOINT_PATH) => match Self::info_handler(
+                config.dd_apm_receiver_port,
+                config.dd_apm_windows_pipe_name.as_deref(),
+                config.dd_dogstatsd_port,
+            ) {
                 Ok(res) => Ok(res),
                 Err(err) => log_and_create_http_response(
                     &format!("Info endpoint error: {err}"),
@@ -287,7 +456,20 @@ impl MiniAgent {
         }
     }
 
-    fn info_handler(dd_dogstatsd_port: u16) -> http::Result<hyper_migration::HttpResponse> {
+    fn info_handler(
+        dd_apm_receiver_port: u16,
+        dd_apm_windows_pipe_name: Option<&str>,
+        dd_dogstatsd_port: u16,
+    ) -> http::Result<hyper_migration::HttpResponse> {
+        // pipe_name already includes \\.\pipe\ prefix from config
+        let receiver_socket = dd_apm_windows_pipe_name.unwrap_or("");
+
+        let config_json = serde_json::json!({
+            "receiver_port": dd_apm_receiver_port,
+            "statsd_port": dd_dogstatsd_port,
+            "receiver_socket": receiver_socket
+        });
+
         let response_json = json!(
             {
                 "endpoints": [
@@ -297,9 +479,7 @@ impl MiniAgent {
                     PROFILING_ENDPOINT_PATH
                 ],
                 "client_drop_p0s": true,
-                "config": {
-                    "statsd_port": dd_dogstatsd_port
-                }
+                "config": config_json
             }
         );
         Response::builder()

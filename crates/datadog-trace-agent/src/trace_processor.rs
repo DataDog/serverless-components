@@ -104,7 +104,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
         // double check content length is < max request content length in case transfer encoding is used
         if body_size > config.max_request_content_length {
             return log_and_create_http_response(
-                "Error processing traces: Payload too large",
+                &format!("Error processing traces: Payload too large"),
                 StatusCode::PAYLOAD_TOO_LARGE,
             );
         }
@@ -203,6 +203,8 @@ mod tests {
                 ..Default::default()
             },
             dd_site: "datadoghq.com".to_string(),
+            dd_apm_receiver_port: 8126,
+            dd_apm_windows_pipe_name: None,
             dd_dogstatsd_port: 8125,
             env_type: trace_utils::EnvironmentType::CloudFunction,
             os: "linux".to_string(),
