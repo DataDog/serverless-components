@@ -6,7 +6,8 @@ mod common;
 use common::helpers::{create_test_trace_payload, send_tcp_request};
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
-    config::Config, mini_agent::MiniAgent, trace_processor::ServerlessTraceProcessor,
+    config::Config, mini_agent::MiniAgent, proxy_flusher::ProxyFlusher,
+    trace_processor::ServerlessTraceProcessor,
 };
 use http_body_util::BodyExt;
 use hyper::StatusCode;
@@ -32,11 +33,15 @@ pub fn create_tcp_test_config() -> Config {
             .unwrap(),
         os: std::env::consts::OS.to_string(),
         tags: datadog_trace_agent::config::Tags::new(),
-        stats_flush_interval: 10,
-        trace_flush_interval: 5,
+        stats_flush_interval_secs: 10,
+        trace_flush_interval_secs: 5,
         trace_intake: libdd_common::Endpoint::default(),
         trace_stats_intake: libdd_common::Endpoint::default(),
-        verify_env_timeout: 1000,
+        profiling_intake: libdd_common::Endpoint::default(),
+        proxy_request_timeout_secs: 30,
+        proxy_request_max_retries: 3,
+        proxy_request_retry_backoff_base_ms: 100,
+        verify_env_timeout_ms: 1000,
         proxy_url: None,
     }
 }
@@ -47,12 +52,13 @@ async fn test_mini_agent_tcp_handles_requests() {
     let config = Arc::new(create_tcp_test_config());
     let test_port = config.dd_apm_receiver_port;
     let mini_agent = MiniAgent {
-        config,
+        config: config.clone(),
         trace_processor: Arc::new(ServerlessTraceProcessor {}),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
         stats_flusher: Arc::new(MockStatsFlusher),
         env_verifier: Arc::new(MockEnvVerifier),
+        proxy_flusher: Arc::new(ProxyFlusher::new(config)),
     };
 
     // Start the mini agent
@@ -86,7 +92,12 @@ async fn test_mini_agent_tcp_handles_requests() {
     // Check endpoints array
     assert_eq!(
         json["endpoints"],
-        serde_json::json!(["/v0.4/traces", "/v0.6/stats", "/info"]),
+        serde_json::json!([
+            "/v0.4/traces",
+            "/v0.6/stats",
+            "/info",
+            "/profiling/v1/input"
+        ]),
         "Expected endpoints array"
     );
 
@@ -138,12 +149,13 @@ async fn test_mini_agent_named_pipe_handles_requests() {
     let config = Arc::new(config);
 
     let mini_agent = MiniAgent {
-        config,
+        config: config.clone(),
         trace_processor: Arc::new(ServerlessTraceProcessor {}),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
         stats_flusher: Arc::new(MockStatsFlusher),
         env_verifier: Arc::new(MockEnvVerifier),
+        proxy_flusher: Arc::new(ProxyFlusher::new(config)),
     };
 
     // Start the mini agent
