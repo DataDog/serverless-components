@@ -80,8 +80,8 @@ async fn test_mini_agent_tcp_handles_requests() {
         .await
         .expect("Failed to read /info response body")
         .to_bytes();
-    let json: Value = serde_json::from_slice(&body)
-        .expect("Failed to parse /info response as JSON");
+    let json: Value =
+        serde_json::from_slice(&body).expect("Failed to parse /info response as JSON");
 
     // Check endpoints array
     assert_eq!(
@@ -92,26 +92,22 @@ async fn test_mini_agent_tcp_handles_requests() {
 
     // Check client_drop_p0s flag
     assert_eq!(
-        json["client_drop_p0s"],
-        true,
+        json["client_drop_p0s"], true,
         "Expected client_drop_p0s to be true"
     );
 
     // Check config object
     let config = &json["config"];
     assert_eq!(
-        config["receiver_port"],
-        test_port,
+        config["receiver_port"], test_port,
         "Expected receiver_port to match test port"
     );
     assert_eq!(
-        config["statsd_port"],
-        8125,
+        config["statsd_port"], 8125,
         "Expected statsd_port to be 8125"
     );
     assert_eq!(
-        config["receiver_socket"],
-        "",
+        config["receiver_socket"], "",
         "Expected empty receiver_socket for TCP"
     );
 
@@ -133,7 +129,9 @@ async fn test_mini_agent_tcp_handles_requests() {
 #[cfg(all(test, windows))]
 #[tokio::test]
 async fn test_mini_agent_named_pipe_handles_requests() {
-    let pipe_name = r"\\.\pipe\dd_trace_integration_test";
+    // Use just the pipe name without \\.\pipe\ prefix, matching datadog-agent behavior
+    let pipe_name = "dd_trace_integration_test";
+    let pipe_path = format!(r"\\.\pipe\{}", pipe_name); // Full path for client connections
     let mut config = create_tcp_test_config();
     config.dd_apm_windows_pipe_name = Some(pipe_name.to_string());
     config.dd_apm_receiver_port = 0;
@@ -157,7 +155,7 @@ async fn test_mini_agent_named_pipe_handles_requests() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Test /info endpoint
-    let info_response = send_named_pipe_request(pipe_name, "/info", "GET", None)
+    let info_response = send_named_pipe_request(&pipe_path, "/info", "GET", None)
         .await
         .expect("Failed to send /info request over named pipe");
     assert_eq!(
@@ -173,31 +171,28 @@ async fn test_mini_agent_named_pipe_handles_requests() {
         .await
         .expect("Failed to read /info response body")
         .to_bytes();
-    let json: Value = serde_json::from_slice(&body)
-        .expect("Failed to parse /info response as JSON");
+    let json: Value =
+        serde_json::from_slice(&body).expect("Failed to parse /info response as JSON");
 
     // Check config object specific to named pipe
     let config_value = &json["config"];
     assert_eq!(
-        config_value["receiver_port"],
-        0,
+        config_value["receiver_port"], 0,
         "Expected receiver_port to be 0 for named pipe"
     );
     assert_eq!(
-        config_value["statsd_port"],
-        8125,
+        config_value["statsd_port"], 8125,
         "Expected statsd_port to be 8125"
     );
     assert_eq!(
-        config_value["receiver_socket"],
-        pipe_name,
-        "Expected receiver_socket to match pipe name"
+        config_value["receiver_socket"], pipe_path,
+        "Expected receiver_socket to match full pipe path"
     );
 
     // Test /v0.4/traces endpoint with real trace data
     let trace_payload = create_test_trace_payload();
     let trace_response =
-        send_named_pipe_request(pipe_name, "/v0.4/traces", "POST", Some(trace_payload))
+        send_named_pipe_request(&pipe_path, "/v0.4/traces", "POST", Some(trace_payload))
             .await
             .expect("Failed to send /v0.4/traces request over named pipe");
     assert_eq!(
