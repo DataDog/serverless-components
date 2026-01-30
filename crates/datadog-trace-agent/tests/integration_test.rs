@@ -4,6 +4,7 @@
 mod common;
 
 use common::helpers::{create_test_trace_payload, send_tcp_request};
+use common::mock_server::MockServer;
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
     config::test_helpers::create_tcp_test_config, mini_agent::MiniAgent,
@@ -19,6 +20,8 @@ use std::time::Duration;
 
 #[cfg(all(windows, feature = "windows-pipes"))]
 use common::helpers::send_named_pipe_request;
+
+const FLUSH_WAIT_DURATION: Duration = Duration::from_millis(1500);
 
 /// Helper to configure a config with mock server endpoints
 pub fn configure_mock_endpoints(config: &mut Config, mock_server_url: &str) {
@@ -63,7 +66,6 @@ pub fn create_mini_agent_with_real_flushers(config: Arc<Config>) -> MiniAgent {
 
 /// Helper to verify trace request sent to mock server
 pub fn verify_trace_request(mock_server: &common::mock_server::MockServer) {
-
     let trace_reqs = mock_server.get_requests_for_path("/api/v0.2/traces");
 
     assert!(
@@ -300,9 +302,7 @@ async fn test_mini_agent_named_pipe_handles_requests() {
 #[cfg(test)]
 #[tokio::test]
 #[serial]
-async fn test_mini_agent_with_real_flushers() {
-    use common::mock_server::MockServer;
-
+async fn test_mini_agent_tcp_with_real_flushers() {
     let mock_server = MockServer::start().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -375,7 +375,7 @@ async fn test_mini_agent_with_real_flushers() {
     assert_eq!(trace_response.status(), StatusCode::OK);
 
     // Wait for flush
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
 
     verify_trace_request(&mock_server);
 
@@ -386,8 +386,6 @@ async fn test_mini_agent_with_real_flushers() {
 #[tokio::test]
 #[serial]
 async fn test_mini_agent_named_pipe_with_real_flushers() {
-    use common::mock_server::MockServer;
-
     let mock_server = MockServer::start().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -469,7 +467,7 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     assert_eq!(trace_response.status(), StatusCode::OK);
 
     // Wait for flush
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
 
     verify_trace_request(&mock_server);
 
