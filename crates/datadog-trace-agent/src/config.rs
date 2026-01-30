@@ -24,6 +24,12 @@ pub struct Tags {
     function_tags_string: OnceLock<String>,
 }
 
+impl Default for Tags {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Tags {
     pub fn from_env_string(env_tags: &str) -> Self {
         let mut tags = HashMap::new();
