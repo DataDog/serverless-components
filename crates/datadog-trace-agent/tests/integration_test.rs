@@ -7,8 +7,10 @@ use common::helpers::{create_test_trace_payload, send_tcp_request};
 use common::mock_server::MockServer;
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
-    config::test_helpers::create_tcp_test_config, mini_agent::MiniAgent,
-    proxy_flusher::ProxyFlusher, trace_flusher::TraceFlusher,
+    config::{test_helpers::create_tcp_test_config, Config},
+    mini_agent::MiniAgent,
+    proxy_flusher::ProxyFlusher,
+    trace_flusher::TraceFlusher,
     trace_processor::ServerlessTraceProcessor,
 };
 use http_body_util::BodyExt;
@@ -98,34 +100,6 @@ pub fn verify_trace_request(mock_server: &common::mock_server::MockServer) {
         !trace_req.body.is_empty(),
         "Expected non-empty trace payload"
     );
-}
-
-/// Create a test config with TCP transport
-pub fn create_tcp_test_config(port: u16) -> Config {
-    Config {
-        dd_site: "mock-datadoghq.com".to_string(),
-        dd_apm_receiver_port: port,
-        dd_apm_windows_pipe_name: None,
-        dd_dogstatsd_port: 8125,
-        dd_dogstatsd_windows_pipe_name: None,
-        env_type: trace_utils::EnvironmentType::AzureFunction,
-        app_name: Some("test-app".to_string()),
-        max_request_content_length: 10_000_000,
-        obfuscation_config: libdd_trace_obfuscation::obfuscation_config::ObfuscationConfig::new()
-            .unwrap(),
-        os: std::env::consts::OS.to_string(),
-        tags: datadog_trace_agent::config::Tags::new(),
-        stats_flush_interval_secs: 10,
-        trace_flush_interval_secs: 5,
-        trace_intake: libdd_common::Endpoint::default(),
-        trace_stats_intake: libdd_common::Endpoint::default(),
-        profiling_intake: libdd_common::Endpoint::default(),
-        proxy_request_timeout_secs: 30,
-        proxy_request_max_retries: 3,
-        proxy_request_retry_backoff_base_ms: 100,
-        verify_env_timeout_ms: 1000,
-        proxy_url: None,
-    }
 }
 
 #[cfg(test)]
@@ -303,49 +277,15 @@ async fn test_mini_agent_named_pipe_handles_requests() {
 #[tokio::test]
 #[serial]
 async fn test_mini_agent_tcp_with_real_flushers() {
-    let mock_server = MockServer::start().await;
+    let mock_server: MockServer = MockServer::start().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut config = create_tcp_test_config(8127);
-<<<<<<< HEAD
-    config.trace_intake = libdd_common::Endpoint {
-        url: trace_url.parse().unwrap(),
-        api_key: Some("test-api-key".into()),
-        ..Default::default()
-    };
-    config.trace_stats_intake = libdd_common::Endpoint {
-        url: stats_url.parse().unwrap(),
-        api_key: Some("test-api-key".into()),
-        ..Default::default()
-    };
-    // Set short flush intervals for faster testing
-    config.trace_flush_interval_secs = 1; // 1 second
-    config.stats_flush_interval_secs = 1; // 1 second
-
-    let config = Arc::new(config);
-    let test_port = config.dd_apm_receiver_port;
-
-    // Create mini agent with REAL flushers
-    let aggregator = Arc::new(tokio::sync::Mutex::new(TraceAggregator::default()));
-    let mini_agent = MiniAgent {
-        config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor {}),
-        trace_flusher: Arc::new(ServerlessTraceFlusher::new(
-            aggregator.clone(),
-            config.clone(),
-        )),
-        stats_processor: Arc::new(ServerlessStatsProcessor {}),
-        stats_flusher: Arc::new(ServerlessStatsFlusher {}),
-        env_verifier: Arc::new(MockEnvVerifier),
-        proxy_flusher: Arc::new(ProxyFlusher::new(config.clone())),
-    };
-=======
     configure_mock_endpoints(&mut config, &mock_server.url());
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
 
     let mini_agent = create_mini_agent_with_real_flushers(config);
->>>>>>> e680a1b (Extract test helpers)
 
     let agent_handle = tokio::spawn(async move {
         let _ = mini_agent.start_mini_agent().await;
@@ -389,29 +329,6 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     let mock_server = MockServer::start().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-<<<<<<< HEAD
-    // Create config pointing to mock server
-    let trace_url = format!("{}/api/v0.2/traces", mock_server.url());
-    let stats_url = format!("{}/api/v0.6/stats", mock_server.url());
-
-    let mut config = create_tcp_test_config(8127);
-    config.trace_intake = libdd_common::Endpoint {
-        url: trace_url.parse().unwrap(),
-        api_key: Some("test-api-key".into()),
-        ..Default::default()
-    };
-    config.trace_stats_intake = libdd_common::Endpoint {
-        url: stats_url.parse().unwrap(),
-        api_key: Some("test-api-key".into()),
-        ..Default::default()
-    };
-    // Set short flush intervals for faster testing
-    config.trace_flush_interval_secs = 1; // 1 second
-    config.stats_flush_interval_secs = 1; // 1 second
-
-    // Configure for named pipe
-=======
->>>>>>> e680a1b (Extract test helpers)
     let pipe_name = r"\\.\pipe\dd_trace_real_flusher_test";
     let mut config = create_tcp_test_config(0);
     configure_mock_endpoints(&mut config, &mock_server.url());
@@ -419,24 +336,7 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     config.dd_apm_receiver_port = 0;
     let config = Arc::new(config);
 
-<<<<<<< HEAD
-    // Create mini agent with REAL flushers
-    let aggregator = Arc::new(tokio::sync::Mutex::new(TraceAggregator::default()));
-    let mini_agent = MiniAgent {
-        config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor {}),
-        trace_flusher: Arc::new(ServerlessTraceFlusher::new(
-            aggregator.clone(),
-            config.clone(),
-        )),
-        stats_processor: Arc::new(ServerlessStatsProcessor {}),
-        stats_flusher: Arc::new(ServerlessStatsFlusher {}),
-        env_verifier: Arc::new(MockEnvVerifier),
-        proxy_flusher: Arc::new(ProxyFlusher::new(config.clone())),
-    };
-=======
     let mini_agent = create_mini_agent_with_real_flushers(config);
->>>>>>> e680a1b (Extract test helpers)
 
     let agent_handle = tokio::spawn(async move {
         let _ = mini_agent.start_mini_agent().await;
