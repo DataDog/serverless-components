@@ -24,6 +24,12 @@ pub struct Tags {
     function_tags_string: OnceLock<String>,
 }
 
+impl Default for Tags {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Tags {
     pub fn from_env_string(env_tags: &str) -> Self {
         let mut tags = HashMap::new();
@@ -141,8 +147,6 @@ impl Config {
                 .unwrap_or(DEFAULT_APM_RECEIVER_PORT)
         };
 
-        // Windows named pipe name for DogStatsD.
-        // Normalize by adding \\.\pipe\ prefix if not present
         let dd_dogstatsd_windows_pipe_name: Option<String> = {
             #[cfg(any(windows, test))]
             {
@@ -171,6 +175,7 @@ impl Config {
                 .and_then(|port| port.parse::<u16>().ok())
                 .unwrap_or(DEFAULT_DOGSTATSD_PORT)
         };
+
         let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
 
         // construct the trace & trace stats intake urls based on DD_SITE env var (to flush traces &
@@ -373,35 +378,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_default_dogstatsd_port() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(config.dd_dogstatsd_port, 8125);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
-    }
-
-    #[test]
-    #[serial]
-    fn test_custom_dogstatsd_port() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_DOGSTATSD_PORT", "18125");
-        let config_res = config::Config::new();
-        println!("{:?}", config_res);
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(config.dd_dogstatsd_port, 18125);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
-        env::remove_var("DD_DOGSTATSD_PORT");
-    }
-
-    #[test]
-    #[serial]
     fn test_apm_windows_pipe_name() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
@@ -434,11 +410,41 @@ mod tests {
             config.dd_dogstatsd_windows_pipe_name,
             Some(r"\\.\pipe\test_pipe".to_string())
         );
+
         // Port should be overridden to 0 when pipe is set
         assert_eq!(config.dd_dogstatsd_port, 0);
         env::remove_var("DD_API_KEY");
         env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
         env::remove_var("DD_DOGSTATSD_WINDOWS_PIPE_NAME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_default_dogstatsd_port() {
+        env::set_var("DD_API_KEY", "_not_a_real_key_");
+        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
+        let config_res = config::Config::new();
+        assert!(config_res.is_ok());
+        let config = config_res.unwrap();
+        assert_eq!(config.dd_dogstatsd_port, 8125);
+        env::remove_var("DD_API_KEY");
+        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_custom_dogstatsd_port() {
+        env::set_var("DD_API_KEY", "_not_a_real_key_");
+        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
+        env::set_var("DD_DOGSTATSD_PORT", "18125");
+        let config_res = config::Config::new();
+        println!("{:?}", config_res);
+        assert!(config_res.is_ok());
+        let config = config_res.unwrap();
+        assert_eq!(config.dd_dogstatsd_port, 18125);
+        env::remove_var("DD_API_KEY");
+        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+        env::remove_var("DD_DOGSTATSD_PORT");
     }
 
     #[test]
