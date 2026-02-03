@@ -1,0 +1,21 @@
+[package]
+name = "datadog-serverless-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+datadog-trace-agent = { path = "../datadog-trace-agent" }
+dogstatsd = { path = "../dogstatsd" }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "660c550b6311a209d9cf7de762e54b6b7109bcdb" }
+
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+thiserror = "2.0"
+zstd = "0.13"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
