@@ -17,6 +17,37 @@ Node.js bindings for Datadog serverless monitoring, providing DogStatsD and trac
 npm install @datadog/serverless-node
 ```
 
+The package automatically installs the correct pre-built binary for your platform:
+
+| Platform | Architecture | Package |
+|----------|-------------|---------|
+| macOS | x64 | @datadog/serverless-node-darwin-x64 |
+| macOS | ARM64 (Apple Silicon) | @datadog/serverless-node-darwin-arm64 |
+| Linux | x64 | @datadog/serverless-node-linux-x64-gnu |
+| Linux | ARM64 | @datadog/serverless-node-linux-arm64-gnu |
+| Windows | x64 | @datadog/serverless-node-win32-x64-msvc |
+
+### Supported Platforms
+
+- **Node.js**: 16.x, 18.x, 20.x (LTS versions)
+- **Operating Systems**:
+  - macOS 10.13+ (Intel and Apple Silicon)
+  - Linux (glibc 2.17+)
+  - Windows 10+
+
+### Building from Source
+
+If pre-built binaries aren't available for your platform:
+
+```bash
+git clone https://github.com/DataDog/serverless-components
+cd crates/datadog-serverless-node
+npm install
+npm run build
+```
+
+See [BUILDING.md](./BUILDING.md) for details.
+
 ## Quick Start
 
 ```javascript
