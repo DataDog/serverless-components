@@ -247,10 +247,21 @@ impl DatadogServices {
             *callback_guard = None;
         }
 
-        // Stop services asynchronously
+        // Stop services asynchronously with 5-second timeout
         let runtime = Arc::clone(&self.runtime);
         runtime.spawn(async move {
-            let _ = handle.stop().await;
+            let shutdown_timeout = std::time::Duration::from_secs(5);
+            match tokio::time::timeout(shutdown_timeout, handle.stop()).await {
+                Ok(Ok(())) => {
+                    // Shutdown completed successfully
+                }
+                Ok(Err(e)) => {
+                    eprintln!("Error during shutdown: {}", e);
+                }
+                Err(_) => {
+                    eprintln!("Shutdown timed out after 5 seconds");
+                }
+            }
         });
 
         Ok(())
