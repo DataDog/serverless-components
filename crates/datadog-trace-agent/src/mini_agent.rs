@@ -388,7 +388,6 @@ impl MiniAgent {
                 config.dd_apm_receiver_port,
                 config.dd_apm_windows_pipe_name.as_deref(),
                 config.dd_dogstatsd_port,
-                config.dd_dogstatsd_windows_pipe_name.as_deref(),
             ) {
                 Ok(res) => Ok(res),
                 Err(err) => log_and_create_http_response(
@@ -461,20 +460,15 @@ impl MiniAgent {
         dd_apm_receiver_port: u16,
         dd_apm_windows_pipe_name: Option<&str>,
         dd_dogstatsd_port: u16,
-        dd_dogstatsd_windows_pipe_name: Option<&str>,
     ) -> http::Result<hyper_migration::HttpResponse> {
         // pipe_name already includes \\.\pipe\ prefix from config
         let receiver_socket = dd_apm_windows_pipe_name.unwrap_or("");
 
-        let mut config_json = serde_json::json!({
+        let config_json = serde_json::json!({
             "receiver_port": dd_apm_receiver_port,
             "statsd_port": dd_dogstatsd_port,
             "receiver_socket": receiver_socket
         });
-
-        if let Some(pipe_name) = dd_dogstatsd_windows_pipe_name {
-            config_json["statsd_windows_pipe_name"] = serde_json::json!(pipe_name);
-        }
 
         let response_json = json!(
             {
