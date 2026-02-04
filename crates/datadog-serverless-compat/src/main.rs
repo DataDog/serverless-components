@@ -65,10 +65,36 @@ pub async fn main() {
     };
 
     let dd_api_key: Option<String> = env::var("DD_API_KEY").ok();
-    let dd_dogstatsd_port: u16 = env::var("DD_DOGSTATSD_PORT")
-        .ok()
-        .and_then(|port| port.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_DOGSTATSD_PORT);
+
+    // Windows named pipe name for DogStatsD.
+    // Normalize by adding \\.\pipe\ prefix if not present
+    let dd_dogstatsd_windows_pipe_name: Option<String> = {
+        #[cfg(windows)]
+        {
+            env::var("DD_DOGSTATSD_WINDOWS_PIPE_NAME")
+                .ok()
+                .map(|pipe_name| {
+                    if pipe_name.starts_with("\\\\.\\pipe\\") || pipe_name.starts_with(r"\\.\pipe\")
+                    {
+                        pipe_name
+                    } else {
+                        format!(r"\\.\pipe\{}", pipe_name)
+                    }
+                })
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    };
+    let dd_dogstatsd_port: u16 = if dd_dogstatsd_windows_pipe_name.is_some() {
+        0 // Override to 0 when using Windows named pipe
+    } else {
+        env::var("DD_DOGSTATSD_PORT")
+            .ok()
+            .and_then(|port| port.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_DOGSTATSD_PORT)
+    };
     let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
     let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")
         .map(|val| val.to_lowercase() != "false")
@@ -152,9 +178,14 @@ pub async fn main() {
             https_proxy,
             dogstatsd_tags,
             dd_statsd_metric_namespace,
+            dd_dogstatsd_windows_pipe_name.clone(),
         )
         .await;
-        info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
+        if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
+            info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
+        } else {
+            info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
+        }
         (metrics_flusher, Some(aggregator_handle))
     } else {
         info!("dogstatsd disabled");
@@ -181,6 +212,7 @@ async fn start_dogstatsd(
     https_proxy: Option<String>,
     dogstatsd_tags: &str,
     metric_namespace: Option<String>,
+    windows_pipe_name: Option<String>,
 ) -> (CancellationToken, Option<Flusher>, AggregatorHandle) {
     // 1. Create the aggregator service
     #[allow(clippy::expect_used)]
@@ -197,6 +229,7 @@ async fn start_dogstatsd(
         host: AGENT_HOST.to_string(),
         port,
         metric_namespace,
+        windows_pipe_name,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
 

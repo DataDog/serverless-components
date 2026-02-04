@@ -83,6 +83,7 @@ pub struct Config {
     pub dd_apm_receiver_port: u16,
     pub dd_apm_windows_pipe_name: Option<String>,
     pub dd_dogstatsd_port: u16,
+    pub dd_dogstatsd_windows_pipe_name: Option<String>,
     pub env_type: trace_utils::EnvironmentType,
     pub app_name: Option<String>,
     pub max_request_content_length: usize,
@@ -118,11 +119,25 @@ impl Config {
             anyhow::anyhow!("Unable to identify environment. Shutting down Mini Agent.")
         })?;
 
-        let dd_apm_windows_pipe_name: Option<String> =
-            env::var("DD_APM_WINDOWS_PIPE_NAME").ok().map(|pipe_name| {
-                // Prepend \\.\pipe\ prefix to match datadog-agent behavior
-                format!(r"\\.\pipe\{}", pipe_name)
-            });
+        // Windows named pipe name for APM receiver.
+        // Normalize by adding \\.\pipe\ prefix if not present
+        let dd_apm_windows_pipe_name: Option<String> = {
+            #[cfg(any(windows, test))]
+            {
+                env::var("DD_APM_WINDOWS_PIPE_NAME").ok().map(|pipe_name| {
+                    if pipe_name.starts_with("\\\\.\\pipe\\") || pipe_name.starts_with(r"\\.\pipe\")
+                    {
+                        pipe_name
+                    } else {
+                        format!(r"\\.\pipe\{}", pipe_name)
+                    }
+                })
+            }
+            #[cfg(not(any(windows, test)))]
+            {
+                None
+            }
+        };
         let dd_apm_receiver_port: u16 = if dd_apm_windows_pipe_name.is_some() {
             0 // Override to 0 when using Windows named pipe
         } else {
@@ -132,10 +147,35 @@ impl Config {
                 .unwrap_or(DEFAULT_APM_RECEIVER_PORT)
         };
 
-        let dd_dogstatsd_port: u16 = env::var("DD_DOGSTATSD_PORT")
-            .ok()
-            .and_then(|port| port.parse::<u16>().ok())
-            .unwrap_or(DEFAULT_DOGSTATSD_PORT);
+        let dd_dogstatsd_windows_pipe_name: Option<String> = {
+            #[cfg(any(windows, test))]
+            {
+                env::var("DD_DOGSTATSD_WINDOWS_PIPE_NAME")
+                    .ok()
+                    .map(|pipe_name| {
+                        if pipe_name.starts_with("\\\\.\\pipe\\")
+                            || pipe_name.starts_with(r"\\.\pipe\")
+                        {
+                            pipe_name
+                        } else {
+                            format!(r"\\.\pipe\{}", pipe_name)
+                        }
+                    })
+            }
+            #[cfg(not(any(windows, test)))]
+            {
+                None
+            }
+        };
+        let dd_dogstatsd_port: u16 = if dd_dogstatsd_windows_pipe_name.is_some() {
+            0 // Override to 0 when using Windows named pipe
+        } else {
+            env::var("DD_DOGSTATSD_PORT")
+                .ok()
+                .and_then(|port| port.parse::<u16>().ok())
+                .unwrap_or(DEFAULT_DOGSTATSD_PORT)
+        };
+
         let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
 
         // construct the trace & trace stats intake urls based on DD_SITE env var (to flush traces &
@@ -185,6 +225,7 @@ impl Config {
             dd_apm_receiver_port,
             dd_apm_windows_pipe_name,
             dd_dogstatsd_port,
+            dd_dogstatsd_windows_pipe_name,
             dd_site,
             trace_intake: Endpoint {
                 url: hyper::Uri::from_str(&trace_intake_url).unwrap(),
@@ -337,6 +378,48 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_apm_windows_pipe_name() {
+        env::set_var("DD_API_KEY", "_not_a_real_key_");
+        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
+        env::set_var("DD_APM_WINDOWS_PIPE_NAME", r"test_pipe");
+        let config_res = config::Config::new();
+        assert!(config_res.is_ok());
+        let config = config_res.unwrap();
+        assert_eq!(
+            config.dd_apm_windows_pipe_name,
+            Some(r"\\.\pipe\test_pipe".to_string())
+        );
+
+        // Port should be overridden to 0 when pipe is set
+        assert_eq!(config.dd_apm_receiver_port, 0);
+        env::remove_var("DD_API_KEY");
+        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+        env::remove_var("DD_APM_WINDOWS_PIPE_NAME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_dogstatsd_windows_pipe_name() {
+        env::set_var("DD_API_KEY", "_not_a_real_key_");
+        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
+        env::set_var("DD_DOGSTATSD_WINDOWS_PIPE_NAME", r"test_pipe");
+        let config_res = config::Config::new();
+        assert!(config_res.is_ok());
+        let config = config_res.unwrap();
+        assert_eq!(
+            config.dd_dogstatsd_windows_pipe_name,
+            Some(r"\\.\pipe\test_pipe".to_string())
+        );
+
+        // Port should be overridden to 0 when pipe is set
+        assert_eq!(config.dd_dogstatsd_port, 0);
+        env::remove_var("DD_API_KEY");
+        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+        env::remove_var("DD_DOGSTATSD_WINDOWS_PIPE_NAME");
+    }
+
+    #[test]
+    #[serial]
     fn test_default_dogstatsd_port() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
@@ -362,26 +445,6 @@ mod tests {
         env::remove_var("DD_API_KEY");
         env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
         env::remove_var("DD_DOGSTATSD_PORT");
-    }
-
-    #[test]
-    #[serial]
-    fn test_apm_windows_pipe_name() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_APM_WINDOWS_PIPE_NAME", r"test_pipe");
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(
-            config.dd_apm_windows_pipe_name,
-            Some(r"\\.\pipe\test_pipe".to_string())
-        );
-        // Port should be overridden to 0 when pipe is set
-        assert_eq!(config.dd_apm_receiver_port, 0);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
-        env::remove_var("DD_APM_WINDOWS_PIPE_NAME");
     }
 
     #[test]

@@ -206,6 +206,7 @@ mod tests {
             dd_apm_receiver_port: 8126,
             dd_apm_windows_pipe_name: None,
             dd_dogstatsd_port: 8125,
+            dd_dogstatsd_windows_pipe_name: None,
             env_type: trace_utils::EnvironmentType::CloudFunction,
             os: "linux".to_string(),
             obfuscation_config: ObfuscationConfig::new().unwrap(),

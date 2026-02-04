@@ -1,6 +1,12 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+//! DogStatsD server implementation for receiving and processing metrics.
+//!
+//! This module implements a DogStatsD-compatible server that receives metric data from multiple
+//! transport mechanisms (UDP sockets, Windows named pipes), parses the metrics, applies optional
+//! namespacing, and forwards them to an aggregator for batching and shipping to Datadog.
+
 use std::net::SocketAddr;
 use std::str::Split;
 
@@ -9,6 +15,108 @@ use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
 use tracing::{debug, error, trace};
 
+// Windows-specific imports
+#[cfg(windows)]
+use {
+    std::sync::Arc,
+    tokio::io::AsyncReadExt,
+    tokio::net::windows::named_pipe::{ClientOptions, ServerOptions},
+};
+
+// DogStatsD buffer size for receiving metrics
+// TODO(astuyve) buf should be dynamic
+// Max buffer size is configurable in Go Agent with a default of 8KB
+// https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
+const BUFFER_SIZE: usize = 8192;
+
+/// Configuration for the DogStatsD server
+pub struct DogStatsDConfig {
+    /// Host to bind UDP socket to (e.g., "127.0.0.1")
+    pub host: String,
+    /// Port to bind UDP socket to (e.g., 8125), will be 0 if we're using a Named Pipe
+    pub port: u16,
+    /// Optional namespace to prepend to all metric names (e.g., "myapp")
+    pub metric_namespace: Option<String>,
+    /// Optional Windows named pipe name. (e.g., "\\\\.\\pipe\\my_pipe").
+    pub windows_pipe_name: Option<String>,
+}
+
+/// Represents the source of a DogStatsD message. Varies by transport method.
+#[derive(Debug, Clone)]
+pub enum MessageSource {
+    /// Message received from a network socket (UDP)
+    Network(SocketAddr),
+    /// Message received from a Windows named pipe (Arc for efficient cloning)
+    #[cfg(windows)]
+    NamedPipe(Arc<String>),
+}
+
+impl std::fmt::Display for MessageSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Network(addr) => write!(f, "{}", addr),
+            #[cfg(windows)]
+            Self::NamedPipe(name) => write!(f, "{}", name),
+        }
+    }
+}
+
+// BufferReader abstracts transport methods for metric data.
+enum BufferReader {
+    /// UDP socket reader (cross-platform, default transport)
+    UdpSocket(tokio::net::UdpSocket),
+
+    /// Mirror reader for testing - replays a fixed buffer
+    #[allow(dead_code)]
+    MirrorTest(Vec<u8>, SocketAddr),
+
+    /// Windows named pipe reader (Windows-only transport)
+    #[cfg(windows)]
+    NamedPipe {
+        pipe_name: Arc<String>,
+        receiver: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>,
+    },
+}
+
+impl BufferReader {
+    /// This is the main entry point for receiving metric data.
+    /// Note: Different transports have different blocking behaviors.
+    async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
+        match self {
+            BufferReader::UdpSocket(socket) => {
+                // UDP socket: blocks until a packet arrives
+                let mut buf = [0; BUFFER_SIZE];
+
+                #[allow(clippy::expect_used)]
+                let (amt, src) = socket
+                    .recv_from(&mut buf)
+                    .await
+                    .expect("didn't receive data");
+                Ok((buf[..amt].to_owned(), MessageSource::Network(src)))
+            }
+            BufferReader::MirrorTest(data, socket) => {
+                // Mirror Reader: returns immediately with stored data
+                Ok((data.clone(), MessageSource::Network(*socket)))
+            }
+            #[cfg(windows)]
+            BufferReader::NamedPipe {
+                pipe_name,
+                receiver,
+            } => {
+                // Named Pipe Reader: receives data from client handler tasks
+                match receiver.lock().await.recv().await {
+                    Some(data) => Ok((data, MessageSource::NamedPipe(pipe_name.clone()))),
+                    None => {
+                        // Channel closed - server exited, already triggered cancellation
+                        Ok((Vec::new(), MessageSource::NamedPipe(pipe_name.clone())))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// DogStatsD server to receive, parse, and forward metrics.
 pub struct DogStatsD {
     cancel_token: tokio_util::sync::CancellationToken,
     aggregator_handle: AggregatorHandle,
@@ -16,61 +124,64 @@ pub struct DogStatsD {
     metric_namespace: Option<String>,
 }
 
-pub struct DogStatsDConfig {
-    pub host: String,
-    pub port: u16,
-    pub metric_namespace: Option<String>,
-}
-
-enum BufferReader {
-    UdpSocketReader(tokio::net::UdpSocket),
-    #[allow(dead_code)]
-    MirrorReader(Vec<u8>, SocketAddr),
-}
-
-impl BufferReader {
-    async fn read(&self) -> std::io::Result<(Vec<u8>, SocketAddr)> {
-        match self {
-            BufferReader::UdpSocketReader(socket) => {
-                // TODO(astuyve) this should be dynamic
-                // Max buffer size is configurable in Go Agent and the default is 8KB
-                // https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
-                let mut buf = [0; 8192];
-
-                #[allow(clippy::expect_used)]
-                let (amt, src) = socket
-                    .recv_from(&mut buf)
-                    .await
-                    .expect("didn't receive data");
-                Ok((buf[..amt].to_owned(), src))
-            }
-            BufferReader::MirrorReader(data, socket) => Ok((data.clone(), *socket)),
-        }
-    }
-}
-
 impl DogStatsD {
+    /// Creates a new DogStatsD server instance.
+    ///
+    /// The server will bind to either a UDP socket or Windows named pipe based on the config.
+    /// Metrics received will be forwarded to the provided aggregator_handle.
     #[must_use]
     pub async fn new(
         config: &DogStatsDConfig,
         aggregator_handle: AggregatorHandle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> DogStatsD {
-        let addr = format!("{}:{}", config.host, config.port);
+        #[allow(unused_variables)] // pipe_name unused on non-Windows
+        let buffer_reader = if let Some(ref pipe_name) = config.windows_pipe_name {
+            #[cfg(windows)]
+            {
+                let pipe_name = Arc::new(pipe_name.clone());
 
-        // TODO (UDS socket)
-        #[allow(clippy::expect_used)]
-        let socket = tokio::net::UdpSocket::bind(addr)
-            .await
-            .expect("couldn't bind to address");
+                // Create channel for receiving data from client handlers
+                let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+                let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
+
+                // Spawn server accept loop
+                let server_pipe_name = pipe_name.clone();
+                let server_cancel = cancel_token.clone();
+                tokio::spawn(async move {
+                    run_named_pipe_server(server_pipe_name, sender, server_cancel).await;
+                });
+
+                BufferReader::NamedPipe {
+                    pipe_name,
+                    receiver,
+                }
+            }
+            #[cfg(not(windows))]
+            #[allow(clippy::panic)]
+            {
+                panic!("Named pipes are only supported on Windows.")
+            }
+        } else {
+            // UDP socket for all platforms
+            let addr = format!("{}:{}", config.host, config.port);
+            // TODO (UDS socket)
+            #[allow(clippy::expect_used)]
+            let socket = tokio::net::UdpSocket::bind(addr)
+                .await
+                .expect("couldn't bind to address");
+            BufferReader::UdpSocket(socket)
+        };
+
         DogStatsD {
             cancel_token,
             aggregator_handle,
-            buffer_reader: BufferReader::UdpSocketReader(socket),
+            buffer_reader,
             metric_namespace: config.metric_namespace.clone(),
         }
     }
 
+    /// Main event loop that continuously receives and processes metrics.
     pub async fn spin(self) {
         let mut spin_cancelled = false;
         while !spin_cancelled {
@@ -79,6 +190,7 @@ impl DogStatsD {
         }
     }
 
+    /// Receive one batch of metrics from the transport layer and process them.
     async fn consume_statsd(&self) {
         #[allow(clippy::expect_used)]
         let (buf, src) = self
@@ -86,6 +198,12 @@ impl DogStatsD {
             .read()
             .await
             .expect("didn't receive data");
+
+        // Skip empty buffers (e.g., from channel close)
+        if buf.is_empty() {
+            debug!("Received empty buffer from {}, skipping", src);
+            return;
+        }
 
         #[allow(clippy::expect_used)]
         let msgs = std::str::from_utf8(&buf).expect("couldn't parse as string");
@@ -139,6 +257,122 @@ impl DogStatsD {
                 error!("Failed to send metrics to aggregator: {}", e);
             }
         }
+    }
+}
+
+/// Named Pipe server - accepts client connections and forwards metrics.
+///
+/// Uses a multi-instance approach (like winio in the main agent):
+/// - Creates new server instance for each client
+/// - Spawns task to handle each client
+#[cfg(windows)]
+async fn run_named_pipe_server(
+    pipe_name: Arc<String>,
+    sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
+    loop {
+        if cancel_token.is_cancelled() {
+            break;
+        }
+
+        // Create new named pipe server
+        let server = match ServerOptions::new().create(&*pipe_name) {
+            Ok(s) => {
+                debug!("Created pipe server instance '{}' in byte mode", pipe_name);
+                s
+            }
+            Err(e) => {
+                error!("Failed to create pipe '{}': {}", pipe_name, e);
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => continue,
+                    _ = cancel_token.cancelled() => break,
+                }
+            }
+        };
+
+        // Wait for client connection (cancellable)
+        let connect_result = tokio::select! {
+            result = server.connect() => result,
+            _ = cancel_token.cancelled() => break,
+        };
+
+        if let Err(e) = connect_result {
+            error!("Connection failed on '{}': {}", pipe_name, e);
+            continue;
+        }
+
+        debug!("Client connected to '{}'", pipe_name);
+
+        // Spawn task to handle this client
+        let sender_clone = sender.clone();
+        let cancel_clone = cancel_token.clone();
+        let pipe_name_clone = pipe_name.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; BUFFER_SIZE];
+            let mut server = server;
+            // Byte mode requires manual buffering to handle messages split across reads
+            // so let's track where we're writing each read in the buffer
+            let mut start_write_index = 0;
+
+            loop {
+                let read_result = tokio::select! {
+                    result = server.read(&mut buf[start_write_index..]) => result,
+                    _ = cancel_clone.cancelled() => break,
+                };
+
+                let bytes_read = match read_result {
+                    Err(e) => {
+                        error!("Read error on '{}': {}", pipe_name_clone, e);
+                        break;
+                    }
+                    Ok(0) => {
+                        debug!("Client disconnected from '{}'", pipe_name_clone);
+                        break;
+                    }
+                    Ok(n) => n,
+                };
+
+                let end_index = start_write_index + bytes_read;
+
+                // From the start of the buffer to the end of the last complete message
+                let complete_message_size = buf[..end_index]
+                    .iter()
+                    .rposition(|&b| b == b'\n')
+                    .map(|pos| pos + 1) // \n is part of that last message, so +1
+                    .unwrap_or(0);
+
+                if complete_message_size > 0 {
+                    // Send complete messages
+                    match sender_clone.send(buf[..complete_message_size].to_vec()) {
+                        Err(e) => {
+                            error!("Failed to send data from '{}': {}", pipe_name_clone, e);
+                            break;
+                        }
+                        Ok(_) => {
+                            if let Ok(_) = std::str::from_utf8(&buf[..complete_message_size]) {
+                                debug!(
+                                    "Sent {} bytes from '{}'",
+                                    complete_message_size, pipe_name_clone
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Complete message has been sent, so we can write over it.
+                start_write_index = end_index - complete_message_size;
+
+                // If the message is bigger than the buffer size, drop it and go on.
+                if start_write_index >= BUFFER_SIZE {
+                    start_write_index = 0;
+                } else if start_write_index > 0 {
+                    // Keep incomplete data in the buffer
+                    buf.copy_within(complete_message_size..end_index, 0);
+                }
+            }
+            // Server instance is dropped here, automatically cleaned up
+        });
     }
 }
 
@@ -249,7 +483,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         let dogstatsd = DogStatsD {
             cancel_token,
             aggregator_handle: handle.clone(),
-            buffer_reader: BufferReader::MirrorReader(
+            buffer_reader: BufferReader::MirrorTest(
                 statsd_string.as_bytes().to_vec(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
             ),

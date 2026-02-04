@@ -26,6 +26,7 @@ pub fn create_tcp_test_config() -> Config {
         dd_apm_receiver_port: 8126,
         dd_apm_windows_pipe_name: None,
         dd_dogstatsd_port: 8125,
+        dd_dogstatsd_windows_pipe_name: None,
         env_type: trace_utils::EnvironmentType::AzureFunction,
         app_name: Some("test-app".to_string()),
         max_request_content_length: 10_000_000,
