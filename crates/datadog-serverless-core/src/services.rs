@@ -1,6 +1,30 @@
 use crate::{config::ServicesConfig, error::ServicesError};
+use datadog_trace_agent::{
+    aggregator::TraceAggregator,
+    config, env_verifier, mini_agent, proxy_flusher, stats_flusher, stats_processor,
+    trace_flusher::{self, TraceFlusher},
+    trace_processor,
+};
+use dogstatsd::{
+    aggregator_service::{AggregatorHandle, AggregatorService},
+    api_key::ApiKeyFactory,
+    constants::CONTEXTS,
+    datadog::{MetricsIntakeUrlPrefix, RetryStrategy, Site},
+    dogstatsd::{DogStatsD, DogStatsDConfig},
+    flusher::{Flusher, FlusherConfig},
+    metric::{SortedTags, EMPTY_TAGS},
+};
+use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Mutex as TokioMutex, RwLock};
+use tokio::time::{interval, Duration};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info};
+use zstd::zstd_safe::CompressionLevel;
+
+const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
+const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
+const AGENT_HOST: &str = "0.0.0.0";
 
 /// Status of the serverless services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,12 +109,14 @@ impl ServerlessServices {
 
         // Spawn the main services task
         let status_clone = Arc::clone(&status);
+        let config = self.config;
         tokio::spawn(async move {
-            if let Err(e) =
-                Self::run_services(self.config, status_clone, shutdown_rx, status_tx).await
-            {
+            if let Err(e) = run_services(config, shutdown_rx, status_tx).await {
                 tracing::error!("Services error: {}", e);
             }
+            // Ensure we mark as stopped on any exit path
+            let mut s = status_clone.write().await;
+            *s = ServiceStatus::Stopped;
         });
 
         // Wait for services to reach Running state
@@ -104,33 +130,187 @@ impl ServerlessServices {
 
         Ok(handle)
     }
+}
 
-    async fn run_services(
-        _config: ServicesConfig,
-        status: Arc<RwLock<ServiceStatus>>,
-        mut shutdown_rx: broadcast::Receiver<()>,
-        status_tx: broadcast::Sender<ServiceStatus>,
-    ) -> Result<(), ServicesError> {
-        // Update status to Running
-        {
-            let mut s = status.write().await;
-            *s = ServiceStatus::Running;
-            let _ = status_tx.send(ServiceStatus::Running);
+async fn run_services(
+    config: ServicesConfig,
+    mut shutdown_rx: broadcast::Receiver<()>,
+    status_tx: broadcast::Sender<ServiceStatus>,
+) -> Result<(), ServicesError> {
+    // Detect environment
+    let (_, env_type) = read_cloud_env().ok_or(ServicesError::EnvironmentDetection)?;
+
+    let dogstatsd_tags = match env_type {
+        EnvironmentType::CloudFunction => "origin:cloudfunction,dd.origin:cloudfunction",
+        EnvironmentType::AzureFunction => "origin:azurefunction,dd.origin:azurefunction",
+        EnvironmentType::AzureSpringApp => "origin:azurespringapp,dd.origin:azurespringapp",
+        EnvironmentType::LambdaFunction => "origin:lambda,dd.origin:lambda",
+    };
+
+    debug!("Starting serverless trace mini agent");
+
+    // Setup trace agent components
+    let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
+    let trace_processor = Arc::new(trace_processor::ServerlessTraceProcessor {});
+    let stats_flusher = Arc::new(stats_flusher::ServerlessStatsFlusher {});
+    let stats_processor = Arc::new(stats_processor::ServerlessStatsProcessor {});
+
+    let trace_config =
+        config::Config::new().map_err(|e| ServicesError::TraceAgentStart(e.to_string()))?;
+    let trace_config = Arc::new(trace_config);
+
+    let trace_aggregator = Arc::new(TokioMutex::new(TraceAggregator::default()));
+    let trace_flusher = Arc::new(trace_flusher::ServerlessTraceFlusher::new(
+        trace_aggregator,
+        Arc::clone(&trace_config),
+    ));
+
+    let proxy_flusher = Arc::new(proxy_flusher::ProxyFlusher::new(Arc::clone(&trace_config)));
+
+    let mini_agent = Box::new(mini_agent::MiniAgent {
+        config: Arc::clone(&trace_config),
+        env_verifier,
+        trace_processor,
+        trace_flusher,
+        stats_processor,
+        stats_flusher,
+        proxy_flusher,
+    });
+
+    // Start trace agent
+    tokio::spawn(async move {
+        let res = mini_agent.start_mini_agent().await;
+        if let Err(e) = res {
+            error!("Error when starting serverless trace mini agent: {:?}", e);
         }
+    });
 
-        // TODO: Start actual services here (trace agent, dogstatsd)
-        // For now, just wait for shutdown signal
-        let _ = shutdown_rx.recv().await;
+    let _ = status_tx.send(ServiceStatus::Running);
 
-        // Update status to Stopped
-        {
-            let mut s = status.write().await;
-            *s = ServiceStatus::Stopped;
-            let _ = status_tx.send(ServiceStatus::Stopped);
+    // Start DogStatsD if enabled
+    let mut metrics_flusher = if config.use_dogstatsd {
+        debug!("Starting dogstatsd");
+
+        let (dogstatsd_cancel_token, flusher, _handle) = start_dogstatsd(
+            config.dogstatsd_port,
+            config.api_key.clone(),
+            config.site.clone(),
+            config.https_proxy.clone(),
+            dogstatsd_tags,
+            config.metric_namespace.clone(),
+        )
+        .await
+        .map_err(|e| ServicesError::DogStatsDStart(e.to_string()))?;
+
+        info!(
+            "dogstatsd-udp: starting to listen on port {}",
+            config.dogstatsd_port
+        );
+
+        Some((flusher, dogstatsd_cancel_token))
+    } else {
+        info!("dogstatsd disabled");
+        None
+    };
+
+    // Flush loop
+    let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
+    flush_interval.tick().await; // discard first tick
+
+    loop {
+        tokio::select! {
+            _ = flush_interval.tick() => {
+                if let Some((Some(ref mut flusher), _)) = metrics_flusher {
+                    debug!("Flushing dogstatsd metrics");
+                    flusher.flush().await;
+                }
+            }
+            _ = shutdown_rx.recv() => {
+                info!("Shutting down services");
+
+                // Cancel dogstatsd if running
+                if let Some((_, ref cancel_token)) = metrics_flusher {
+                    cancel_token.cancel();
+                }
+
+                // Final flush
+                if let Some((Some(ref mut flusher), _)) = metrics_flusher {
+                    debug!("Final flush of dogstatsd metrics");
+                    flusher.flush().await;
+                }
+
+                let _ = status_tx.send(ServiceStatus::Stopped);
+                break;
+            }
         }
-
-        Ok(())
     }
+
+    Ok(())
+}
+
+async fn start_dogstatsd(
+    port: u16,
+    dd_api_key: Option<String>,
+    dd_site: String,
+    https_proxy: Option<String>,
+    dogstatsd_tags: &str,
+    metric_namespace: Option<String>,
+) -> Result<(CancellationToken, Option<Flusher>, AggregatorHandle), String> {
+    // Create the aggregator service
+    let (service, handle) = AggregatorService::new(
+        SortedTags::parse(dogstatsd_tags).unwrap_or(EMPTY_TAGS),
+        CONTEXTS,
+    )
+    .map_err(|e| format!("Failed to create aggregator service: {}", e))?;
+
+    // Start the aggregator service in the background
+    tokio::spawn(service.run());
+
+    let dogstatsd_config = DogStatsDConfig {
+        host: AGENT_HOST.to_string(),
+        port,
+        metric_namespace,
+    };
+    let dogstatsd_cancel_token = CancellationToken::new();
+
+    // Use handle in DogStatsD (cheap to clone)
+    let dogstatsd_client = DogStatsD::new(
+        &dogstatsd_config,
+        handle.clone(),
+        dogstatsd_cancel_token.clone(),
+    )
+    .await;
+
+    tokio::spawn(async move {
+        dogstatsd_client.spin().await;
+    });
+
+    let metrics_flusher = match dd_api_key {
+        Some(dd_api_key) => {
+            let site = Site::new(dd_site).map_err(|e| format!("Failed to parse site: {}", e))?;
+
+            let compression_level = CompressionLevel::try_from(6).unwrap_or_default();
+
+            let metrics_flusher = Flusher::new(FlusherConfig {
+                api_key_factory: Arc::new(ApiKeyFactory::new(&dd_api_key)),
+                aggregator_handle: handle.clone(),
+                metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(Some(site), None)
+                    .map_err(|e| format!("Failed to create intake URL prefix: {}", e))?,
+                https_proxy,
+                timeout: DOGSTATSD_TIMEOUT_DURATION,
+                retry_strategy: RetryStrategy::LinearBackoff(3, 1),
+                compression_level,
+                ca_cert_path: None,
+            });
+            Some(metrics_flusher)
+        }
+        None => {
+            error!("DD_API_KEY not set, won't flush metrics");
+            None
+        }
+    };
+
+    Ok((dogstatsd_cancel_token, metrics_flusher, handle))
 }
 
 #[cfg(test)]
