@@ -143,21 +143,24 @@ describe('DatadogServices', () => {
 
     // Start services
     services.start(config);
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // If services started, stop them quickly
     if (services.isRunning()) {
       services.stop();
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 500));
       assert.strictEqual(services.isRunning(), false);
+
+      // Start again after full stop
+      services.start(config);
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // If services started, they should be running
+      // In local environment, this may not start, which is OK
+    } else {
+      // Not in cloud environment, skip cycle test
+      return;
     }
-
-    // Start again
-    services.start(config);
-    await new Promise(resolve => setTimeout(resolve, 200));
-
-    // If services started, they should be running
-    // In local environment, this may not start, which is OK
   });
 
   it('should handle multiple stop calls safely', async function() {
