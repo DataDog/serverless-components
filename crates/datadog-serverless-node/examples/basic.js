@@ -20,6 +20,10 @@ const { DatadogServices } = require('../index.js');
 console.log('Creating DatadogServices instance...');
 const services = new DatadogServices();
 
+// Register cleanup hook for automatic shutdown
+services.registerCleanupHook();
+console.log('Cleanup hook registered for automatic shutdown on exit');
+
 // Configuration
 const config = {
   // API key from environment variable (or hardcode for testing)

@@ -36,4 +36,6 @@ export declare class DatadogServices {
   stop(): void
   /** Check if services are running */
   isRunning(): boolean
+  /** Register cleanup hook to automatically stop services on process exit */
+  registerCleanupHook(): void
 }

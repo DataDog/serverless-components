@@ -7,7 +7,7 @@ use datadog_serverless_core::config::ServicesConfig;
 use datadog_serverless_core::error::ServicesError;
 use datadog_serverless_core::{ServerlessServices, ServiceStatus, ServicesHandle};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
-use napi::{Error, JsFunction};
+use napi::{Env, Error, JsFunction};
 use napi_derive::napi;
 use std::sync::{Arc, Mutex};
 
@@ -265,6 +265,34 @@ impl DatadogServices {
             .map_err(|e| Error::from_reason(format!("Lock error: {}", e)))?;
 
         Ok(guard.is_some())
+    }
+
+    /// Register cleanup hook to automatically stop services on process exit
+    #[napi]
+    pub fn register_cleanup_hook(&self, mut env: Env) -> napi::Result<()> {
+        let handle = Arc::clone(&self.handle);
+        let status_callback = Arc::clone(&self.status_callback);
+        let runtime = Arc::clone(&self.runtime);
+
+        env.add_env_cleanup_hook((), move |_| {
+            // This runs on process exit
+            if let Ok(guard) = handle.lock() {
+                if let Some(handle) = guard.as_ref() {
+                    // Use tokio Handle to block on async shutdown
+                    runtime.block_on(async {
+                        let _ = handle.stop().await;
+                    });
+                }
+            }
+
+            // Clear status callback
+            if let Ok(mut callback_guard) = status_callback.lock() {
+                *callback_guard = None;
+            }
+        })
+        .map_err(|e| Error::from_reason(format!("Failed to register cleanup hook: {}", e)))?;
+
+        Ok(())
     }
 }
 
