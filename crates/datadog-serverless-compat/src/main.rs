@@ -7,82 +7,22 @@
 #![cfg_attr(not(test), deny(clippy::todo))]
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
-use std::{env, sync::Arc};
-use tokio::{
-    sync::Mutex as TokioMutex,
-    time::{interval, Duration},
-};
-use tracing::{debug, error, info};
+use datadog_serverless_core::{ServerlessServices, ServicesConfig};
 use tracing_subscriber::EnvFilter;
-use zstd::zstd_safe::CompressionLevel;
-
-use datadog_trace_agent::{
-    aggregator::TraceAggregator,
-    config, env_verifier, mini_agent, proxy_flusher, stats_flusher, stats_processor,
-    trace_flusher::{self, TraceFlusher},
-    trace_processor,
-};
-
-use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
-
-use dogstatsd::{
-    aggregator_service::{AggregatorHandle, AggregatorService},
-    api_key::ApiKeyFactory,
-    constants::CONTEXTS,
-    datadog::{MetricsIntakeUrlPrefix, RetryStrategy, Site},
-    dogstatsd::{DogStatsD, DogStatsDConfig},
-    flusher::{Flusher, FlusherConfig},
-    util::parse_metric_namespace,
-};
-
-use dogstatsd::metric::{SortedTags, EMPTY_TAGS};
-use tokio_util::sync::CancellationToken;
-
-const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
-const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
-const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
-const AGENT_HOST: &str = "0.0.0.0";
 
 #[tokio::main]
-pub async fn main() {
-    let log_level = env::var("DD_LOG_LEVEL")
-        .map(|val| val.to_lowercase())
-        .unwrap_or("info".to_string());
-
-    let (_, env_type) = match read_cloud_env() {
-        Some(value) => value,
-        None => {
-            error!("Unable to identify environment. Shutting down Mini Agent.");
-            return;
+async fn main() {
+    // Load configuration from environment
+    let config = match ServicesConfig::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e);
+            std::process::exit(1);
         }
     };
 
-    let dogstatsd_tags = match env_type {
-        EnvironmentType::CloudFunction => "origin:cloudfunction,dd.origin:cloudfunction",
-        EnvironmentType::AzureFunction => "origin:azurefunction,dd.origin:azurefunction",
-        EnvironmentType::AzureSpringApp => "origin:azurespringapp,dd.origin:azurespringapp",
-        EnvironmentType::LambdaFunction => "origin:lambda,dd.origin:lambda", // historical reasons
-    };
-
-    let dd_api_key: Option<String> = env::var("DD_API_KEY").ok();
-    let dd_dogstatsd_port: u16 = env::var("DD_DOGSTATSD_PORT")
-        .ok()
-        .and_then(|port| port.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_DOGSTATSD_PORT);
-    let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
-    let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")
-        .map(|val| val.to_lowercase() != "false")
-        .unwrap_or(true);
-    let dd_statsd_metric_namespace: Option<String> = env::var("DD_STATSD_METRIC_NAMESPACE")
-        .ok()
-        .and_then(|val| parse_metric_namespace(&val));
-
-    let https_proxy = env::var("DD_PROXY_HTTPS")
-        .or_else(|_| env::var("HTTPS_PROXY"))
-        .ok();
-    debug!("Starting serverless trace mini agent");
-
-    let env_filter = format!("h2=off,hyper=off,rustls=off,{}", log_level);
+    // Setup logging
+    let env_filter = format!("h2=off,hyper=off,rustls=off,{}", config.log_level);
 
     #[allow(clippy::expect_used)]
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
@@ -101,142 +41,33 @@ pub async fn main() {
     #[allow(clippy::expect_used)]
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    debug!("Logging subsystem enabled");
+    tracing::debug!("Logging subsystem enabled");
 
-    let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
-
-    let trace_processor = Arc::new(trace_processor::ServerlessTraceProcessor {});
-
-    let stats_flusher = Arc::new(stats_flusher::ServerlessStatsFlusher {});
-    let stats_processor = Arc::new(stats_processor::ServerlessStatsProcessor {});
-
-    let config = match config::Config::new() {
-        Ok(c) => Arc::new(c),
+    // Create and start services
+    let services = ServerlessServices::new(config);
+    let handle = match services.start().await {
+        Ok(h) => h,
         Err(e) => {
-            error!("Error creating config on serverless trace mini agent startup: {e}");
-            return;
+            tracing::error!("Failed to start services: {}", e);
+            std::process::exit(1);
         }
     };
 
-    let trace_aggregator = Arc::new(TokioMutex::new(TraceAggregator::default()));
-    let trace_flusher = Arc::new(trace_flusher::ServerlessTraceFlusher::new(
-        trace_aggregator,
-        Arc::clone(&config),
-    ));
+    tracing::info!("Serverless services started successfully");
 
-    let proxy_flusher = Arc::new(proxy_flusher::ProxyFlusher::new(Arc::clone(&config)));
-
-    let mini_agent = Box::new(mini_agent::MiniAgent {
-        config: Arc::clone(&config),
-        env_verifier,
-        trace_processor,
-        trace_flusher,
-        stats_processor,
-        stats_flusher,
-        proxy_flusher,
-    });
-
-    tokio::spawn(async move {
-        let res = mini_agent.start_mini_agent().await;
-        if let Err(e) = res {
-            error!("Error when starting serverless trace mini agent: {e:?}");
-        }
-    });
-
-    let (mut metrics_flusher, _aggregator_handle) = if dd_use_dogstatsd {
-        debug!("Starting dogstatsd");
-        let (_, metrics_flusher, aggregator_handle) = start_dogstatsd(
-            dd_dogstatsd_port,
-            dd_api_key,
-            dd_site,
-            https_proxy,
-            dogstatsd_tags,
-            dd_statsd_metric_namespace,
-        )
-        .await;
-        info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
-        (metrics_flusher, Some(aggregator_handle))
-    } else {
-        info!("dogstatsd disabled");
-        (None, None)
-    };
-
-    let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
-    flush_interval.tick().await; // discard first tick, which is instantaneous
-
-    loop {
-        flush_interval.tick().await;
-
-        if let Some(metrics_flusher) = metrics_flusher.as_mut() {
-            debug!("Flushing dogstatsd metrics");
-            metrics_flusher.flush().await;
-        }
-    }
-}
-
-async fn start_dogstatsd(
-    port: u16,
-    dd_api_key: Option<String>,
-    dd_site: String,
-    https_proxy: Option<String>,
-    dogstatsd_tags: &str,
-    metric_namespace: Option<String>,
-) -> (CancellationToken, Option<Flusher>, AggregatorHandle) {
-    // 1. Create the aggregator service
+    // Wait for shutdown signal
     #[allow(clippy::expect_used)]
-    let (service, handle) = AggregatorService::new(
-        SortedTags::parse(dogstatsd_tags).unwrap_or(EMPTY_TAGS),
-        CONTEXTS,
-    )
-    .expect("Failed to create aggregator service");
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for ctrl-c");
 
-    // 2. Start the aggregator service in the background
-    tokio::spawn(service.run());
+    tracing::info!("Received shutdown signal");
 
-    let dogstatsd_config = DogStatsDConfig {
-        host: AGENT_HOST.to_string(),
-        port,
-        metric_namespace,
-    };
-    let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
+    // Stop services
+    if let Err(e) = handle.stop().await {
+        tracing::error!("Error stopping services: {}", e);
+        std::process::exit(1);
+    }
 
-    // 3. Use handle in DogStatsD (cheap to clone)
-    let dogstatsd_client = DogStatsD::new(
-        &dogstatsd_config,
-        handle.clone(),
-        dogstatsd_cancel_token.clone(),
-    )
-    .await;
-
-    tokio::spawn(async move {
-        dogstatsd_client.spin().await;
-    });
-
-    let metrics_flusher = match dd_api_key {
-        Some(dd_api_key) => {
-            #[allow(clippy::expect_used)]
-            let metrics_flusher = Flusher::new(FlusherConfig {
-                api_key_factory: Arc::new(ApiKeyFactory::new(&dd_api_key)),
-                aggregator_handle: handle.clone(),
-                metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
-                    Some(Site::new(dd_site).expect("Failed to parse site")),
-                    None,
-                )
-                .expect("Failed to create intake URL prefix"),
-                https_proxy,
-                timeout: DOGSTATSD_TIMEOUT_DURATION,
-                retry_strategy: RetryStrategy::LinearBackoff(3, 1),
-                compression_level: CompressionLevel::try_from(6).unwrap_or_default(),
-                // Not supported yet
-                ca_cert_path: None,
-            });
-            Some(metrics_flusher)
-        }
-        None => {
-            error!("DD_API_KEY not set, won't flush metrics");
-            None
-        }
-    };
-
-    (dogstatsd_cancel_token, metrics_flusher, handle)
+    tracing::info!("Services stopped successfully");
 }
