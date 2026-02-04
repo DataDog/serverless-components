@@ -1,8 +1,12 @@
 {
   "name": "@datadog/serverless-node-win32-x64-msvc",
   "version": "0.1.0",
-  "os": ["win32"],
-  "cpu": ["x64"],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "main": "datadog-serverless-node.win32-x64-msvc.node",
   "files": [
     "datadog-serverless-node.win32-x64-msvc.node"

@@ -1,8 +1,12 @@
 {
   "name": "@datadog/serverless-node-linux-arm64-gnu",
   "version": "0.1.0",
-  "os": ["linux"],
-  "cpu": ["arm64"],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
   "main": "datadog-serverless-node.linux-arm64-gnu.node",
   "files": [
     "datadog-serverless-node.linux-arm64-gnu.node"
