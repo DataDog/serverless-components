@@ -310,6 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { hello } = nativeBinding
+const { hello, DatadogServices } = nativeBinding
 
 module.exports.hello = hello
+module.exports.DatadogServices = DatadogServices

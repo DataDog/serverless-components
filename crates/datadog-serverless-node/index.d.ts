@@ -21,3 +21,14 @@ export interface JsServicesConfig {
   /** Log level: trace, debug, info, warn, error (default: info) */
   logLevel?: string
 }
+/** Main class for controlling Datadog serverless services from Node.js */
+export declare class DatadogServices {
+  /** Create a new DatadogServices instance */
+  constructor()
+  /** Start the Datadog services */
+  start(config: JsServicesConfig): Promise<void>
+  /** Stop the Datadog services */
+  stop(): Promise<void>
+  /** Check if services are running */
+  isRunning(): boolean
+}

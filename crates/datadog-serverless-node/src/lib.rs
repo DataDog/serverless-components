@@ -5,7 +5,10 @@
 
 use datadog_serverless_core::config::ServicesConfig;
 use datadog_serverless_core::error::ServicesError;
+use datadog_serverless_core::{ServerlessServices, ServicesHandle};
+use napi::Error;
 use napi_derive::napi;
+use std::sync::{Arc, Mutex};
 
 #[napi]
 pub fn hello() -> String {
@@ -50,6 +53,103 @@ impl JsServicesConfig {
 
         config.validate()?;
         Ok(config)
+    }
+}
+
+/// Main class for controlling Datadog serverless services from Node.js
+#[napi]
+pub struct DatadogServices {
+    handle: Arc<Mutex<Option<ServicesHandle>>>,
+    runtime: Arc<tokio::runtime::Runtime>,
+}
+
+#[napi]
+impl DatadogServices {
+    /// Create a new DatadogServices instance
+    #[napi(constructor)]
+    pub fn new() -> napi::Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Error::from_reason(format!("Failed to create runtime: {}", e)))?;
+
+        Ok(Self {
+            handle: Arc::new(Mutex::new(None)),
+            runtime: Arc::new(runtime),
+        })
+    }
+
+    /// Start the Datadog services
+    #[napi]
+    pub async fn start(&self, config: JsServicesConfig) -> napi::Result<()> {
+        // Check if already running before starting
+        {
+            let guard = self
+                .handle
+                .lock()
+                .map_err(|e| Error::from_reason(format!("Lock error: {}", e)))?;
+
+            if guard.is_some() {
+                return Err(Error::from_reason("Services already started"));
+            }
+        } // Drop guard before async operations
+
+        let rust_config = config
+            .into_rust_config()
+            .map_err(|e| Error::from_reason(format!("Invalid configuration: {}", e)))?;
+
+        // Create services
+        let services = ServerlessServices::new(rust_config);
+
+        // Start services
+        let handle = services
+            .start()
+            .await
+            .map_err(|e| Error::from_reason(format!("Failed to start services: {}", e)))?;
+
+        // Store handle
+        let mut guard = self
+            .handle
+            .lock()
+            .map_err(|e| Error::from_reason(format!("Lock error: {}", e)))?;
+
+        *guard = Some(handle);
+
+        Ok(())
+    }
+
+    /// Stop the Datadog services
+    #[napi]
+    pub async fn stop(&self) -> napi::Result<()> {
+        // Take handle before async operations
+        let handle = {
+            let mut guard = self
+                .handle
+                .lock()
+                .map_err(|e| Error::from_reason(format!("Lock error: {}", e)))?;
+
+            guard
+                .take()
+                .ok_or_else(|| Error::from_reason("Services not running"))?
+        }; // Drop guard before async operations
+
+        handle
+            .stop()
+            .await
+            .map_err(|e| Error::from_reason(format!("Failed to stop services: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Check if services are running
+    #[napi]
+    pub fn is_running(&self) -> napi::Result<bool> {
+        let guard = self
+            .handle
+            .lock()
+            .map_err(|e| Error::from_reason(format!("Lock error: {}", e)))?;
+
+        Ok(guard.is_some())
     }
 }
 
