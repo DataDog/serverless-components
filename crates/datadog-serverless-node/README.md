@@ -39,7 +39,10 @@ services.start(config, (status) => {
   console.log('Service status:', status.status);
 });
 
-// Later, when shutting down
+// Register automatic cleanup on process exit (recommended)
+services.registerCleanupHook();
+
+// Later, when shutting down explicitly
 services.stop();
 ```
 
@@ -130,6 +133,37 @@ if (services.isRunning()) {
   services.stop();
 }
 ```
+
+##### registerCleanupHook()
+
+Register an automatic cleanup hook that stops services when the Node.js process exits. This is the recommended way to ensure proper resource cleanup without manual signal handling.
+
+**Returns:** void
+
+**Throws:**
+- Error if cleanup hook registration fails
+
+**Example:**
+
+```javascript
+const services = new DatadogServices();
+
+services.start({
+  apiKey: process.env.DD_API_KEY
+});
+
+// Automatically stop services on process exit
+services.registerCleanupHook();
+
+// Services will be stopped automatically when process exits
+```
+
+**Important Notes:**
+- Call this method after starting services
+- The cleanup hook ensures services stop even if your application crashes or exits unexpectedly
+- Cleanup happens automatically on process termination (exit, Ctrl+C, SIGTERM, etc.)
+- You can still call `stop()` explicitly for immediate shutdown
+- The stop operation has a 5-second timeout to prevent hanging on exit
 
 ### Types
 
@@ -245,14 +279,40 @@ exports.handler = async (event) => {
 
 ### Graceful Shutdown
 
-For proper resource cleanup, register signal handlers to stop services on process termination:
+Proper shutdown handling ensures that metrics and traces are flushed before your application exits. The library provides multiple approaches to ensure graceful shutdown.
+
+#### Automatic Cleanup (Recommended)
+
+The simplest approach is to use the built-in cleanup hook:
 
 ```javascript
 const { DatadogServices } = require('@datadog/serverless-node');
 
 const services = new DatadogServices();
 
-// Start services
+services.start({
+  apiKey: process.env.DD_API_KEY
+});
+
+// Automatically stop services on process exit
+services.registerCleanupHook();
+```
+
+This approach:
+- Works with all process termination scenarios (exit, Ctrl+C, SIGTERM, crashes)
+- Requires no manual signal handling
+- Has a 5-second timeout to prevent hanging
+- Recommended for most applications
+
+#### Manual Signal Handling
+
+For more control over shutdown logging and behavior, use signal handlers:
+
+```javascript
+const { DatadogServices } = require('@datadog/serverless-node');
+
+const services = new DatadogServices();
+
 services.start({
   apiKey: process.env.DD_API_KEY
 });
@@ -272,7 +332,9 @@ process.on('SIGINT', () => shutdown('SIGINT'));   // Ctrl+C
 process.on('SIGQUIT', () => shutdown('SIGQUIT')); // Ctrl+\
 ```
 
-For even more robust cleanup, you can also register the automatic cleanup hook:
+#### Combined Approach (Belt and Suspenders)
+
+For maximum reliability, use both cleanup hooks and signal handlers:
 
 ```javascript
 const services = new DatadogServices();
@@ -281,14 +343,61 @@ services.start({
   apiKey: process.env.DD_API_KEY
 });
 
-// Automatically stop services on process exit
+// Register automatic cleanup as fallback
 services.registerCleanupHook();
 
-// Signal handlers still recommended for explicit logging
+// Also handle signals explicitly for logging
 process.on('SIGTERM', () => {
-  console.log('Received SIGTERM, exiting...');
+  console.log('Received SIGTERM, exiting gracefully...');
+  if (services.isRunning()) {
+    services.stop();
+  }
   process.exit(0);
 });
+
+process.on('SIGINT', () => {
+  console.log('Received SIGINT (Ctrl+C), exiting...');
+  if (services.isRunning()) {
+    services.stop();
+  }
+  process.exit(0);
+});
+```
+
+#### Shutdown Timeout
+
+The `stop()` method automatically includes a 5-second timeout. If shutdown takes longer than 5 seconds, the operation will be aborted to prevent hanging. In practice, shutdown typically completes in under 1 second.
+
+#### AWS Lambda Considerations
+
+In AWS Lambda, the execution environment may be frozen after your handler returns. For best results:
+
+```javascript
+const { DatadogServices } = require('@datadog/serverless-node');
+
+let services;
+
+function initializeDatadog() {
+  if (!services) {
+    services = new DatadogServices();
+    services.start({
+      apiKey: process.env.DD_API_KEY,
+      metricNamespace: 'lambda'
+    });
+    // Cleanup hook ensures flush on container teardown
+    services.registerCleanupHook();
+  }
+}
+
+exports.handler = async (event) => {
+  initializeDatadog();
+
+  // Your handler logic
+  const result = await processEvent(event);
+
+  // No need to manually stop - cleanup hook handles it
+  return result;
+};
 ```
 
 ### Error Handling
