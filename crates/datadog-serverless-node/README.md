@@ -245,6 +245,8 @@ exports.handler = async (event) => {
 
 ### Graceful Shutdown
 
+For proper resource cleanup, register signal handlers to stop services on process termination:
+
 ```javascript
 const { DatadogServices } = require('@datadog/serverless-node');
 
@@ -255,20 +257,36 @@ services.start({
   apiKey: process.env.DD_API_KEY
 });
 
-// Handle shutdown signals
-process.on('SIGTERM', () => {
-  console.log('Shutting down gracefully...');
+// Signal handler for graceful shutdown
+function shutdown(signal) {
+  console.log(`Received ${signal}, shutting down gracefully...`);
   if (services.isRunning()) {
     services.stop();
   }
   process.exit(0);
+}
+
+// Register signal handlers for common termination signals
+process.on('SIGTERM', () => shutdown('SIGTERM')); // Kubernetes, Docker
+process.on('SIGINT', () => shutdown('SIGINT'));   // Ctrl+C
+process.on('SIGQUIT', () => shutdown('SIGQUIT')); // Ctrl+\
+```
+
+For even more robust cleanup, you can also register the automatic cleanup hook:
+
+```javascript
+const services = new DatadogServices();
+
+services.start({
+  apiKey: process.env.DD_API_KEY
 });
 
-process.on('SIGINT', () => {
-  console.log('Shutting down gracefully...');
-  if (services.isRunning()) {
-    services.stop();
-  }
+// Automatically stop services on process exit
+services.registerCleanupHook();
+
+// Signal handlers still recommended for explicit logging
+process.on('SIGTERM', () => {
+  console.log('Received SIGTERM, exiting...');
   process.exit(0);
 });
 ```
