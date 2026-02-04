@@ -47,7 +47,7 @@ async fn dogstatsd_server_ships_series() {
 
     let api_key_factory = ApiKeyFactory::new("mock-api-key");
 
-    let mut metrics_flusher = Flusher::new(FlusherConfig {
+    let metrics_flusher = Flusher::new(FlusherConfig {
         api_key_factory: Arc::new(api_key_factory),
         aggregator_handle: handle.clone(),
         metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(

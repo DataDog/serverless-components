@@ -143,7 +143,7 @@ pub async fn main() {
         }
     });
 
-    let (mut metrics_flusher, _aggregator_handle) = if dd_use_dogstatsd {
+    let (metrics_flusher, _aggregator_handle) = if dd_use_dogstatsd {
         debug!("Starting dogstatsd");
         let (_, metrics_flusher, aggregator_handle) = start_dogstatsd(
             dd_dogstatsd_port,
@@ -167,7 +167,7 @@ pub async fn main() {
     loop {
         flush_interval.tick().await;
 
-        if let Some(metrics_flusher) = metrics_flusher.as_mut() {
+        if let Some(metrics_flusher) = metrics_flusher.as_ref() {
             debug!("Flushing dogstatsd metrics");
             metrics_flusher.flush().await;
         }
