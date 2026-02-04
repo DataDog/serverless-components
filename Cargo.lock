@@ -427,10 +427,14 @@ dependencies = [
 name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
- "datadog-serverless-core",
+ "datadog-trace-agent",
+ "dogstatsd",
+ "libdd-trace-utils",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
