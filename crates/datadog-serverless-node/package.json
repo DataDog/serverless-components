@@ -4,31 +4,59 @@
   "description": "Node.js bindings for Datadog serverless monitoring",
   "main": "index.js",
   "types": "index.d.ts",
-  "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
-    "artifacts": "napi artifacts",
-    "version": "napi version",
-    "test": "mocha test/**/*.test.js"
-  },
   "napi": {
     "name": "datadog-serverless-node",
     "triples": {
       "defaults": true,
       "additional": [
+        "x86_64-apple-darwin",
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu"
+        "aarch64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc"
       ]
     }
   },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "mocha test/**/*.test.js",
+    "universal": "napi universal",
+    "version": "napi version"
+  },
+  "packageManager": "npm@10.0.0",
   "devDependencies": {
     "@napi-rs/cli": "^2.18.0",
     "mocha": "^10.2.0"
   },
-  "license": "Apache-2.0",
+  "engines": {
+    "node": ">= 16"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/DataDog/serverless-components"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "datadog",
+    "monitoring",
+    "serverless",
+    "lambda",
+    "azure-functions",
+    "napi-rs",
+    "rust"
+  ],
+  "optionalDependencies": {
+    "@datadog/serverless-node-darwin-x64": "0.1.0",
+    "@datadog/serverless-node-darwin-arm64": "0.1.0",
+    "@datadog/serverless-node-linux-x64-gnu": "0.1.0",
+    "@datadog/serverless-node-linux-arm64-gnu": "0.1.0",
+    "@datadog/serverless-node-win32-x64-msvc": "0.1.0"
   }
 }

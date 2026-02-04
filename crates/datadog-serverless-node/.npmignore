@@ -1,0 +1,14 @@
+target/
+node_modules/
+**/*.rs
+!index.d.ts
+!index.js
+Cargo.toml
+Cargo.lock
+build.rs
+.github/
+.gitignore
+examples/
+test/
+*.node
+!npm/
