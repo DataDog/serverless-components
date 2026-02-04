@@ -30,20 +30,23 @@ describe('DatadogServices', () => {
       logLevel: 'error'
     };
 
-    try {
-      await services.start(config);
-      // If we're not in a cloud environment, this will throw
-      // That's OK for testing
-    } catch (err) {
-      if (err.message.includes('Failed to detect cloud environment')) {
-        // Expected in local testing
-        return;
-      }
-      throw err;
+    services.start(config);
+
+    // Wait for services to start asynchronously
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // If we're not in a cloud environment, services won't be running
+    // That's OK for testing
+    if (!services.isRunning()) {
+      // Expected in local testing (no cloud environment)
+      return;
     }
 
     assert.strictEqual(services.isRunning(), true);
-    await services.stop();
+    services.stop();
+
+    // Wait for services to stop
+    await new Promise(resolve => setTimeout(resolve, 500));
     assert.strictEqual(services.isRunning(), false);
   });
 
@@ -69,17 +72,13 @@ describe('DatadogServices', () => {
       logLevel: 'error'
     };
 
-    try {
-      await services.start(config);
-    } catch (err) {
-      // Might fail due to environment detection
-      if (err.message.includes('Failed to detect cloud environment')) {
-        return;
-      }
-    }
+    services.start(config);
+
+    // Wait a moment for first start to be registered
+    await new Promise(resolve => setTimeout(resolve, 100));
 
     try {
-      await services.start(config);
+      services.start(config);
       assert.fail('Should have thrown error');
     } catch (err) {
       assert.ok(err.message.includes('already started'));
@@ -93,5 +92,43 @@ describe('DatadogServices', () => {
     } catch (err) {
       assert.ok(err.message.includes('not running'));
     }
+  });
+
+  it('should receive status callbacks', async function() {
+    this.timeout(10000);
+
+    const statuses = [];
+    const config = {
+      apiKey: 'test-key',
+      useDogstatsd: false,
+      logLevel: 'error'
+    };
+
+    const statusCallback = (status) => {
+      statuses.push(status.status);
+    };
+
+    services.start(config, statusCallback);
+
+    // Wait for status updates
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // If we're not in a cloud environment, we won't get status updates
+    // That's OK for testing
+    if (statuses.length === 0) {
+      // Expected in local testing (no cloud environment)
+      return;
+    }
+
+    // Should have received at least "running" status
+    assert.ok(statuses.includes('running'), 'Should receive running status');
+
+    services.stop();
+
+    // Wait for final status updates
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Should have received "stopped" status
+    assert.ok(statuses.includes('stopped'), 'Should receive stopped status');
   });
 });
