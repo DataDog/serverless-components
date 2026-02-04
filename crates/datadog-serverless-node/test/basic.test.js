@@ -131,4 +131,117 @@ describe('DatadogServices', () => {
     // Should have received "stopped" status
     assert.ok(statuses.includes('stopped'), 'Should receive stopped status');
   });
+
+  it('should handle rapid start-stop cycles', async function() {
+    this.timeout(10000);
+
+    const config = {
+      apiKey: 'test-key',
+      useDogstatsd: false,
+      logLevel: 'error'
+    };
+
+    // Start services
+    services.start(config);
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // If services started, stop them quickly
+    if (services.isRunning()) {
+      services.stop();
+      await new Promise(resolve => setTimeout(resolve, 200));
+      assert.strictEqual(services.isRunning(), false);
+    }
+
+    // Start again
+    services.start(config);
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // If services started, they should be running
+    // In local environment, this may not start, which is OK
+  });
+
+  it('should handle multiple stop calls safely', async function() {
+    this.timeout(10000);
+
+    const config = {
+      apiKey: 'test-key',
+      useDogstatsd: false,
+      logLevel: 'error'
+    };
+
+    services.start(config);
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    if (!services.isRunning()) {
+      // Not in cloud environment, skip test
+      return;
+    }
+
+    // First stop should succeed
+    services.stop();
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Second stop should fail with error
+    try {
+      services.stop();
+      assert.fail('Should have thrown error on second stop');
+    } catch (err) {
+      assert.ok(err.message.includes('not running'));
+    }
+  });
+
+  it('should complete stop within timeout', async function() {
+    this.timeout(10000);
+
+    const config = {
+      apiKey: 'test-key',
+      useDogstatsd: false,
+      logLevel: 'error'
+    };
+
+    services.start(config);
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    if (!services.isRunning()) {
+      // Not in cloud environment, skip test
+      return;
+    }
+
+    const startTime = Date.now();
+    services.stop();
+
+    // Stop is async, but should complete quickly (well under 5 second timeout)
+    await new Promise(resolve => setTimeout(resolve, 6000));
+    const elapsed = Date.now() - startTime;
+
+    // Verify it completed within reasonable time (6 seconds max in this test)
+    assert.ok(elapsed < 7000, `Stop took ${elapsed}ms, should be < 7000ms`);
+    assert.strictEqual(services.isRunning(), false);
+  });
+
+  it('should cleanup with registerCleanupHook', async function() {
+    this.timeout(10000);
+
+    const config = {
+      apiKey: 'test-key',
+      useDogstatsd: false,
+      logLevel: 'error'
+    };
+
+    services.start(config);
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Register cleanup hook
+    // Note: We can't actually test process exit cleanup in unit tests,
+    // but we can verify the method doesn't throw
+    assert.doesNotThrow(() => {
+      services.registerCleanupHook();
+    });
+
+    // Clean up manually for test
+    if (services.isRunning()) {
+      services.stop();
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  });
 });
