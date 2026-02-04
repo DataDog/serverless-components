@@ -1,0 +1,253 @@
+name: Node.js Bridge CI
+
+on:
+  push:
+    branches: [main, feature/nodejs-bridge]
+    paths:
+      - 'crates/datadog-serverless-node/**'
+      - 'crates/datadog-serverless-core/**'
+      - '.github/workflows/nodejs-bridge-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/datadog-serverless-node/**'
+      - 'crates/datadog-serverless-core/**'
+
+env:
+  DEBUG: napi:*
+  APP_NAME: datadog-serverless-node
+  MACOSX_DEPLOYMENT_TARGET: '10.13'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            build: |
+              npm run build
+              strip -x *.node
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            build: |
+              npm run build -- --target aarch64-apple-darwin
+              strip -x *.node
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
+            build: |
+              npm run build -- --target x86_64-unknown-linux-gnu
+              strip *.node
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
+            build: |
+              npm run build -- --target aarch64-unknown-linux-gnu
+              aarch64-unknown-linux-gnu-strip *.node
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            build: npm run build
+
+    name: stable - ${{ matrix.settings.target }} - node@20
+    runs-on: ${{ matrix.settings.host }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/datadog-serverless-node/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .cargo-cache
+            target/
+          key: ${{ matrix.settings.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: |
+          cd crates/datadog-serverless-node
+          npm install
+
+      - name: Build in docker
+        uses: addnab/docker-run-action@v3
+        if: ${{ matrix.settings.docker }}
+        with:
+          image: ${{ matrix.settings.docker }}
+          options: '--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index -v ${{ github.workspace }}:/build -w /build/crates/datadog-serverless-node'
+          run: ${{ matrix.settings.build }}
+
+      - name: Build
+        run: |
+          cd crates/datadog-serverless-node
+          ${{ matrix.settings.build }}
+        if: ${{ !matrix.settings.docker }}
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: crates/datadog-serverless-node/${{ env.APP_NAME }}.*.node
+          if-no-files-found: error
+
+  test:
+    name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: macos-latest
+            target: x86_64-apple-darwin
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+        node:
+          - '18'
+          - '20'
+
+    runs-on: ${{ matrix.settings.host }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: crates/datadog-serverless-node/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd crates/datadog-serverless-node
+          npm install
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: crates/datadog-serverless-node
+
+      - name: List packages
+        run: ls -R crates/datadog-serverless-node
+        shell: bash
+
+      - name: Test bindings
+        run: |
+          cd crates/datadog-serverless-node
+          npm test
+
+  universal-macOS:
+    name: Build universal macOS binary
+    needs:
+      - build
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/datadog-serverless-node/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd crates/datadog-serverless-node
+          npm install
+
+      - name: Download macOS x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-x86_64-apple-darwin
+          path: crates/datadog-serverless-node/artifacts
+
+      - name: Download macOS arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-aarch64-apple-darwin
+          path: crates/datadog-serverless-node/artifacts
+
+      - name: Combine to universal binary
+        run: |
+          cd crates/datadog-serverless-node
+          npm run universal
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-universal-apple-darwin
+          path: crates/datadog-serverless-node/${{ env.APP_NAME }}.*.node
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    needs:
+      - test
+      - universal-macOS
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/datadog-serverless-node/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd crates/datadog-serverless-node
+          npm install
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: crates/datadog-serverless-node/artifacts
+
+      - name: Move artifacts
+        run: |
+          cd crates/datadog-serverless-node
+          npm run artifacts
+
+      - name: List packages
+        run: ls -R crates/datadog-serverless-node/npm
+        shell: bash
+
+      - name: Publish
+        run: |
+          cd crates/datadog-serverless-node
+          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+          npm publish --access public
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
