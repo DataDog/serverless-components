@@ -493,14 +493,6 @@ The library validates configuration on startup and will throw errors for:
 - Invalid `logLevel` (must be one of: trace, debug, info, warn, error)
 - Invalid `dogstatsdPort` (must be 1-65535)
 
-## Supported Platforms
-
-This package includes pre-built native binaries for:
-
-- macOS (Intel and Apple Silicon)
-- Linux x86_64
-- Linux ARM64
-
 ## Environment Variables
 
 While you can configure the services programmatically, the following environment variables are also recognized:
