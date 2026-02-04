@@ -8,7 +8,8 @@
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
     "artifacts": "napi artifacts",
-    "version": "napi version"
+    "version": "napi version",
+    "test": "mocha test/**/*.test.js"
   },
   "napi": {
     "name": "datadog-serverless-node",
@@ -22,7 +23,8 @@
     }
   },
   "devDependencies": {
-    "@napi-rs/cli": "^2.18.0"
+    "@napi-rs/cli": "^2.18.0",
+    "mocha": "^10.2.0"
   },
   "license": "Apache-2.0",
   "repository": {
