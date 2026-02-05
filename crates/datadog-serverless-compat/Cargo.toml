@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "Binary to run trace-agent and dogstatsd servers in Serverless environments"
 
+[features]
+default = []
+# Enable Windows Named Pipes support for both trace agent and dogstatsd.
+# Only needed for Windows environments.
+windows-pipes = ["datadog-trace-agent/windows-pipes", "dogstatsd/windows-pipes"]
+
 [dependencies]
 datadog-trace-agent = { path = "../datadog-trace-agent" }
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "660c550b6311a209d9cf7de762e54b6b7109bcdb" }

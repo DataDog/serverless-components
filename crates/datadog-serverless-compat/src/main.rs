@@ -69,7 +69,7 @@ pub async fn main() {
     // Windows named pipe name for DogStatsD.
     // Normalize by adding \\.\pipe\ prefix if not present
     let dd_dogstatsd_windows_pipe_name: Option<String> = {
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "windows-pipes"))]
         {
             env::var("DD_DOGSTATSD_WINDOWS_PIPE_NAME")
                 .ok()
@@ -82,7 +82,7 @@ pub async fn main() {
                     }
                 })
         }
-        #[cfg(not(windows))]
+        #[cfg(not(all(windows, feature = "windows-pipes")))]
         {
             None
         }

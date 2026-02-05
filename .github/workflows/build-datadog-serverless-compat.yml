@@ -45,7 +45,7 @@ jobs:
           retention-days: 3
       - if: ${{ inputs.runner == 'windows-2022' }}
         shell: bash
-        run: cargo build --release -p datadog-serverless-compat
+        run: cargo build --release -p datadog-serverless-compat --features windows-pipes
       - if: ${{ inputs.runner == 'windows-2022' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # 4.6.2
         with:
