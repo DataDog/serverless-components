@@ -134,15 +134,15 @@ impl DogStatsD {
     ) -> DogStatsD {
         // Determine if we should use a named pipe or UDP/UDS
         #[cfg(all(windows, feature = "windows-pipes"))]
-        let use_named_pipe = config.windows_pipe_name.is_some();
+        let pipe_name_opt = config.windows_pipe_name.as_ref();
         #[cfg(not(all(windows, feature = "windows-pipes")))]
-        let use_named_pipe = false;
+        let pipe_name_opt: Option<&String> = None;
 
-        let buffer_reader = if use_named_pipe {
+        let buffer_reader = if let Some(pipe_name_ref) = pipe_name_opt {
             // Windows named pipe transport
             #[cfg(all(windows, feature = "windows-pipes"))]
             {
-                let pipe_name = Arc::new(config.windows_pipe_name.as_ref().unwrap().clone());
+                let pipe_name = Arc::new(pipe_name_ref.clone());
 
                 // Create channel for receiving data from client handlers
                 let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -162,6 +162,7 @@ impl DogStatsD {
             }
             #[cfg(not(all(windows, feature = "windows-pipes")))]
             {
+                let _ = pipe_name_ref; // Suppress unused variable warning
                 unreachable!("Named pipe flag should never be true without the feature")
             }
         } else {
@@ -352,7 +353,7 @@ async fn run_named_pipe_server(
                             break;
                         }
                         Ok(_) => {
-                            if let Ok(_) = std::str::from_utf8(&buf[..complete_message_size]) {
+                            if std::str::from_utf8(&buf[..complete_message_size]).is_ok() {
                                 debug!(
                                     "Sent {} bytes from '{}'",
                                     complete_message_size, pipe_name_clone

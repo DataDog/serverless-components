@@ -147,10 +147,7 @@ async fn test_mini_agent_named_pipe_handles_requests() {
     let pipe_name = "dd_trace_integration_test";
     let pipe_path = format!(r"\\.\pipe\{}", pipe_name); // Full path for client connections
     let mut config = create_tcp_test_config();
-    #[cfg(feature = "windows-pipes")]
-    {
-        config.dd_apm_windows_pipe_name = Some(pipe_path.clone());
-    }
+    config.dd_apm_windows_pipe_name = Some(pipe_path.clone());
     config.dd_apm_receiver_port = 0;
     let config = Arc::new(config);
 

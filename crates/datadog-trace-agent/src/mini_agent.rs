@@ -129,9 +129,9 @@ impl MiniAgent {
         });
 
         // Determine which transport to use based on configuration
-        #[cfg(feature = "windows-pipes")]
+        #[cfg(any(feature = "windows-pipes", test))]
         let pipe_name_opt = self.config.dd_apm_windows_pipe_name.as_ref();
-        #[cfg(not(feature = "windows-pipes"))]
+        #[cfg(not(any(feature = "windows-pipes", test)))]
         let pipe_name_opt: Option<&String> = None;
 
         if let Some(pipe_name) = pipe_name_opt {
@@ -147,12 +147,12 @@ impl MiniAgent {
             now.elapsed().as_millis()
         );
 
-        if let Some(_pipe_name) = pipe_name_opt {
+        if let Some(pipe_name) = pipe_name_opt {
             // Windows named pipe transport
             #[cfg(all(windows, feature = "windows-pipes"))]
             {
                 Self::serve_named_pipe(
-                    _pipe_name,
+                    pipe_name,
                     service,
                     trace_flusher_handle,
                     stats_flusher_handle,
@@ -161,6 +161,7 @@ impl MiniAgent {
             }
             #[cfg(not(all(windows, feature = "windows-pipes")))]
             {
+                let _ = pipe_name; // Suppress unused variable warning
                 unreachable!(
                     "Named pipe flag should never be true without the feature and Windows"
                 );
@@ -277,7 +278,7 @@ impl MiniAgent {
 
         loop {
             // Create a new pipe instance
-            let pipe = match ServerOptions::new().create(&pipe_path) {
+            let pipe = match ServerOptions::new().create(pipe_path) {
                 Ok(pipe) => {
                     debug!("Created pipe server instance '{}' in byte mode", pipe_path);
                     pipe
