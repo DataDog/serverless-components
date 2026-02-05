@@ -129,7 +129,12 @@ impl MiniAgent {
         });
 
         // Determine which transport to use based on configuration
-        if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
+        #[cfg(feature = "windows-pipes")]
+        let pipe_name_opt = self.config.dd_apm_windows_pipe_name.as_ref();
+        #[cfg(not(feature = "windows-pipes"))]
+        let pipe_name_opt: Option<&String> = None;
+
+        if let Some(pipe_name) = pipe_name_opt {
             debug!("Mini Agent started: listening on named pipe {}", pipe_name);
         } else {
             debug!(
@@ -142,26 +147,23 @@ impl MiniAgent {
             now.elapsed().as_millis()
         );
 
-        if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
+        if let Some(_pipe_name) = pipe_name_opt {
             // Windows named pipe transport
             #[cfg(all(windows, feature = "windows-pipes"))]
             {
                 Self::serve_named_pipe(
-                    pipe_name,
+                    _pipe_name,
                     service,
                     trace_flusher_handle,
                     stats_flusher_handle,
                 )
                 .await?;
             }
-
             #[cfg(not(all(windows, feature = "windows-pipes")))]
             {
-                error!(
-                    "Named pipes are only supported on Windows and require the windows-pipes feature to be enabled. Cannot use pipe: {}",
-                    pipe_name
+                unreachable!(
+                    "Named pipe flag should never be true without the feature and Windows"
                 );
-                return Err("Named pipes are only supported on Windows and require the windows-pipes feature".into());
             }
         } else {
             // TCP transport
@@ -386,7 +388,10 @@ impl MiniAgent {
             }
             (_, INFO_ENDPOINT_PATH) => match Self::info_handler(
                 config.dd_apm_receiver_port,
+                #[cfg(feature = "windows-pipes")]
                 config.dd_apm_windows_pipe_name.as_deref(),
+                #[cfg(not(feature = "windows-pipes"))]
+                None,
                 config.dd_dogstatsd_port,
             ) {
                 Ok(res) => Ok(res),

@@ -81,8 +81,10 @@ impl Tags {
 pub struct Config {
     pub dd_site: String,
     pub dd_apm_receiver_port: u16,
+    #[cfg(feature = "windows-pipes")]
     pub dd_apm_windows_pipe_name: Option<String>,
     pub dd_dogstatsd_port: u16,
+    #[cfg(feature = "windows-pipes")]
     pub dd_dogstatsd_windows_pipe_name: Option<String>,
     pub env_type: trace_utils::EnvironmentType,
     pub app_name: Option<String>,
@@ -223,8 +225,10 @@ impl Config {
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 100,
             dd_apm_receiver_port,
+            #[cfg(feature = "windows-pipes")]
             dd_apm_windows_pipe_name,
             dd_dogstatsd_port,
+            #[cfg(feature = "windows-pipes")]
             dd_dogstatsd_windows_pipe_name,
             dd_site,
             trace_intake: Endpoint {
@@ -378,6 +382,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(feature = "windows-pipes")]
     fn test_apm_windows_pipe_name() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
@@ -399,6 +404,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(feature = "windows-pipes")]
     fn test_dogstatsd_windows_pipe_name() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
@@ -456,6 +462,7 @@ mod tests {
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
         assert_eq!(config.dd_apm_receiver_port, 8126);
+        #[cfg(feature = "windows-pipes")]
         assert_eq!(config.dd_apm_windows_pipe_name, None);
         env::remove_var("DD_API_KEY");
         env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
