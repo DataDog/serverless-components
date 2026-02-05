@@ -51,7 +51,7 @@ impl Flusher {
         }
     }
 
-    async fn get_dd_api(&mut self) -> &Option<DdApi> {
+    async fn get_dd_api(&self) -> &Option<DdApi> {
         self.dd_api
             .get_or_init(|| async {
                 let api_key = self.api_key_factory.get_api_key().await;
@@ -76,7 +76,7 @@ impl Flusher {
 
     /// Flush metrics from the aggregator
     pub async fn flush(
-        &mut self,
+        &self,
     ) -> Option<(
         Vec<crate::datadog::Series>,
         Vec<datadog_protos::metrics::SketchPayload>,
@@ -96,7 +96,7 @@ impl Flusher {
 
     /// Flush given batch of metrics
     pub async fn flush_metrics(
-        &mut self,
+        &self,
         series: Vec<crate::datadog::Series>,
         distributions: Vec<datadog_protos::metrics::SketchPayload>,
     ) -> Option<(
@@ -272,7 +272,7 @@ mod tests {
             None,
         );
 
-        let mut flusher = Flusher::new(FlusherConfig {
+        let flusher = Flusher::new(FlusherConfig {
             api_key_factory: Arc::new(api_key_factory),
             aggregator_handle: handle,
             metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
@@ -319,7 +319,7 @@ mod tests {
 
         let api_key_factory = ApiKeyFactory::new("test-api-key");
 
-        let mut flusher = Flusher::new(FlusherConfig {
+        let flusher = Flusher::new(FlusherConfig {
             api_key_factory: Arc::new(api_key_factory),
             aggregator_handle: handle,
             metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
@@ -369,7 +369,7 @@ mod tests {
 
         let api_key_factory = ApiKeyFactory::new("test-api-key");
 
-        let mut flusher = Flusher::new(FlusherConfig {
+        let flusher = Flusher::new(FlusherConfig {
             api_key_factory: Arc::new(api_key_factory),
             aggregator_handle: handle,
             metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
