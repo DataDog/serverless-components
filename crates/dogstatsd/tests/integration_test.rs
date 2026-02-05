@@ -20,7 +20,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use zstd::zstd_safe::CompressionLevel;
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 use tokio::{io::AsyncWriteExt, net::windows::named_pipe::ClientOptions};
 
 #[cfg(test)]
@@ -286,7 +286,7 @@ async fn test_send_with_retry_immediate_failure_after_one_attempt() {
 }
 
 #[cfg(test)]
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 #[tokio::test]
 async fn test_named_pipe_basic_communication() {
     let pipe_name = r"\\.\pipe\test_dogstatsd_basic";
@@ -340,7 +340,7 @@ async fn test_named_pipe_basic_communication() {
 }
 
 #[cfg(test)]
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 #[tokio::test]
 async fn test_named_pipe_disconnect_reconnect() {
     let pipe_name = r"\\.\pipe\test_dogstatsd_reconnect";
@@ -409,7 +409,7 @@ async fn test_named_pipe_disconnect_reconnect() {
 }
 
 #[cfg(test)]
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 #[tokio::test]
 async fn test_named_pipe_cancellation() {
     let pipe_name = r"\\.\pipe\test_dogstatsd_cancel";
@@ -452,7 +452,7 @@ async fn test_named_pipe_cancellation() {
 }
 
 #[cfg(test)]
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 #[tokio::test]
 async fn test_buffer_split_message() {
     let pipe_name = r"\\.\pipe\test_dogstatsd_buffer_split";
