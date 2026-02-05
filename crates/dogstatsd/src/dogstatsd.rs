@@ -20,7 +20,7 @@ use tracing::{debug, error, trace};
 use {
     std::sync::Arc,
     tokio::io::AsyncReadExt,
-    tokio::net::windows::named_pipe::{ClientOptions, ServerOptions},
+    tokio::net::windows::named_pipe::ServerOptions,
 };
 
 // DogStatsD buffer size for receiving metrics
