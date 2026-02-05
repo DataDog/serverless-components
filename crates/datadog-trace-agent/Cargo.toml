@@ -9,8 +9,6 @@ bench = false
 
 [features]
 default = []
-# Enable Windows Named Pipes support for the trace agent.
-# Only needed for Windows environments. Can be disabled to reduce binary size and dependencies.
 windows-pipes = []
 
 [dependencies]

@@ -17,11 +17,7 @@ use tracing::{debug, error, trace};
 
 // Windows-specific imports
 #[cfg(all(windows, feature = "windows-pipes"))]
-use {
-    std::sync::Arc,
-    tokio::io::AsyncReadExt,
-    tokio::net::windows::named_pipe::ServerOptions,
-};
+use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
 
 // DogStatsD buffer size for receiving metrics
 // TODO(astuyve) buf should be dynamic
@@ -160,7 +156,7 @@ impl DogStatsD {
             #[cfg(not(all(windows, feature = "windows-pipes")))]
             #[allow(clippy::panic)]
             {
-                panic!("Named pipes require the 'windows-pipes' feature to be enabled.")
+                panic!("Named pipes are only supported on Windows and require the windows-pipes feature to be enabled.")
             }
         } else {
             // UDP socket for all platforms

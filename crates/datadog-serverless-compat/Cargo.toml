@@ -7,8 +7,6 @@ description = "Binary to run trace-agent and dogstatsd servers in Serverless env
 
 [features]
 default = []
-# Enable Windows Named Pipes support for both trace agent and dogstatsd.
-# Only needed for Windows environments.
 windows-pipes = ["datadog-trace-agent/windows-pipes", "dogstatsd/windows-pipes"]
 
 [dependencies]

@@ -35,7 +35,4 @@ tracing-test = { version = "0.2.5", default-features = false }
 [features]
 default = [ "reqwest/rustls-tls" ]
 fips = [ "reqwest/rustls-tls-no-provider", "datadog-fips/fips" ]
-# Enable Windows Named Pipes support for DogStatsD.
-# Only needed for Windows environments. Can be disabled to reduce binary size and dependencies.
-# This feature adds tokio's io-util for AsyncReadExt, which is only used for reading from named pipes.
 windows-pipes = ["tokio/io-util"]

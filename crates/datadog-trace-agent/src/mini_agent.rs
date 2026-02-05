@@ -158,10 +158,10 @@ impl MiniAgent {
             #[cfg(not(all(windows, feature = "windows-pipes")))]
             {
                 error!(
-                    "Named pipes require the 'windows-pipes' feature to be enabled. Cannot use pipe: {}",
+                    "Named pipes are only supported on Windows and require the windows-pipes feature to be enabled. Cannot use pipe: {}",
                     pipe_name
                 );
-                return Err("Named pipes require the 'windows-pipes' feature".into());
+                return Err("Named pipes are only supported on Windows and require the windows-pipes feature".into());
             }
         } else {
             // TCP transport
