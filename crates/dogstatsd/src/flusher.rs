@@ -351,9 +351,8 @@ mod tests {
         // Test with series but empty distributions
         let result = flusher.flush_metrics(series, Vec::new()).await;
 
-        // The request will fail with 404 (no mock server), which is a permanent 4xx error.
-        // Permanent errors are not retried, so None is returned (success from retry perspective).
-        assert!(result.is_none());
+        // Should attempt to flush and return Some with failed metrics (since we're not mocking the API)
+        assert!(result.is_some());
     }
 
     #[tokio::test]
@@ -399,8 +398,7 @@ mod tests {
         // Test with distributions but empty series
         let result = flusher.flush_metrics(Vec::new(), distributions).await;
 
-        // The request will fail with 404 (no mock server), which is a permanent 4xx error.
-        // Permanent errors are not retried, so None is returned (success from retry perspective).
-        assert!(result.is_none());
+        // Should attempt to flush and return Some with failed metrics (since we're not mocking the API)
+        assert!(result.is_some());
     }
 }
