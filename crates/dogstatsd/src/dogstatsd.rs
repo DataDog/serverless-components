@@ -34,6 +34,7 @@ pub struct DogStatsDConfig {
     /// Optional namespace to prepend to all metric names (e.g., "myapp")
     pub metric_namespace: Option<String>,
     /// Optional Windows named pipe name. (e.g., "\\\\.\\pipe\\my_pipe").
+    #[cfg(feature = "windows-pipes")]
     pub windows_pipe_name: Option<String>,
 }
 
@@ -131,11 +132,17 @@ impl DogStatsD {
         aggregator_handle: AggregatorHandle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> DogStatsD {
-        #[allow(unused_variables)] // pipe_name unused on non-Windows
-        let buffer_reader = if let Some(ref pipe_name) = config.windows_pipe_name {
+        // Determine if we should use a named pipe or UDP/UDS
+        #[cfg(all(windows, feature = "windows-pipes"))]
+        let use_named_pipe = config.windows_pipe_name.is_some();
+        #[cfg(not(all(windows, feature = "windows-pipes")))]
+        let use_named_pipe = false;
+
+        let buffer_reader = if use_named_pipe {
+            // Windows named pipe transport
             #[cfg(all(windows, feature = "windows-pipes"))]
             {
-                let pipe_name = Arc::new(pipe_name.clone());
+                let pipe_name = Arc::new(config.windows_pipe_name.as_ref().unwrap().clone());
 
                 // Create channel for receiving data from client handlers
                 let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -154,9 +161,8 @@ impl DogStatsD {
                 }
             }
             #[cfg(not(all(windows, feature = "windows-pipes")))]
-            #[allow(clippy::panic)]
             {
-                panic!("Named pipes are only supported on Windows and require the windows-pipes feature to be enabled.")
+                unreachable!("Named pipe flag should never be true without the feature")
             }
         } else {
             // UDP socket for all platforms
