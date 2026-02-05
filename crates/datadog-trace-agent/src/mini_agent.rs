@@ -16,7 +16,7 @@ use tracing::{debug, error};
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
 use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 use tokio::net::windows::named_pipe::ServerOptions;
 
 use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
@@ -144,7 +144,7 @@ impl MiniAgent {
 
         if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
             // Windows named pipe transport
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "windows-pipes"))]
             {
                 Self::serve_named_pipe(
                     pipe_name,
@@ -155,13 +155,13 @@ impl MiniAgent {
                 .await?;
             }
 
-            #[cfg(not(windows))]
+            #[cfg(not(all(windows, feature = "windows-pipes")))]
             {
                 error!(
-                    "Named pipes are only supported on Windows, cannot use pipe: {}",
+                    "Named pipes require the 'windows-pipes' feature to be enabled. Cannot use pipe: {}",
                     pipe_name
                 );
-                return Err("Named pipes are only supported on Windows".into());
+                return Err("Named pipes require the 'windows-pipes' feature".into());
             }
         } else {
             // TCP transport
@@ -250,7 +250,7 @@ impl MiniAgent {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "windows-pipes"))]
     async fn serve_named_pipe<S>(
         pipe_name: &str,
         service: S,

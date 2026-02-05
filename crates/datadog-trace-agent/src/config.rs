@@ -122,7 +122,7 @@ impl Config {
         // Windows named pipe name for APM receiver.
         // Normalize by adding \\.\pipe\ prefix if not present
         let dd_apm_windows_pipe_name: Option<String> = {
-            #[cfg(any(windows, test))]
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             {
                 env::var("DD_APM_WINDOWS_PIPE_NAME").ok().map(|pipe_name| {
                     if pipe_name.starts_with("\\\\.\\pipe\\") || pipe_name.starts_with(r"\\.\pipe\")
@@ -133,7 +133,7 @@ impl Config {
                     }
                 })
             }
-            #[cfg(not(any(windows, test)))]
+            #[cfg(not(any(all(windows, feature = "windows-pipes"), test)))]
             {
                 None
             }
@@ -148,7 +148,7 @@ impl Config {
         };
 
         let dd_dogstatsd_windows_pipe_name: Option<String> = {
-            #[cfg(any(windows, test))]
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             {
                 env::var("DD_DOGSTATSD_WINDOWS_PIPE_NAME")
                     .ok()
@@ -162,7 +162,7 @@ impl Config {
                         }
                     })
             }
-            #[cfg(not(any(windows, test)))]
+            #[cfg(not(any(all(windows, feature = "windows-pipes"), test)))]
             {
                 None
             }

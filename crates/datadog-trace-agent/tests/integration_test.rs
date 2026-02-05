@@ -16,7 +16,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 use common::helpers::send_named_pipe_request;
 
 /// Create a test config with TCP transport
@@ -138,7 +138,7 @@ async fn test_mini_agent_tcp_handles_requests() {
     agent_handle.abort();
 }
 
-#[cfg(all(test, windows))]
+#[cfg(all(test, windows, feature = "windows-pipes"))]
 #[tokio::test]
 async fn test_mini_agent_named_pipe_handles_requests() {
     // Use just the pipe name without \\.\pipe\ prefix, matching datadog-agent behavior
