@@ -76,10 +76,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_add() {
-        let mut aggregator = TraceAggregator::default();
-        let tracer_header_tags = TracerHeaderTags {
+    fn create_test_send_data(size: usize) -> SendData {
+        let tracer_header_tags: TracerHeaderTags<'_> = TracerHeaderTags {
             lang: "lang",
             lang_version: "lang_version",
             lang_interpreter: "lang_interpreter",
@@ -91,41 +89,31 @@ mod tests {
             dropped_p0_traces: 0,
             dropped_p0_spans: 0,
         };
-        let payload = SendData::new(
-            1,
+        SendData::new(
+            size,
             TracerPayloadCollection::V07(Vec::new()),
             tracer_header_tags,
             &Endpoint::from_slice("localhost"),
-        );
+        )
+    }
 
-        aggregator.add(payload.clone());
+    #[test]
+    fn test_add() {
+        let mut aggregator = TraceAggregator::default();
+        let payload = create_test_send_data(1);
+
+        aggregator.add(payload);
         assert_eq!(aggregator.queue.len(), 1);
-        assert_eq!(aggregator.queue[0].is_empty(), payload.is_empty());
+        assert_eq!(aggregator.queue[0].is_empty(), false);
+        assert_eq!(aggregator.queue[0].len(), 1);
     }
 
     #[test]
     fn test_get_batch() {
         let mut aggregator = TraceAggregator::default();
-        let tracer_header_tags = TracerHeaderTags {
-            lang: "lang",
-            lang_version: "lang_version",
-            lang_interpreter: "lang_interpreter",
-            lang_vendor: "lang_vendor",
-            tracer_version: "tracer_version",
-            container_id: "container_id",
-            client_computed_top_level: true,
-            client_computed_stats: true,
-            dropped_p0_traces: 0,
-            dropped_p0_spans: 0,
-        };
-        let payload = SendData::new(
-            1,
-            TracerPayloadCollection::V07(Vec::new()),
-            tracer_header_tags,
-            &Endpoint::from_slice("localhost"),
-        );
+        let payload = create_test_send_data(1);
 
-        aggregator.add(payload.clone());
+        aggregator.add(payload);
         assert_eq!(aggregator.queue.len(), 1);
         let batch = aggregator.get_batch();
         assert_eq!(batch.len(), 1);
@@ -134,29 +122,11 @@ mod tests {
     #[test]
     fn test_get_batch_full_entries() {
         let mut aggregator = TraceAggregator::new(2);
-        let tracer_header_tags = TracerHeaderTags {
-            lang: "lang",
-            lang_version: "lang_version",
-            lang_interpreter: "lang_interpreter",
-            lang_vendor: "lang_vendor",
-            tracer_version: "tracer_version",
-            container_id: "container_id",
-            client_computed_top_level: true,
-            client_computed_stats: true,
-            dropped_p0_traces: 0,
-            dropped_p0_spans: 0,
-        };
-        let payload = SendData::new(
-            1,
-            TracerPayloadCollection::V07(Vec::new()),
-            tracer_header_tags,
-            &Endpoint::from_slice("localhost"),
-        );
 
-        // Add 3 payloads
-        aggregator.add(payload.clone());
-        aggregator.add(payload.clone());
-        aggregator.add(payload.clone());
+        // Add 3 payloads - create new instances since SendData doesn't implement Clone
+        aggregator.add(create_test_send_data(1));
+        aggregator.add(create_test_send_data(1));
+        aggregator.add(create_test_send_data(1));
 
         // The batch should only contain the first 2 payloads
         let first_batch = aggregator.get_batch();
