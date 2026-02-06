@@ -7,7 +7,7 @@ description = "Binary to run trace-agent and dogstatsd servers in Serverless env
 
 [dependencies]
 datadog-trace-agent = { path = "../datadog-trace-agent" }
-libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "6b4140068d0dbbb4ae541e4149cc4c89138c38c0" }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "f97c41f055a441cc80033f53edfbc942694f5515" }
 dogstatsd = { path = "../dogstatsd", default-features = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", default-features = false }
