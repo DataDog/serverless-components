@@ -102,7 +102,7 @@ impl TraceFlusher for ServerlessTraceFlusher {
         debug!("Flushing {} traces", traces.len());
 
         // Since we return the original traces on error, we need to clone them before coalescing
-        let traces_clone = traces.clone();
+        // let traces_clone = traces.clone();
 
         let http_client =
             match ServerlessTraceFlusher::get_http_client(self.config.proxy_url.as_ref()) {
@@ -119,7 +119,7 @@ impl TraceFlusher for ServerlessTraceFlusher {
                 Err(e) => {
                     error!("Error sending trace: {e:?}");
                     // Return the original traces for retry
-                    return Some(traces_clone);
+                    return None;
                 }
             }
         }
