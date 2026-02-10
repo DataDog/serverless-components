@@ -104,6 +104,7 @@ impl AggregatorService {
         while let Some(command) = self.rx.recv().await {
             match command {
                 AggregatorCommand::InsertBatch(metrics) => {
+                    let batch_size = metrics.len();
                     let mut insert_errors = 0;
                     for metric in metrics {
                         let metric_name = metric.name;
@@ -113,14 +114,37 @@ impl AggregatorService {
                             insert_errors += 1;
                         }
                     }
+                    let successful = batch_size - insert_errors;
+                    debug!(
+                        "AGGREGATOR_DEBUG | Batch: {} metrics received, {} inserted, {} failed. Current contexts: {}",
+                        batch_size,
+                        successful,
+                        insert_errors,
+                        self.aggregator.len()
+                    );
                     if insert_errors > 0 {
                         warn!("Total of {} metrics failed to insert", insert_errors);
                     }
                 }
 
                 AggregatorCommand::Flush(response_tx) => {
+                    let contexts_before = self.aggregator.len();
                     let series = self.aggregator.consume_metrics();
                     let distributions = self.aggregator.consume_distributions();
+
+                    let total_series_metrics: usize =
+                        series.iter().map(|s| s.series.len()).sum();
+                    let total_distribution_sketches: usize =
+                        distributions.iter().map(|d| d.sketches.len()).sum();
+
+                    debug!(
+                        "AGGREGATOR_DEBUG | Flush: {} contexts before, {} series batches ({} metrics), {} distribution batches ({} sketches)",
+                        contexts_before,
+                        series.len(),
+                        total_series_metrics,
+                        distributions.len(),
+                        total_distribution_sketches
+                    );
 
                     let response = FlushResponse {
                         series,
