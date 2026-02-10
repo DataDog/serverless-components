@@ -8,7 +8,6 @@
 //! namespacing, and forwards them to an aggregator for batching and shipping to Datadog.
 
 use std::net::SocketAddr;
-use std::str::Split;
 
 use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
@@ -205,11 +204,25 @@ impl DogStatsD {
             return;
         }
 
+        debug!(
+            "DOGSTATSD_DEBUG | Received UDP packet: {} bytes from {}",
+            buf.len(),
+            src
+        );
+
         #[allow(clippy::expect_used)]
         let msgs = std::str::from_utf8(&buf).expect("couldn't parse as string");
         trace!("Received message: {} from {}", msgs, src);
-        let statsd_metric_strings = msgs.split('\n');
-        self.insert_metrics(statsd_metric_strings);
+        let statsd_metric_strings: Vec<&str> = msgs.split('\n').collect();
+        let metric_count_in_packet = statsd_metric_strings
+            .iter()
+            .filter(|m| !m.is_empty())
+            .count();
+        debug!(
+            "DOGSTATSD_DEBUG | Packet contains {} metric strings",
+            metric_count_in_packet
+        );
+        self.insert_metrics(statsd_metric_strings.into_iter());
     }
 
     fn prepend_namespace(namespace: &str, metric: &mut Metric) {
@@ -218,7 +231,10 @@ impl DogStatsD {
         metric.id = id(metric.name, &metric.tags, metric.timestamp);
     }
 
-    fn insert_metrics(&self, msg: Split<char>) {
+    fn insert_metrics<'a, I>(&self, msg: I)
+    where
+        I: Iterator<Item = &'a str>,
+    {
         let namespace = self.metric_namespace.as_deref();
         let all_valid_metrics: Vec<Metric> = msg
             .filter(|m| {
@@ -252,6 +268,10 @@ impl DogStatsD {
             })
             .collect();
         if !all_valid_metrics.is_empty() {
+            debug!(
+                "DOGSTATSD_DEBUG | Parsed {} valid metrics, sending to aggregator",
+                all_valid_metrics.len()
+            );
             // Send metrics through the channel - no lock needed!
             if let Err(e) = self.aggregator_handle.insert_batch(all_valid_metrics) {
                 error!("Failed to send metrics to aggregator: {}", e);
