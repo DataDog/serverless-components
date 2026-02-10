@@ -188,16 +188,38 @@ impl DogStatsD {
         }
     }
 
-    /// Main event loop that continuously receives and processes metrics.
+    /// Starts the DogStatsD server with a dedicated reader task.
+    ///
+    /// Spawns a reader task that drains the socket as fast as possible into an
+    /// unbounded channel, while this task processes packets from the channel.
+    /// This decoupling prevents packet loss when the OS `SO_RCVBUF` is small
+    /// (e.g. Lambda caps it at ~416 KiB) by moving buffering into user space.
     pub async fn spin(self) {
-        let mut spin_cancelled = false;
-        while !spin_cancelled {
-            self.consume_statsd().await;
-            spin_cancelled = self.cancel_token.is_cancelled();
-        }
+        let DogStatsD {
+            cancel_token,
+            aggregator_handle,
+            buffer_reader,
+            metric_namespace,
+        } = self;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let reader_token = cancel_token.clone();
+        tokio::spawn(async move {
+            read_loop(buffer_reader, tx, reader_token).await;
+        });
+
+        process_loop(
+            &mut rx,
+            &cancel_token,
+            &aggregator_handle,
+            metric_namespace.as_deref(),
+        )
+        .await;
     }
 
-    /// Receive one batch of metrics from the transport layer and process them.
+    /// Process a single buffer from the transport. Used by tests via `MirrorTest`.
+    #[cfg(test)]
     async fn consume_statsd(&self) {
         #[allow(clippy::expect_used)]
         let (buf, src) = self
@@ -205,85 +227,152 @@ impl DogStatsD {
             .read()
             .await
             .expect("didn't receive data");
-
-        // Skip empty buffers (e.g., from channel close)
-        if buf.is_empty() {
-            debug!("Received empty buffer from {}, skipping", src);
-            return;
-        }
-
-        debug!(
-            "DOGSTATSD_DEBUG | Received UDP packet: {} bytes from {}",
-            buf.len(),
-            src
+        process_packet(
+            &buf,
+            &src,
+            &self.aggregator_handle,
+            self.metric_namespace.as_deref(),
         );
-
-        #[allow(clippy::expect_used)]
-        let msgs = std::str::from_utf8(&buf).expect("couldn't parse as string");
-        trace!("Received message: {} from {}", msgs, src);
-        let statsd_metric_strings: Vec<&str> = msgs.split('\n').collect();
-        let metric_count_in_packet = statsd_metric_strings
-            .iter()
-            .filter(|m| !m.is_empty())
-            .count();
-        debug!(
-            "DOGSTATSD_DEBUG | Packet contains {} metric strings",
-            metric_count_in_packet
-        );
-        self.insert_metrics(statsd_metric_strings.into_iter());
     }
+}
 
-    fn prepend_namespace(namespace: &str, metric: &mut Metric) {
-        let new_name = format!("{}.{}", namespace, metric.name);
-        metric.name = ustr::Ustr::from(&new_name);
-        metric.id = id(metric.name, &metric.tags, metric.timestamp);
-    }
-
-    fn insert_metrics<'a, I>(&self, msg: I)
-    where
-        I: Iterator<Item = &'a str>,
-    {
-        let namespace = self.metric_namespace.as_deref();
-        let all_valid_metrics: Vec<Metric> = msg
-            .filter(|m| {
-                !m.is_empty()
-                    && !m.starts_with("_sc|")
-                    && !m.starts_with("_e{")
-                    // todo(serverless): remove this hack, and create a blocklist for metrics
-                    // or another mechanism for this.
-                    //
-                    // avoid metric duplication with lambda layer
-                    && !m.starts_with("aws.lambda.enhanced.invocations")
-            }) // exclude empty messages, service checks, and events
-            .map(|m| m.replace('\n', ""))
-            .filter_map(|m| match parse(m.as_str()) {
-                Ok(metric) => Some(metric),
-                Err(e) => {
-                    // unsupported type is quite common with dd_trace metrics. Avoid perf issue and
-                    // log spam in that case
-                    match e {
-                        UnsupportedType(_) => debug!("Unsupported metric type: {}. {}", m, e),
-                        _ => error!("Failed to parse metric {}: {}", m, e),
+/// Drains packets from the transport into the channel as fast as possible.
+/// The only work done here is the syscall + channel send — all parsing
+/// and aggregation happens on the processor side.
+async fn read_loop(
+    reader: BufferReader,
+    tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, MessageSource)>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            result = reader.read() => {
+                match result {
+                    Ok(packet) => {
+                        if tx.send(packet).is_err() {
+                            break; // processor dropped, shutting down
+                        }
                     }
-                    None
+                    Err(e) => {
+                        error!("DogStatsD read error: {}", e);
+                    }
                 }
-            })
-            .map(|mut metric| {
-                if let Some(ns) = namespace {
-                    Self::prepend_namespace(ns, &mut metric);
-                }
-                metric
-            })
-            .collect();
-        if !all_valid_metrics.is_empty() {
-            debug!(
-                "DOGSTATSD_DEBUG | Parsed {} valid metrics, sending to aggregator",
-                all_valid_metrics.len()
-            );
-            // Send metrics through the channel - no lock needed!
-            if let Err(e) = self.aggregator_handle.insert_batch(all_valid_metrics) {
-                error!("Failed to send metrics to aggregator: {}", e);
             }
+            _ = cancel.cancelled() => break,
+        }
+    }
+}
+
+/// Receives packets from the channel, parses them, and forwards metrics
+/// to the aggregator. On cancellation, drains any remaining buffered
+/// packets before exiting so no already-read data is lost.
+async fn process_loop(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, MessageSource)>,
+    cancel: &tokio_util::sync::CancellationToken,
+    aggregator: &AggregatorHandle,
+    namespace: Option<&str>,
+) {
+    loop {
+        tokio::select! {
+            packet = rx.recv() => {
+                match packet {
+                    Some((buf, src)) => process_packet(&buf, &src, aggregator, namespace),
+                    None => break, // reader exited, channel closed
+                }
+            }
+            _ = cancel.cancelled() => {
+                while let Ok((buf, src)) = rx.try_recv() {
+                    process_packet(&buf, &src, aggregator, namespace);
+                }
+                break;
+            }
+        }
+    }
+}
+
+/// Decodes a raw UDP packet into metric strings and sends them to the aggregator.
+fn process_packet(
+    buf: &[u8],
+    src: &MessageSource,
+    aggregator: &AggregatorHandle,
+    namespace: Option<&str>,
+) {
+    if buf.is_empty() {
+        debug!("Received empty buffer from {}, skipping", src);
+        return;
+    }
+
+    debug!(
+        "DOGSTATSD_DEBUG | Received UDP packet: {} bytes from {}",
+        buf.len(),
+        src
+    );
+
+    #[allow(clippy::expect_used)]
+    let msgs = std::str::from_utf8(buf).expect("couldn't parse as string");
+    trace!("Received message: {} from {}", msgs, src);
+    let statsd_metric_strings: Vec<&str> = msgs.split('\n').collect();
+    let metric_count_in_packet = statsd_metric_strings
+        .iter()
+        .filter(|m| !m.is_empty())
+        .count();
+    debug!(
+        "DOGSTATSD_DEBUG | Packet contains {} metric strings",
+        metric_count_in_packet
+    );
+    insert_metrics(statsd_metric_strings.into_iter(), aggregator, namespace);
+}
+
+fn prepend_namespace(namespace: &str, metric: &mut Metric) {
+    let new_name = format!("{}.{}", namespace, metric.name);
+    metric.name = ustr::Ustr::from(&new_name);
+    metric.id = id(metric.name, &metric.tags, metric.timestamp);
+}
+
+/// Parses metric strings, applies optional namespace, and sends them to the aggregator.
+fn insert_metrics<'a, I>(msg: I, aggregator: &AggregatorHandle, namespace: Option<&str>)
+where
+    I: Iterator<Item = &'a str>,
+{
+    let all_valid_metrics: Vec<Metric> = msg
+        .filter(|m| {
+            !m.is_empty()
+                && !m.starts_with("_sc|")
+                && !m.starts_with("_e{")
+                // todo(serverless): remove this hack, and create a blocklist for metrics
+                // or another mechanism for this.
+                //
+                // avoid metric duplication with lambda layer
+                && !m.starts_with("aws.lambda.enhanced.invocations")
+        }) // exclude empty messages, service checks, and events
+        .map(|m| m.replace('\n', ""))
+        .filter_map(|m| match parse(m.as_str()) {
+            Ok(metric) => Some(metric),
+            Err(e) => {
+                // unsupported type is quite common with dd_trace metrics. Avoid perf issue and
+                // log spam in that case
+                match e {
+                    UnsupportedType(_) => debug!("Unsupported metric type: {}. {}", m, e),
+                    _ => error!("Failed to parse metric {}: {}", m, e),
+                }
+                None
+            }
+        })
+        .map(|mut metric| {
+            if let Some(ns) = namespace {
+                prepend_namespace(ns, &mut metric);
+            }
+            metric
+        })
+        .collect();
+    if !all_valid_metrics.is_empty() {
+        debug!(
+            "DOGSTATSD_DEBUG | Parsed {} valid metrics, sending to aggregator",
+            all_valid_metrics.len()
+        );
+        // Send metrics through the channel - no lock needed!
+        if let Err(e) = aggregator.insert_batch(all_valid_metrics) {
+            error!("Failed to send metrics to aggregator: {}", e);
         }
     }
 }
