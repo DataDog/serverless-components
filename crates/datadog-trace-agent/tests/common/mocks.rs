@@ -51,12 +51,12 @@ impl TraceFlusher for MockTraceFlusher {
         }
     }
 
-    async fn send(&self, _traces: Vec<SendData>) -> Option<Vec<SendData>> {
-        None
+    async fn send(&self, _traces: Vec<SendData>) {
+        // Do nothing - we're not testing the flusher
     }
 
-    async fn flush(&self, _failed_traces: Option<Vec<SendData>>) -> Option<Vec<SendData>> {
-        None
+    async fn flush(&self) {
+        // Do nothing - we're not testing the flusher
     }
 }
 
