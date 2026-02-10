@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
+use socket2::{Domain, Protocol, Socket, Type};
 use tracing::{debug, error, trace};
 
 // Windows-specific imports
@@ -38,6 +39,10 @@ pub struct DogStatsDConfig {
     pub metric_namespace: Option<String>,
     /// Optional Windows named pipe name. (e.g., "\\\\.\\pipe\\my_pipe").
     pub windows_pipe_name: Option<String>,
+    /// Optional socket receive buffer size (SO_RCVBUF) in bytes.
+    /// If None, uses the OS default. Increase this to reduce packet loss under high load.
+    /// Corresponds to `DD_DOGSTATSD_SO_RCVBUF` in the Datadog Agent.
+    pub so_rcvbuf: Option<usize>,
 }
 
 /// Represents the source of a DogStatsD message. Varies by transport method.
@@ -165,10 +170,13 @@ impl DogStatsD {
             // UDP socket for all platforms
             let addr = format!("{}:{}", config.host, config.port);
             // TODO (UDS socket)
+
+            // Use socket2 to create socket with configurable receive buffer size
             #[allow(clippy::expect_used)]
-            let socket = tokio::net::UdpSocket::bind(addr)
+            let socket = create_udp_socket(&addr, config.so_rcvbuf)
                 .await
-                .expect("couldn't bind to address");
+                .expect("couldn't create UDP socket");
+
             BufferReader::UdpSocket(socket)
         };
 
@@ -278,6 +286,44 @@ impl DogStatsD {
             }
         }
     }
+}
+
+async fn create_udp_socket(
+    addr: &str,
+    so_rcvbuf: Option<usize>,
+) -> std::io::Result<tokio::net::UdpSocket> {
+    let socket_addr: SocketAddr = addr.parse().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Invalid address '{}': {}", addr, e),
+        )
+    })?;
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+
+    if let Some(buf_size) = so_rcvbuf {
+        socket.set_recv_buffer_size(buf_size)?;
+
+        // The kernel may cap the value; log what we actually got.
+        let actual = socket.recv_buffer_size().unwrap_or(0);
+        debug!(
+            "DogStatsD SO_RCVBUF: requested={} bytes, actual={} bytes",
+            buf_size, actual
+        );
+    } else {
+        debug!(
+            "DogStatsD using default SO_RCVBUF: {} bytes",
+            socket.recv_buffer_size().unwrap_or(0)
+        );
+    }
+
+    // Required for tokio compatibility
+    socket.set_nonblocking(true)?;
+
+    socket.bind(&socket_addr.into())?;
+
+    let std_socket: std::net::UdpSocket = socket.into();
+    tokio::net::UdpSocket::from_std(std_socket)
 }
 
 /// Named Pipe server - accepts client connections and forwards metrics.

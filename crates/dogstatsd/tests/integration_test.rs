@@ -101,6 +101,7 @@ async fn start_dogstatsd(aggregator_handle: AggregatorHandle) -> CancellationTok
         port: 18125,
         metric_namespace: None,
         windows_pipe_name: None,
+        so_rcvbuf: None,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
     let dogstatsd_client = DogStatsD::new(

@@ -132,8 +132,7 @@ impl AggregatorService {
                     let series = self.aggregator.consume_metrics();
                     let distributions = self.aggregator.consume_distributions();
 
-                    let total_series_metrics: usize =
-                        series.iter().map(|s| s.series.len()).sum();
+                    let total_series_metrics: usize = series.iter().map(|s| s.series.len()).sum();
                     let total_distribution_sketches: usize =
                         distributions.iter().map(|d| d.sketches.len()).sum();
 
