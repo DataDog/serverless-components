@@ -102,6 +102,7 @@ async fn start_dogstatsd(aggregator_handle: AggregatorHandle) -> CancellationTok
         metric_namespace: None,
         windows_pipe_name: None,
         so_rcvbuf: None,
+        buffer_size: None,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
     let dogstatsd_client = DogStatsD::new(

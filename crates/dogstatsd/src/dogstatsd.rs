@@ -23,11 +23,15 @@ use {
     tokio::net::windows::named_pipe::{ClientOptions, ServerOptions},
 };
 
-// DogStatsD buffer size for receiving metrics
-// TODO(astuyve) buf should be dynamic
-// Max buffer size is configurable in Go Agent with a default of 8KB
+// Default buffer size for receiving DogStatsD UDP packets (one recv_from call).
+// Configurable via `DD_DOGSTATSD_DEFAULT_BUFFER_SIZE` in the Go agent.
 // https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
-const BUFFER_SIZE: usize = 8192;
+const DEFAULT_DEFAULT_BUFFER_SIZE: usize = 8192;
+
+// Internal queue capacity between the socket reader and metric processor.
+// Matches the Go agent's `dogstatsd_queue_size` default.
+// At 8 KB per packet this caps user-space buffering at ~8 MB.
+const QUEUE_SIZE: usize = 1024;
 
 /// Configuration for the DogStatsD server
 pub struct DogStatsDConfig {
@@ -43,6 +47,11 @@ pub struct DogStatsDConfig {
     /// If None, uses the OS default. Increase this to reduce packet loss under high load.
     /// Corresponds to `DD_DOGSTATSD_SO_RCVBUF` in the Datadog Agent.
     pub so_rcvbuf: Option<usize>,
+    /// Max size of a single UDP packet read, in bytes. Defaults to 8192.
+    /// Both the server and client must agree — the client must batch metrics
+    /// into packets of this size for the increase to take effect.
+    /// Corresponds to `DD_DOGSTATSD_DEFAULT_BUFFER_SIZE` in the Datadog Agent.
+    pub buffer_size: Option<usize>,
 }
 
 /// Represents the source of a DogStatsD message. Varies by transport method.
@@ -67,8 +76,9 @@ impl std::fmt::Display for MessageSource {
 
 // BufferReader abstracts transport methods for metric data.
 enum BufferReader {
-    /// UDP socket reader (cross-platform, default transport)
-    UdpSocket(tokio::net::UdpSocket),
+    /// UDP socket reader (cross-platform, default transport).
+    /// The `usize` is the per-packet read buffer size.
+    UdpSocket(tokio::net::UdpSocket, usize),
 
     /// Mirror reader for testing - replays a fixed buffer
     #[allow(dead_code)]
@@ -87,16 +97,17 @@ impl BufferReader {
     /// Note: Different transports have different blocking behaviors.
     async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
         match self {
-            BufferReader::UdpSocket(socket) => {
+            BufferReader::UdpSocket(socket, buffer_size) => {
                 // UDP socket: blocks until a packet arrives
-                let mut buf = [0; BUFFER_SIZE];
+                let mut buf = vec![0u8; *buffer_size];
 
                 #[allow(clippy::expect_used)]
                 let (amt, src) = socket
                     .recv_from(&mut buf)
                     .await
                     .expect("didn't receive data");
-                Ok((buf[..amt].to_owned(), MessageSource::Network(src)))
+                buf.truncate(amt);
+                Ok((buf, MessageSource::Network(src)))
             }
             BufferReader::MirrorTest(data, socket) => {
                 // Mirror Reader: returns immediately with stored data
@@ -177,7 +188,8 @@ impl DogStatsD {
                 .await
                 .expect("couldn't create UDP socket");
 
-            BufferReader::UdpSocket(socket)
+            let buf_size = config.buffer_size.unwrap_or(DEFAULT_DEFAULT_BUFFER_SIZE);
+            BufferReader::UdpSocket(socket, buf_size)
         };
 
         DogStatsD {
@@ -190,10 +202,12 @@ impl DogStatsD {
 
     /// Starts the DogStatsD server with a dedicated reader task.
     ///
-    /// Spawns a reader task that drains the socket as fast as possible into an
-    /// unbounded channel, while this task processes packets from the channel.
-    /// This decoupling prevents packet loss when the OS `SO_RCVBUF` is small
-    /// (e.g. Lambda caps it at ~416 KiB) by moving buffering into user space.
+    /// Spawns a reader task that drains the socket into a bounded channel
+    /// (`QUEUE_SIZE` capacity), while this task processes packets from the
+    /// channel. This decoupling prevents packet loss when the OS `SO_RCVBUF`
+    /// is small (e.g. Lambda caps it at ~416 KiB) by moving buffering into
+    /// user space. If the queue fills up, the reader drops packets rather
+    /// than blocking — matching the Go agent's `dogstatsd_queue_size` behavior.
     pub async fn spin(self) {
         let DogStatsD {
             cancel_token,
@@ -202,7 +216,7 @@ impl DogStatsD {
             metric_namespace,
         } = self;
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(QUEUE_SIZE);
 
         let reader_token = cancel_token.clone();
         tokio::spawn(async move {
@@ -237,20 +251,34 @@ impl DogStatsD {
 }
 
 /// Drains packets from the transport into the channel as fast as possible.
-/// The only work done here is the syscall + channel send — all parsing
-/// and aggregation happens on the processor side.
+/// Uses `try_send` so the reader never blocks — if the queue is full,
+/// the packet is dropped and counted. This keeps the socket drained at
+/// syscall speed regardless of how fast the processor consumes.
 async fn read_loop(
     reader: BufferReader,
-    tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, MessageSource)>,
+    tx: tokio::sync::mpsc::Sender<(Vec<u8>, MessageSource)>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
+    let mut dropped: u64 = 0;
     loop {
         tokio::select! {
             result = reader.read() => {
                 match result {
                     Ok(packet) => {
-                        if tx.send(packet).is_err() {
-                            break; // processor dropped, shutting down
+                        match tx.try_send(packet) {
+                            Ok(()) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                dropped += 1;
+                                if dropped.is_power_of_two() {
+                                    debug!(
+                                        "DogStatsD queue full, {} packets dropped so far",
+                                        dropped
+                                    );
+                                }
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                break; // processor dropped, shutting down
+                            }
                         }
                     }
                     Err(e) => {
@@ -261,13 +289,19 @@ async fn read_loop(
             _ = cancel.cancelled() => break,
         }
     }
+    if dropped > 0 {
+        error!(
+            "DogStatsD reader exiting, {} total packets dropped (queue capacity: {})",
+            dropped, QUEUE_SIZE
+        );
+    }
 }
 
 /// Receives packets from the channel, parses them, and forwards metrics
 /// to the aggregator. On cancellation, drains any remaining buffered
 /// packets before exiting so no already-read data is lost.
 async fn process_loop(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, MessageSource)>,
+    rx: &mut tokio::sync::mpsc::Receiver<(Vec<u8>, MessageSource)>,
     cancel: &tokio_util::sync::CancellationToken,
     aggregator: &AggregatorHandle,
     namespace: Option<&str>,
@@ -464,7 +498,7 @@ async fn run_named_pipe_server(
         let cancel_clone = cancel_token.clone();
         let pipe_name_clone = pipe_name.clone();
         tokio::spawn(async move {
-            let mut buf = [0u8; BUFFER_SIZE];
+            let mut buf = [0u8; DEFAULT_BUFFER_SIZE];
             let mut server = server;
             // Byte mode requires manual buffering to handle messages split across reads
             // so let's track where we're writing each read in the buffer
@@ -519,7 +553,7 @@ async fn run_named_pipe_server(
                 start_write_index = end_index - complete_message_size;
 
                 // If the message is bigger than the buffer size, drop it and go on.
-                if start_write_index >= BUFFER_SIZE {
+                if start_write_index >= DEFAULT_BUFFER_SIZE {
                     start_write_index = 0;
                 } else if start_write_index > 0 {
                     // Keep incomplete data in the buffer
