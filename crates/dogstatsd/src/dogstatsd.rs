@@ -24,9 +24,9 @@ use {
 };
 
 // Default buffer size for receiving DogStatsD UDP packets (one recv_from call).
-// Configurable via `DD_DOGSTATSD_DEFAULT_BUFFER_SIZE` in the Go agent.
+// Configurable via `DD_DOGSTATSD_BUFFER_SIZE` in the Go agent.
 // https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
-const DEFAULT_DEFAULT_BUFFER_SIZE: usize = 8192;
+const DEFAULT_BUFFER_SIZE: usize = 8192;
 
 // Internal queue capacity between the socket reader and metric processor.
 // Matches the Go agent's `dogstatsd_queue_size` default.
@@ -50,7 +50,7 @@ pub struct DogStatsDConfig {
     /// Max size of a single UDP packet read, in bytes. Defaults to 8192.
     /// Both the server and client must agree — the client must batch metrics
     /// into packets of this size for the increase to take effect.
-    /// Corresponds to `DD_DOGSTATSD_DEFAULT_BUFFER_SIZE` in the Datadog Agent.
+    /// Corresponds to `DD_DOGSTATSD_BUFFER_SIZE` in the Datadog Agent.
     pub buffer_size: Option<usize>,
 }
 
@@ -77,8 +77,12 @@ impl std::fmt::Display for MessageSource {
 // BufferReader abstracts transport methods for metric data.
 enum BufferReader {
     /// UDP socket reader (cross-platform, default transport).
-    /// The `usize` is the per-packet read buffer size.
-    UdpSocket(tokio::net::UdpSocket, usize),
+    /// Holds a pre-allocated read buffer that is reused across reads
+    /// to avoid per-packet heap allocation + zero-fill overhead.
+    UdpSocket {
+        socket: tokio::net::UdpSocket,
+        buf: Vec<u8>,
+    },
 
     /// Mirror reader for testing - replays a fixed buffer
     #[allow(dead_code)]
@@ -93,40 +97,25 @@ enum BufferReader {
 }
 
 impl BufferReader {
-    /// This is the main entry point for receiving metric data.
-    /// Note: Different transports have different blocking behaviors.
-    async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
+    /// Receives one packet from the transport.
+    /// For UDP, reuses an internal buffer — only the received bytes are copied out.
+    async fn read(&mut self) -> std::io::Result<(Vec<u8>, MessageSource)> {
         match self {
-            BufferReader::UdpSocket(socket, buffer_size) => {
-                // UDP socket: blocks until a packet arrives
-                let mut buf = vec![0u8; *buffer_size];
-
-                #[allow(clippy::expect_used)]
-                let (amt, src) = socket
-                    .recv_from(&mut buf)
-                    .await
-                    .expect("didn't receive data");
-                buf.truncate(amt);
-                Ok((buf, MessageSource::Network(src)))
+            BufferReader::UdpSocket { socket, buf } => {
+                let (amt, src) = socket.recv_from(buf).await?;
+                Ok((buf[..amt].to_vec(), MessageSource::Network(src)))
             }
             BufferReader::MirrorTest(data, socket) => {
-                // Mirror Reader: returns immediately with stored data
                 Ok((data.clone(), MessageSource::Network(*socket)))
             }
             #[cfg(windows)]
             BufferReader::NamedPipe {
                 pipe_name,
                 receiver,
-            } => {
-                // Named Pipe Reader: receives data from client handler tasks
-                match receiver.lock().await.recv().await {
-                    Some(data) => Ok((data, MessageSource::NamedPipe(pipe_name.clone()))),
-                    None => {
-                        // Channel closed - server exited, already triggered cancellation
-                        Ok((Vec::new(), MessageSource::NamedPipe(pipe_name.clone())))
-                    }
-                }
-            }
+            } => match receiver.lock().await.recv().await {
+                Some(data) => Ok((data, MessageSource::NamedPipe(pipe_name.clone()))),
+                None => Ok((Vec::new(), MessageSource::NamedPipe(pipe_name.clone()))),
+            },
         }
     }
 }
@@ -188,8 +177,11 @@ impl DogStatsD {
                 .await
                 .expect("couldn't create UDP socket");
 
-            let buf_size = config.buffer_size.unwrap_or(DEFAULT_DEFAULT_BUFFER_SIZE);
-            BufferReader::UdpSocket(socket, buf_size)
+            let buf_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
+            BufferReader::UdpSocket {
+                socket,
+                buf: vec![0u8; buf_size],
+            }
         };
 
         DogStatsD {
@@ -234,7 +226,7 @@ impl DogStatsD {
 
     /// Process a single buffer from the transport. Used by tests via `MirrorTest`.
     #[cfg(test)]
-    async fn consume_statsd(&self) {
+    async fn consume_statsd(&mut self) {
         #[allow(clippy::expect_used)]
         let (buf, src) = self
             .buffer_reader
@@ -250,12 +242,11 @@ impl DogStatsD {
     }
 }
 
-/// Drains packets from the transport into the channel as fast as possible.
-/// Uses `try_send` so the reader never blocks — if the queue is full,
-/// the packet is dropped and counted. This keeps the socket drained at
-/// syscall speed regardless of how fast the processor consumes.
+/// Drains the transport into the channel as fast as possible.
+/// For UDP, `BufferReader::read` reuses a pre-allocated buffer internally,
+/// so only the received bytes are copied into each channel message.
 async fn read_loop(
-    reader: BufferReader,
+    mut reader: BufferReader,
     tx: tokio::sync::mpsc::Sender<(Vec<u8>, MessageSource)>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
@@ -277,7 +268,7 @@ async fn read_loop(
                                 }
                             }
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                break; // processor dropped, shutting down
+                                break;
                             }
                         }
                     }
@@ -669,7 +660,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
-        let dogstatsd = DogStatsD {
+        let mut dogstatsd = DogStatsD {
             cancel_token,
             aggregator_handle: handle.clone(),
             buffer_reader: BufferReader::MirrorTest(
