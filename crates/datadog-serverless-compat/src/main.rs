@@ -230,6 +230,8 @@ async fn start_dogstatsd(
         port,
         metric_namespace,
         windows_pipe_name,
+        so_rcvbuf: None,
+        buffer_size: None,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
 

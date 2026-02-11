@@ -8,11 +8,11 @@
 //! namespacing, and forwards them to an aggregator for batching and shipping to Datadog.
 
 use std::net::SocketAddr;
-use std::str::Split;
 
 use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
+use socket2::{Domain, Protocol, Socket, Type};
 use tracing::{debug, error, trace};
 
 // Windows-specific imports
@@ -23,11 +23,15 @@ use {
     tokio::net::windows::named_pipe::{ClientOptions, ServerOptions},
 };
 
-// DogStatsD buffer size for receiving metrics
-// TODO(astuyve) buf should be dynamic
-// Max buffer size is configurable in Go Agent with a default of 8KB
+// Default buffer size for receiving DogStatsD UDP packets (one recv_from call).
+// Configurable via `DD_DOGSTATSD_BUFFER_SIZE` in the Go agent.
 // https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
-const BUFFER_SIZE: usize = 8192;
+const DEFAULT_BUFFER_SIZE: usize = 8192;
+
+// Internal queue capacity between the socket reader and metric processor.
+// Matches the Go agent's `dogstatsd_queue_size` default.
+// At 8 KB per packet this caps user-space buffering at ~8 MB.
+const QUEUE_SIZE: usize = 1024;
 
 /// Configuration for the DogStatsD server
 pub struct DogStatsDConfig {
@@ -39,6 +43,15 @@ pub struct DogStatsDConfig {
     pub metric_namespace: Option<String>,
     /// Optional Windows named pipe name. (e.g., "\\\\.\\pipe\\my_pipe").
     pub windows_pipe_name: Option<String>,
+    /// Optional socket receive buffer size (SO_RCVBUF) in bytes.
+    /// If None, uses the OS default. Increase this to reduce packet loss under high load.
+    /// Corresponds to `DD_DOGSTATSD_SO_RCVBUF` in the Datadog Agent.
+    pub so_rcvbuf: Option<usize>,
+    /// Max size of a single UDP packet read, in bytes. Defaults to 8192.
+    /// Both the server and client must agree — the client must batch metrics
+    /// into packets of this size for the increase to take effect.
+    /// Corresponds to `DD_DOGSTATSD_BUFFER_SIZE` in the Datadog Agent.
+    pub buffer_size: Option<usize>,
 }
 
 /// Represents the source of a DogStatsD message. Varies by transport method.
@@ -61,9 +74,24 @@ impl std::fmt::Display for MessageSource {
     }
 }
 
+/// A packet read from the transport, carrying a pooled buffer.
+/// The actual data is `buf[..len]` — the buffer itself is returned
+/// to the pool after processing so it can be reused without allocation.
+struct Packet {
+    buf: Vec<u8>,
+    len: usize,
+    source: MessageSource,
+}
+
+impl Packet {
+    fn data(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+}
+
 // BufferReader abstracts transport methods for metric data.
 enum BufferReader {
-    /// UDP socket reader (cross-platform, default transport)
+    /// UDP socket reader (cross-platform, default transport).
     UdpSocket(tokio::net::UdpSocket),
 
     /// Mirror reader for testing - replays a fixed buffer
@@ -79,39 +107,48 @@ enum BufferReader {
 }
 
 impl BufferReader {
-    /// This is the main entry point for receiving metric data.
-    /// Note: Different transports have different blocking behaviors.
-    async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
+    /// Reads one packet into the provided buffer, waiting if none is available.
+    /// Returns `(bytes_read, source)`. The caller owns the buffer and can
+    /// pass it through a channel without copying.
+    async fn read_into(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, MessageSource)> {
         match self {
             BufferReader::UdpSocket(socket) => {
-                // UDP socket: blocks until a packet arrives
-                let mut buf = [0; BUFFER_SIZE];
-
-                #[allow(clippy::expect_used)]
-                let (amt, src) = socket
-                    .recv_from(&mut buf)
-                    .await
-                    .expect("didn't receive data");
-                Ok((buf[..amt].to_owned(), MessageSource::Network(src)))
+                let (amt, src) = socket.recv_from(buf).await?;
+                Ok((amt, MessageSource::Network(src)))
             }
-            BufferReader::MirrorTest(data, socket) => {
-                // Mirror Reader: returns immediately with stored data
-                Ok((data.clone(), MessageSource::Network(*socket)))
+            BufferReader::MirrorTest(data, addr) => {
+                let len = data.len().min(buf.len());
+                buf[..len].copy_from_slice(&data[..len]);
+                Ok((len, MessageSource::Network(*addr)))
             }
             #[cfg(windows)]
             BufferReader::NamedPipe {
                 pipe_name,
                 receiver,
-            } => {
-                // Named Pipe Reader: receives data from client handler tasks
-                match receiver.lock().await.recv().await {
-                    Some(data) => Ok((data, MessageSource::NamedPipe(pipe_name.clone()))),
-                    None => {
-                        // Channel closed - server exited, already triggered cancellation
-                        Ok((Vec::new(), MessageSource::NamedPipe(pipe_name.clone())))
-                    }
+            } => match receiver.lock().await.recv().await {
+                Some(data) => {
+                    let len = data.len().min(buf.len());
+                    buf[..len].copy_from_slice(&data[..len]);
+                    Ok((len, MessageSource::NamedPipe(pipe_name.clone())))
                 }
-            }
+                None => Ok((0, MessageSource::NamedPipe(pipe_name.clone()))),
+            },
+        }
+    }
+
+    /// Non-blocking read into the provided buffer. Returns `Ok(Some(...))`
+    /// if a packet is immediately available, `Ok(None)` if the socket would
+    /// block. Used after `read_into()` to drain all pending packets from the
+    /// kernel buffer without re-entering tokio's event loop.
+    fn try_read_into(&mut self, buf: &mut [u8]) -> std::io::Result<Option<(usize, MessageSource)>> {
+        match self {
+            BufferReader::UdpSocket(socket) => match socket.try_recv_from(buf) {
+                Ok((amt, src)) => Ok(Some((amt, MessageSource::Network(src)))),
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                Err(e) => Err(e),
+            },
+            // Non-UDP transports don't support non-blocking reads
+            _ => Ok(None),
         }
     }
 }
@@ -122,6 +159,7 @@ pub struct DogStatsD {
     aggregator_handle: AggregatorHandle,
     buffer_reader: BufferReader,
     metric_namespace: Option<String>,
+    buf_size: usize,
 }
 
 impl DogStatsD {
@@ -166,98 +204,322 @@ impl DogStatsD {
             // UDP socket for all platforms
             let addr = format!("{}:{}", config.host, config.port);
             // TODO (UDS socket)
+
+            // Use socket2 to create socket with configurable receive buffer size
             #[allow(clippy::expect_used)]
-            let socket = tokio::net::UdpSocket::bind(addr)
+            let socket = create_udp_socket(&addr, config.so_rcvbuf)
                 .await
-                .expect("couldn't bind to address");
+                .expect("couldn't create UDP socket");
+
             BufferReader::UdpSocket(socket)
         };
+
+        let buf_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
 
         DogStatsD {
             cancel_token,
             aggregator_handle,
             buffer_reader,
             metric_namespace: config.metric_namespace.clone(),
+            buf_size,
         }
     }
 
-    /// Main event loop that continuously receives and processes metrics.
+    /// Starts the DogStatsD server with a dedicated reader task.
+    ///
+    /// Spawns a reader task that drains the socket into a bounded channel
+    /// (`QUEUE_SIZE` capacity), while this task processes packets from the
+    /// channel. This decoupling prevents packet loss when the OS `SO_RCVBUF`
+    /// is small (e.g. Lambda caps it at ~416 KiB) by moving buffering into
+    /// user space. If the queue fills up, the reader drops packets rather
+    /// than blocking — matching the Go agent's `dogstatsd_queue_size` behavior.
     pub async fn spin(self) {
-        let mut spin_cancelled = false;
-        while !spin_cancelled {
-            self.consume_statsd().await;
-            spin_cancelled = self.cancel_token.is_cancelled();
-        }
+        let DogStatsD {
+            cancel_token,
+            aggregator_handle,
+            buffer_reader,
+            metric_namespace,
+            buf_size,
+        } = self;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(QUEUE_SIZE);
+        // Buffer pool: processor returns used buffers, reader reuses them.
+        // Avoids a heap allocation + zero-fill per packet in steady state.
+        let (pool_tx, pool_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let reader_token = cancel_token.clone();
+        tokio::spawn(async move {
+            read_loop(buffer_reader, tx, reader_token, buf_size, pool_rx).await;
+        });
+
+        process_loop(
+            &mut rx,
+            &cancel_token,
+            &aggregator_handle,
+            metric_namespace.as_deref(),
+            pool_tx,
+        )
+        .await;
     }
 
-    /// Receive one batch of metrics from the transport layer and process them.
-    async fn consume_statsd(&self) {
+    /// Process a single buffer from the transport. Used by tests via `MirrorTest`.
+    #[cfg(test)]
+    async fn consume_statsd(&mut self) {
+        let mut buf = vec![0u8; self.buf_size];
         #[allow(clippy::expect_used)]
-        let (buf, src) = self
+        let (len, src) = self
             .buffer_reader
-            .read()
+            .read_into(&mut buf)
             .await
             .expect("didn't receive data");
+        process_packet(
+            &buf[..len],
+            &src,
+            &self.aggregator_handle,
+            self.metric_namespace.as_deref(),
+        );
+    }
+}
 
-        // Skip empty buffers (e.g., from channel close)
-        if buf.is_empty() {
-            debug!("Received empty buffer from {}, skipping", src);
-            return;
+/// Drains the transport into the channel as fast as possible.
+///
+/// Buffers are drawn from a pool (or allocated on first use) and returned by
+/// the processor after parsing. In steady state this means zero heap
+/// allocations in the read loop — only a `recv_from` syscall + channel send.
+///
+/// After each async `read_into()`, calls `try_read_into()` in a tight loop to
+/// drain all packets already sitting in the kernel buffer without re-entering
+/// tokio's event loop.
+///
+/// Uses `is_cancelled()` instead of `tokio::select!` because `process_loop`
+/// already drains remaining channel packets on cancellation — the reader
+/// only needs to stop eventually, not instantly.
+async fn read_loop(
+    mut reader: BufferReader,
+    tx: tokio::sync::mpsc::Sender<Packet>,
+    cancel: tokio_util::sync::CancellationToken,
+    buf_size: usize,
+    mut pool: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+) {
+    let mut dropped: u64 = 0;
+    while !cancel.is_cancelled() {
+        // Get a buffer from the pool, or allocate if the pool is empty (cold start).
+        let mut buf = pool.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
+
+        // Async wait for the first packet
+        let (len, source) = match reader.read_into(&mut buf).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!("DogStatsD read error: {}", e);
+                continue;
+            }
+        };
+        if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped) {
+            break;
         }
 
-        #[allow(clippy::expect_used)]
-        let msgs = std::str::from_utf8(&buf).expect("couldn't parse as string");
-        trace!("Received message: {} from {}", msgs, src);
-        let statsd_metric_strings = msgs.split('\n');
-        self.insert_metrics(statsd_metric_strings);
-    }
-
-    fn prepend_namespace(namespace: &str, metric: &mut Metric) {
-        let new_name = format!("{}.{}", namespace, metric.name);
-        metric.name = ustr::Ustr::from(&new_name);
-        metric.id = id(metric.name, &metric.tags, metric.timestamp);
-    }
-
-    fn insert_metrics(&self, msg: Split<char>) {
-        let namespace = self.metric_namespace.as_deref();
-        let all_valid_metrics: Vec<Metric> = msg
-            .filter(|m| {
-                !m.is_empty()
-                    && !m.starts_with("_sc|")
-                    && !m.starts_with("_e{")
-                    // todo(serverless): remove this hack, and create a blocklist for metrics
-                    // or another mechanism for this.
-                    //
-                    // avoid metric duplication with lambda layer
-                    && !m.starts_with("aws.lambda.enhanced.invocations")
-            }) // exclude empty messages, service checks, and events
-            .map(|m| m.replace('\n', ""))
-            .filter_map(|m| match parse(m.as_str()) {
-                Ok(metric) => Some(metric),
-                Err(e) => {
-                    // unsupported type is quite common with dd_trace metrics. Avoid perf issue and
-                    // log spam in that case
-                    match e {
-                        UnsupportedType(_) => debug!("Unsupported metric type: {}. {}", m, e),
-                        _ => error!("Failed to parse metric {}: {}", m, e),
+        // Drain any packets already in the kernel buffer without going
+        // through tokio's event loop — just raw non-blocking syscalls.
+        loop {
+            let mut buf = pool.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
+            match reader.try_read_into(&mut buf) {
+                Ok(Some((len, source))) => {
+                    if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped) {
+                        break;
                     }
-                    None
                 }
-            })
-            .map(|mut metric| {
-                if let Some(ns) = namespace {
-                    Self::prepend_namespace(ns, &mut metric);
+                Ok(None) => break, // No more pending packets
+                Err(e) => {
+                    error!("DogStatsD read error: {}", e);
+                    break;
                 }
-                metric
-            })
-            .collect();
-        if !all_valid_metrics.is_empty() {
-            // Send metrics through the channel - no lock needed!
-            if let Err(e) = self.aggregator_handle.insert_batch(all_valid_metrics) {
-                error!("Failed to send metrics to aggregator: {}", e);
             }
         }
     }
+    if dropped > 0 {
+        error!(
+            "DogStatsD reader exiting, {} total packets dropped (queue capacity: {})",
+            dropped, QUEUE_SIZE
+        );
+    }
+}
+
+/// Sends a packet to the channel. Returns `false` if the channel is closed
+/// (caller should exit the loop).
+fn try_send_packet(
+    tx: &tokio::sync::mpsc::Sender<Packet>,
+    packet: Packet,
+    dropped: &mut u64,
+) -> bool {
+    match tx.try_send(packet) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            *dropped += 1;
+            if dropped.is_power_of_two() {
+                debug!("DogStatsD queue full, {} packets dropped so far", *dropped);
+            }
+            true
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
+/// Receives packets from the channel, parses them, and forwards metrics
+/// to the aggregator. After processing each packet, returns the buffer to
+/// the pool for reuse by the reader. On cancellation, drains any remaining
+/// buffered packets before exiting so no already-read data is lost.
+async fn process_loop(
+    rx: &mut tokio::sync::mpsc::Receiver<Packet>,
+    cancel: &tokio_util::sync::CancellationToken,
+    aggregator: &AggregatorHandle,
+    namespace: Option<&str>,
+    pool: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+) {
+    loop {
+        tokio::select! {
+            packet = rx.recv() => {
+                match packet {
+                    Some(packet) => {
+                        process_packet(packet.data(), &packet.source, aggregator, namespace);
+                        let _ = pool.send(packet.buf);
+                    }
+                    None => break,
+                }
+            }
+            _ = cancel.cancelled() => {
+                while let Ok(packet) = rx.try_recv() {
+                    process_packet(packet.data(), &packet.source, aggregator, namespace);
+                    let _ = pool.send(packet.buf);
+                }
+                break;
+            }
+        }
+    }
+}
+
+/// Decodes a raw UDP packet into metric strings and sends them to the aggregator.
+fn process_packet(
+    buf: &[u8],
+    src: &MessageSource,
+    aggregator: &AggregatorHandle,
+    namespace: Option<&str>,
+) {
+    if buf.is_empty() {
+        debug!("Received empty buffer from {}, skipping", src);
+        return;
+    }
+
+    debug!(
+        "DOGSTATSD_DEBUG | Received UDP packet: {} bytes from {}",
+        buf.len(),
+        src
+    );
+
+    #[allow(clippy::expect_used)]
+    let msgs = std::str::from_utf8(buf).expect("couldn't parse as string");
+    trace!("Received message: {} from {}", msgs, src);
+    let statsd_metric_strings: Vec<&str> = msgs.split('\n').collect();
+    let metric_count_in_packet = statsd_metric_strings
+        .iter()
+        .filter(|m| !m.is_empty())
+        .count();
+    debug!(
+        "DOGSTATSD_DEBUG | Packet contains {} metric strings",
+        metric_count_in_packet
+    );
+    insert_metrics(statsd_metric_strings.into_iter(), aggregator, namespace);
+}
+
+fn prepend_namespace(namespace: &str, metric: &mut Metric) {
+    let new_name = format!("{}.{}", namespace, metric.name);
+    metric.name = ustr::Ustr::from(&new_name);
+    metric.id = id(metric.name, &metric.tags, metric.timestamp);
+}
+
+/// Parses metric strings, applies optional namespace, and sends them to the aggregator.
+fn insert_metrics<'a, I>(msg: I, aggregator: &AggregatorHandle, namespace: Option<&str>)
+where
+    I: Iterator<Item = &'a str>,
+{
+    let all_valid_metrics: Vec<Metric> = msg
+        .filter(|m| {
+            !m.is_empty()
+                && !m.starts_with("_sc|")
+                && !m.starts_with("_e{")
+                // todo(serverless): remove this hack, and create a blocklist for metrics
+                // or another mechanism for this.
+                //
+                // avoid metric duplication with lambda layer
+                && !m.starts_with("aws.lambda.enhanced.invocations")
+        }) // exclude empty messages, service checks, and events
+        .map(|m| m.replace('\n', ""))
+        .filter_map(|m| match parse(m.as_str()) {
+            Ok(metric) => Some(metric),
+            Err(e) => {
+                // unsupported type is quite common with dd_trace metrics. Avoid perf issue and
+                // log spam in that case
+                match e {
+                    UnsupportedType(_) => debug!("Unsupported metric type: {}. {}", m, e),
+                    _ => error!("Failed to parse metric {}: {}", m, e),
+                }
+                None
+            }
+        })
+        .map(|mut metric| {
+            if let Some(ns) = namespace {
+                prepend_namespace(ns, &mut metric);
+            }
+            metric
+        })
+        .collect();
+    if !all_valid_metrics.is_empty() {
+        debug!(
+            "DOGSTATSD_DEBUG | Parsed {} valid metrics, sending to aggregator",
+            all_valid_metrics.len()
+        );
+        // Send metrics through the channel - no lock needed!
+        if let Err(e) = aggregator.insert_batch(all_valid_metrics) {
+            error!("Failed to send metrics to aggregator: {}", e);
+        }
+    }
+}
+
+async fn create_udp_socket(
+    addr: &str,
+    so_rcvbuf: Option<usize>,
+) -> std::io::Result<tokio::net::UdpSocket> {
+    let socket_addr: SocketAddr = addr.parse().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Invalid address '{}': {}", addr, e),
+        )
+    })?;
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+
+    if let Some(buf_size) = so_rcvbuf {
+        socket.set_recv_buffer_size(buf_size)?;
+
+        // The kernel may cap the value; log what we actually got.
+        let actual = socket.recv_buffer_size().unwrap_or(0);
+        debug!(
+            "DogStatsD SO_RCVBUF: requested={} bytes, actual={} bytes",
+            buf_size, actual
+        );
+    } else {
+        debug!(
+            "DogStatsD using default SO_RCVBUF: {} bytes",
+            socket.recv_buffer_size().unwrap_or(0)
+        );
+    }
+
+    // Required for tokio compatibility
+    socket.set_nonblocking(true)?;
+
+    socket.bind(&socket_addr.into())?;
+
+    let std_socket: std::net::UdpSocket = socket.into();
+    tokio::net::UdpSocket::from_std(std_socket)
 }
 
 /// Named Pipe server - accepts client connections and forwards metrics.
@@ -309,7 +571,7 @@ async fn run_named_pipe_server(
         let cancel_clone = cancel_token.clone();
         let pipe_name_clone = pipe_name.clone();
         tokio::spawn(async move {
-            let mut buf = [0u8; BUFFER_SIZE];
+            let mut buf = [0u8; DEFAULT_BUFFER_SIZE];
             let mut server = server;
             // Byte mode requires manual buffering to handle messages split across reads
             // so let's track where we're writing each read in the buffer
@@ -364,7 +626,7 @@ async fn run_named_pipe_server(
                 start_write_index = end_index - complete_message_size;
 
                 // If the message is bigger than the buffer size, drop it and go on.
-                if start_write_index >= BUFFER_SIZE {
+                if start_write_index >= DEFAULT_BUFFER_SIZE {
                     start_write_index = 0;
                 } else if start_write_index > 0 {
                     // Keep incomplete data in the buffer
@@ -480,7 +742,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
-        let dogstatsd = DogStatsD {
+        let mut dogstatsd = DogStatsD {
             cancel_token,
             aggregator_handle: handle.clone(),
             buffer_reader: BufferReader::MirrorTest(
@@ -488,6 +750,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
             ),
             metric_namespace,
+            buf_size: super::DEFAULT_BUFFER_SIZE,
         };
         dogstatsd.consume_statsd().await;
 

@@ -117,6 +117,18 @@ impl Aggregator {
         self.map.clear();
     }
 
+    /// Returns the current number of unique metric contexts in the aggregator.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Returns true if the aggregator has no metrics.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
     #[must_use]
     pub fn distributions_to_protobuf(&self) -> SketchPayload {
         let mut sketch_payload = SketchPayload::new();
