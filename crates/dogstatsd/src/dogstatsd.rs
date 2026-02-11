@@ -243,6 +243,12 @@ impl DogStatsD {
 }
 
 /// Drains the transport into the channel as fast as possible.
+///
+/// Uses a simple `is_cancelled()` check instead of `tokio::select!` to avoid
+/// setting up a cancellation future on every iteration. This is safe because
+/// `process_loop` already drains remaining channel packets on cancellation,
+/// so the reader only needs to stop *eventually*, not instantly.
+///
 /// For UDP, `BufferReader::read` reuses a pre-allocated buffer internally,
 /// so only the received bytes are copied into each channel message.
 async fn read_loop(
@@ -251,33 +257,26 @@ async fn read_loop(
     cancel: tokio_util::sync::CancellationToken,
 ) {
     let mut dropped: u64 = 0;
-    loop {
-        tokio::select! {
-            result = reader.read() => {
-                match result {
-                    Ok(packet) => {
-                        match tx.try_send(packet) {
-                            Ok(()) => {}
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                dropped += 1;
-                                if dropped.is_power_of_two() {
-                                    debug!(
-                                        "DogStatsD queue full, {} packets dropped so far",
-                                        dropped
-                                    );
-                                }
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("DogStatsD read error: {}", e);
-                    }
+    while !cancel.is_cancelled() {
+        let packet = match reader.read().await {
+            Ok(packet) => packet,
+            Err(e) => {
+                error!("DogStatsD read error: {}", e);
+                continue;
+            }
+        };
+        match tx.try_send(packet) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                dropped += 1;
+                if dropped.is_power_of_two() {
+                    debug!(
+                        "DogStatsD queue full, {} packets dropped so far",
+                        dropped
+                    );
                 }
             }
-            _ = cancel.cancelled() => break,
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
         }
     }
     if dropped > 0 {
