@@ -20,11 +20,10 @@ use tracing::{debug, error, trace};
 #[cfg(all(windows, feature = "windows-pipes"))]
 use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
 
-// DogStatsD buffer size for receiving metrics
-// TODO(astuyve) buf should be dynamic
-// Max buffer size is configurable in Go Agent with a default of 8KB
+// Default buffer size for receiving DogStatsD UDP packets (one recv_from call).
+// Configurable via `DD_DOGSTATSD_BUFFER_SIZE` in the Go agent.
 // https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
-const BUFFER_SIZE: usize = 8192;
+const DEFAULT_BUFFER_SIZE: usize = 8192;
 
 /// Configuration for the DogStatsD server
 pub struct DogStatsDConfig {
@@ -40,6 +39,11 @@ pub struct DogStatsDConfig {
     /// Optional socket receive buffer size (SO_RCVBUF) in bytes.
     /// If None, uses the OS default. Increase this to reduce packet loss under high load.
     pub so_rcvbuf: Option<usize>,
+    /// Max size of a single UDP packet read, in bytes. Defaults to 8192.
+    /// Both the server and client must agree — the client must batch metrics
+    /// into packets of this size for the increase to take effect.
+    /// Corresponds to `DD_DOGSTATSD_BUFFER_SIZE` in the Datadog Agent.
+    pub buffer_size: Option<usize>,
 }
 
 /// Represents the source of a DogStatsD message. Varies by transport method.
@@ -82,11 +86,11 @@ enum BufferReader {
 impl BufferReader {
     /// This is the main entry point for receiving metric data.
     /// Note: Different transports have different blocking behaviors.
-    async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
+    async fn read(&self, buf_size: usize) -> std::io::Result<(Vec<u8>, MessageSource)> {
         match self {
             BufferReader::UdpSocket(socket) => {
                 // UDP socket: blocks until a packet arrives
-                let mut buf = [0; BUFFER_SIZE];
+                let mut buf = vec![0u8; buf_size];
 
                 #[allow(clippy::expect_used)]
                 let (amt, src) = socket
@@ -123,6 +127,7 @@ pub struct DogStatsD {
     aggregator_handle: AggregatorHandle,
     buffer_reader: BufferReader,
     metric_namespace: Option<String>,
+    buf_size: usize,
 }
 
 impl DogStatsD {
@@ -184,11 +189,14 @@ impl DogStatsD {
             BufferReader::UdpSocket(socket)
         };
 
+        let buf_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
+
         DogStatsD {
             cancel_token,
             aggregator_handle,
             buffer_reader,
             metric_namespace: config.metric_namespace.clone(),
+            buf_size,
         }
     }
 
@@ -206,7 +214,7 @@ impl DogStatsD {
         #[allow(clippy::expect_used)]
         let (buf, src) = self
             .buffer_reader
-            .read()
+            .read(self.buf_size)
             .await
             .expect("didn't receive data");
 
@@ -367,7 +375,7 @@ async fn run_named_pipe_server(
         let cancel_clone = cancel_token.clone();
         let pipe_name_clone = pipe_name.clone();
         tokio::spawn(async move {
-            let mut buf = [0u8; BUFFER_SIZE];
+            let mut buf = [0u8; DEFAULT_BUFFER_SIZE];
             let mut server = server;
             // Byte mode requires manual buffering to handle messages split across reads
             // so let's track where we're writing each read in the buffer
@@ -422,7 +430,7 @@ async fn run_named_pipe_server(
                 start_write_index = end_index - complete_message_size;
 
                 // If the message is bigger than the buffer size, drop it and go on.
-                if start_write_index >= BUFFER_SIZE {
+                if start_write_index >= DEFAULT_BUFFER_SIZE {
                     start_write_index = 0;
                 } else if start_write_index > 0 {
                     // Keep incomplete data in the buffer
@@ -574,6 +582,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
             ),
             metric_namespace,
+            buf_size: super::DEFAULT_BUFFER_SIZE,
         };
         dogstatsd.consume_statsd().await;
 
