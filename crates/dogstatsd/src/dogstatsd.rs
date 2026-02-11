@@ -74,15 +74,25 @@ impl std::fmt::Display for MessageSource {
     }
 }
 
+/// A packet read from the transport, carrying a pooled buffer.
+/// The actual data is `buf[..len]` — the buffer itself is returned
+/// to the pool after processing so it can be reused without allocation.
+struct Packet {
+    buf: Vec<u8>,
+    len: usize,
+    source: MessageSource,
+}
+
+impl Packet {
+    fn data(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+}
+
 // BufferReader abstracts transport methods for metric data.
 enum BufferReader {
     /// UDP socket reader (cross-platform, default transport).
-    /// Holds a pre-allocated read buffer that is reused across reads
-    /// to avoid per-packet heap allocation + zero-fill overhead.
-    UdpSocket {
-        socket: tokio::net::UdpSocket,
-        buf: Vec<u8>,
-    },
+    UdpSocket(tokio::net::UdpSocket),
 
     /// Mirror reader for testing - replays a fixed buffer
     #[allow(dead_code)]
@@ -97,36 +107,43 @@ enum BufferReader {
 }
 
 impl BufferReader {
-    /// Receives one packet from the transport, waiting if none is available.
-    /// For UDP, reuses an internal buffer — only the received bytes are copied out.
-    async fn read(&mut self) -> std::io::Result<(Vec<u8>, MessageSource)> {
+    /// Reads one packet into the provided buffer, waiting if none is available.
+    /// Returns `(bytes_read, source)`. The caller owns the buffer and can
+    /// pass it through a channel without copying.
+    async fn read_into(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, MessageSource)> {
         match self {
-            BufferReader::UdpSocket { socket, buf } => {
+            BufferReader::UdpSocket(socket) => {
                 let (amt, src) = socket.recv_from(buf).await?;
-                Ok((buf[..amt].to_vec(), MessageSource::Network(src)))
+                Ok((amt, MessageSource::Network(src)))
             }
-            BufferReader::MirrorTest(data, socket) => {
-                Ok((data.clone(), MessageSource::Network(*socket)))
+            BufferReader::MirrorTest(data, addr) => {
+                let len = data.len().min(buf.len());
+                buf[..len].copy_from_slice(&data[..len]);
+                Ok((len, MessageSource::Network(*addr)))
             }
             #[cfg(windows)]
             BufferReader::NamedPipe {
                 pipe_name,
                 receiver,
             } => match receiver.lock().await.recv().await {
-                Some(data) => Ok((data, MessageSource::NamedPipe(pipe_name.clone()))),
-                None => Ok((Vec::new(), MessageSource::NamedPipe(pipe_name.clone()))),
+                Some(data) => {
+                    let len = data.len().min(buf.len());
+                    buf[..len].copy_from_slice(&data[..len]);
+                    Ok((len, MessageSource::NamedPipe(pipe_name.clone())))
+                }
+                None => Ok((0, MessageSource::NamedPipe(pipe_name.clone()))),
             },
         }
     }
 
-    /// Non-blocking read: returns `Ok(Some(...))` if a packet is immediately
-    /// available, `Ok(None)` if the socket would block. Used after `read()` to
-    /// drain all pending packets from the kernel buffer without re-entering
-    /// tokio's event loop between each one.
-    fn try_read(&mut self) -> std::io::Result<Option<(Vec<u8>, MessageSource)>> {
+    /// Non-blocking read into the provided buffer. Returns `Ok(Some(...))`
+    /// if a packet is immediately available, `Ok(None)` if the socket would
+    /// block. Used after `read_into()` to drain all pending packets from the
+    /// kernel buffer without re-entering tokio's event loop.
+    fn try_read_into(&mut self, buf: &mut [u8]) -> std::io::Result<Option<(usize, MessageSource)>> {
         match self {
-            BufferReader::UdpSocket { socket, buf } => match socket.try_recv_from(buf) {
-                Ok((amt, src)) => Ok(Some((buf[..amt].to_vec(), MessageSource::Network(src)))),
+            BufferReader::UdpSocket(socket) => match socket.try_recv_from(buf) {
+                Ok((amt, src)) => Ok(Some((amt, MessageSource::Network(src)))),
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
                 Err(e) => Err(e),
             },
@@ -142,6 +159,7 @@ pub struct DogStatsD {
     aggregator_handle: AggregatorHandle,
     buffer_reader: BufferReader,
     metric_namespace: Option<String>,
+    buf_size: usize,
 }
 
 impl DogStatsD {
@@ -193,18 +211,17 @@ impl DogStatsD {
                 .await
                 .expect("couldn't create UDP socket");
 
-            let buf_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
-            BufferReader::UdpSocket {
-                socket,
-                buf: vec![0u8; buf_size],
-            }
+            BufferReader::UdpSocket(socket)
         };
+
+        let buf_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
 
         DogStatsD {
             cancel_token,
             aggregator_handle,
             buffer_reader,
             metric_namespace: config.metric_namespace.clone(),
+            buf_size,
         }
     }
 
@@ -222,13 +239,17 @@ impl DogStatsD {
             aggregator_handle,
             buffer_reader,
             metric_namespace,
+            buf_size,
         } = self;
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(QUEUE_SIZE);
+        // Buffer pool: processor returns used buffers, reader reuses them.
+        // Avoids a heap allocation + zero-fill per packet in steady state.
+        let (pool_tx, pool_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let reader_token = cancel_token.clone();
         tokio::spawn(async move {
-            read_loop(buffer_reader, tx, reader_token).await;
+            read_loop(buffer_reader, tx, reader_token, buf_size, pool_rx).await;
         });
 
         process_loop(
@@ -236,6 +257,7 @@ impl DogStatsD {
             &cancel_token,
             &aggregator_handle,
             metric_namespace.as_deref(),
+            pool_tx,
         )
         .await;
     }
@@ -243,14 +265,15 @@ impl DogStatsD {
     /// Process a single buffer from the transport. Used by tests via `MirrorTest`.
     #[cfg(test)]
     async fn consume_statsd(&mut self) {
+        let mut buf = vec![0u8; self.buf_size];
         #[allow(clippy::expect_used)]
-        let (buf, src) = self
+        let (len, src) = self
             .buffer_reader
-            .read()
+            .read_into(&mut buf)
             .await
             .expect("didn't receive data");
         process_packet(
-            &buf,
+            &buf[..len],
             &src,
             &self.aggregator_handle,
             self.metric_namespace.as_deref(),
@@ -260,43 +283,52 @@ impl DogStatsD {
 
 /// Drains the transport into the channel as fast as possible.
 ///
-/// After each async `read()`, calls `try_read()` in a tight loop to drain
-/// all packets already sitting in the kernel buffer without re-entering
-/// tokio's event loop. During a burst this avoids the overhead of
-/// epoll/kqueue wakeup + poll cycle between packets that are already available.
+/// Buffers are drawn from a pool (or allocated on first use) and returned by
+/// the processor after parsing. In steady state this means zero heap
+/// allocations in the read loop — only a `recv_from` syscall + channel send.
+///
+/// After each async `read_into()`, calls `try_read_into()` in a tight loop to
+/// drain all packets already sitting in the kernel buffer without re-entering
+/// tokio's event loop.
 ///
 /// Uses `is_cancelled()` instead of `tokio::select!` because `process_loop`
 /// already drains remaining channel packets on cancellation — the reader
 /// only needs to stop eventually, not instantly.
 async fn read_loop(
     mut reader: BufferReader,
-    tx: tokio::sync::mpsc::Sender<(Vec<u8>, MessageSource)>,
+    tx: tokio::sync::mpsc::Sender<Packet>,
     cancel: tokio_util::sync::CancellationToken,
+    buf_size: usize,
+    mut pool: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
 ) {
     let mut dropped: u64 = 0;
     while !cancel.is_cancelled() {
+        // Get a buffer from the pool, or allocate if the pool is empty (cold start).
+        let mut buf = pool.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
+
         // Async wait for the first packet
-        let packet = match reader.read().await {
-            Ok(packet) => packet,
+        let (len, source) = match reader.read_into(&mut buf).await {
+            Ok(r) => r,
             Err(e) => {
                 error!("DogStatsD read error: {}", e);
                 continue;
             }
         };
-        if !try_send(&tx, packet, &mut dropped) {
+        if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped) {
             break;
         }
 
         // Drain any packets already in the kernel buffer without going
         // through tokio's event loop — just raw non-blocking syscalls.
         loop {
-            match reader.try_read() {
-                Ok(Some(packet)) => {
-                    if !try_send(&tx, packet, &mut dropped) {
+            let mut buf = pool.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
+            match reader.try_read_into(&mut buf) {
+                Ok(Some((len, source))) => {
+                    if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped) {
                         break;
                     }
                 }
-                Ok(None) => break,  // No more pending packets
+                Ok(None) => break, // No more pending packets
                 Err(e) => {
                     error!("DogStatsD read error: {}", e);
                     break;
@@ -314,9 +346,9 @@ async fn read_loop(
 
 /// Sends a packet to the channel. Returns `false` if the channel is closed
 /// (caller should exit the loop).
-fn try_send(
-    tx: &tokio::sync::mpsc::Sender<(Vec<u8>, MessageSource)>,
-    packet: (Vec<u8>, MessageSource),
+fn try_send_packet(
+    tx: &tokio::sync::mpsc::Sender<Packet>,
+    packet: Packet,
     dropped: &mut u64,
 ) -> bool {
     match tx.try_send(packet) {
@@ -324,10 +356,7 @@ fn try_send(
         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
             *dropped += 1;
             if dropped.is_power_of_two() {
-                debug!(
-                    "DogStatsD queue full, {} packets dropped so far",
-                    *dropped
-                );
+                debug!("DogStatsD queue full, {} packets dropped so far", *dropped);
             }
             true
         }
@@ -336,25 +365,31 @@ fn try_send(
 }
 
 /// Receives packets from the channel, parses them, and forwards metrics
-/// to the aggregator. On cancellation, drains any remaining buffered
-/// packets before exiting so no already-read data is lost.
+/// to the aggregator. After processing each packet, returns the buffer to
+/// the pool for reuse by the reader. On cancellation, drains any remaining
+/// buffered packets before exiting so no already-read data is lost.
 async fn process_loop(
-    rx: &mut tokio::sync::mpsc::Receiver<(Vec<u8>, MessageSource)>,
+    rx: &mut tokio::sync::mpsc::Receiver<Packet>,
     cancel: &tokio_util::sync::CancellationToken,
     aggregator: &AggregatorHandle,
     namespace: Option<&str>,
+    pool: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
 ) {
     loop {
         tokio::select! {
             packet = rx.recv() => {
                 match packet {
-                    Some((buf, src)) => process_packet(&buf, &src, aggregator, namespace),
-                    None => break, // reader exited, channel closed
+                    Some(packet) => {
+                        process_packet(packet.data(), &packet.source, aggregator, namespace);
+                        let _ = pool.send(packet.buf);
+                    }
+                    None => break,
                 }
             }
             _ = cancel.cancelled() => {
-                while let Ok((buf, src)) = rx.try_recv() {
-                    process_packet(&buf, &src, aggregator, namespace);
+                while let Ok(packet) = rx.try_recv() {
+                    process_packet(packet.data(), &packet.source, aggregator, namespace);
+                    let _ = pool.send(packet.buf);
                 }
                 break;
             }
@@ -715,6 +750,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
             ),
             metric_namespace,
+            buf_size: super::DEFAULT_BUFFER_SIZE,
         };
         dogstatsd.consume_statsd().await;
 
