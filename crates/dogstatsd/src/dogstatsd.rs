@@ -97,7 +97,7 @@ enum BufferReader {
 }
 
 impl BufferReader {
-    /// Receives one packet from the transport.
+    /// Receives one packet from the transport, waiting if none is available.
     /// For UDP, reuses an internal buffer — only the received bytes are copied out.
     async fn read(&mut self) -> std::io::Result<(Vec<u8>, MessageSource)> {
         match self {
@@ -116,6 +116,22 @@ impl BufferReader {
                 Some(data) => Ok((data, MessageSource::NamedPipe(pipe_name.clone()))),
                 None => Ok((Vec::new(), MessageSource::NamedPipe(pipe_name.clone()))),
             },
+        }
+    }
+
+    /// Non-blocking read: returns `Ok(Some(...))` if a packet is immediately
+    /// available, `Ok(None)` if the socket would block. Used after `read()` to
+    /// drain all pending packets from the kernel buffer without re-entering
+    /// tokio's event loop between each one.
+    fn try_read(&mut self) -> std::io::Result<Option<(Vec<u8>, MessageSource)>> {
+        match self {
+            BufferReader::UdpSocket { socket, buf } => match socket.try_recv_from(buf) {
+                Ok((amt, src)) => Ok(Some((buf[..amt].to_vec(), MessageSource::Network(src)))),
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                Err(e) => Err(e),
+            },
+            // Non-UDP transports don't support non-blocking reads
+            _ => Ok(None),
         }
     }
 }
@@ -244,13 +260,14 @@ impl DogStatsD {
 
 /// Drains the transport into the channel as fast as possible.
 ///
-/// Uses a simple `is_cancelled()` check instead of `tokio::select!` to avoid
-/// setting up a cancellation future on every iteration. This is safe because
-/// `process_loop` already drains remaining channel packets on cancellation,
-/// so the reader only needs to stop *eventually*, not instantly.
+/// After each async `read()`, calls `try_read()` in a tight loop to drain
+/// all packets already sitting in the kernel buffer without re-entering
+/// tokio's event loop. During a burst this avoids the overhead of
+/// epoll/kqueue wakeup + poll cycle between packets that are already available.
 ///
-/// For UDP, `BufferReader::read` reuses a pre-allocated buffer internally,
-/// so only the received bytes are copied into each channel message.
+/// Uses `is_cancelled()` instead of `tokio::select!` because `process_loop`
+/// already drains remaining channel packets on cancellation — the reader
+/// only needs to stop eventually, not instantly.
 async fn read_loop(
     mut reader: BufferReader,
     tx: tokio::sync::mpsc::Sender<(Vec<u8>, MessageSource)>,
@@ -258,6 +275,7 @@ async fn read_loop(
 ) {
     let mut dropped: u64 = 0;
     while !cancel.is_cancelled() {
+        // Async wait for the first packet
         let packet = match reader.read().await {
             Ok(packet) => packet,
             Err(e) => {
@@ -265,18 +283,25 @@ async fn read_loop(
                 continue;
             }
         };
-        match tx.try_send(packet) {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                dropped += 1;
-                if dropped.is_power_of_two() {
-                    debug!(
-                        "DogStatsD queue full, {} packets dropped so far",
-                        dropped
-                    );
+        if !try_send(&tx, packet, &mut dropped) {
+            break;
+        }
+
+        // Drain any packets already in the kernel buffer without going
+        // through tokio's event loop — just raw non-blocking syscalls.
+        loop {
+            match reader.try_read() {
+                Ok(Some(packet)) => {
+                    if !try_send(&tx, packet, &mut dropped) {
+                        break;
+                    }
+                }
+                Ok(None) => break,  // No more pending packets
+                Err(e) => {
+                    error!("DogStatsD read error: {}", e);
+                    break;
                 }
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
         }
     }
     if dropped > 0 {
@@ -284,6 +309,29 @@ async fn read_loop(
             "DogStatsD reader exiting, {} total packets dropped (queue capacity: {})",
             dropped, QUEUE_SIZE
         );
+    }
+}
+
+/// Sends a packet to the channel. Returns `false` if the channel is closed
+/// (caller should exit the loop).
+fn try_send(
+    tx: &tokio::sync::mpsc::Sender<(Vec<u8>, MessageSource)>,
+    packet: (Vec<u8>, MessageSource),
+    dropped: &mut u64,
+) -> bool {
+    match tx.try_send(packet) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            *dropped += 1;
+            if dropped.is_power_of_two() {
+                debug!(
+                    "DogStatsD queue full, {} packets dropped so far",
+                    *dropped
+                );
+            }
+            true
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
     }
 }
 
