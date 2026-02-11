@@ -178,7 +178,7 @@ pub async fn main() {
             https_proxy,
             dogstatsd_tags,
             dd_statsd_metric_namespace,
-            #[cfg(feature = "windows-pipes")]
+            #[cfg(all(windows, feature = "windows-pipes"))]
             dd_dogstatsd_windows_pipe_name.clone(),
         )
         .await;
@@ -213,7 +213,7 @@ async fn start_dogstatsd(
     https_proxy: Option<String>,
     dogstatsd_tags: &str,
     metric_namespace: Option<String>,
-    #[cfg(feature = "windows-pipes")] windows_pipe_name: Option<String>,
+    #[cfg(all(windows, feature = "windows-pipes"))] windows_pipe_name: Option<String>,
 ) -> (CancellationToken, Option<Flusher>, AggregatorHandle) {
     // 1. Create the aggregator service
     #[allow(clippy::expect_used)]
@@ -230,7 +230,7 @@ async fn start_dogstatsd(
         host: AGENT_HOST.to_string(),
         port,
         metric_namespace,
-        #[cfg(feature = "windows-pipes")]
+        #[cfg(all(windows, feature = "windows-pipes"))]
         windows_pipe_name,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();

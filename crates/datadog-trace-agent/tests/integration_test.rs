@@ -24,10 +24,10 @@ pub fn create_tcp_test_config() -> Config {
     Config {
         dd_site: "mock-datadoghq.com".to_string(),
         dd_apm_receiver_port: 8126,
-        #[cfg(feature = "windows-pipes")]
+        #[cfg(all(windows, feature = "windows-pipes"))]
         dd_apm_windows_pipe_name: None,
         dd_dogstatsd_port: 8125,
-        #[cfg(feature = "windows-pipes")]
+        #[cfg(all(windows, feature = "windows-pipes"))]
         dd_dogstatsd_windows_pipe_name: None,
         env_type: trace_utils::EnvironmentType::AzureFunction,
         app_name: Some("test-app".to_string()),

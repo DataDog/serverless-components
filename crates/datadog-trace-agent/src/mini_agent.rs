@@ -129,9 +129,9 @@ impl MiniAgent {
         });
 
         // Determine which transport to use based on configuration
-        #[cfg(any(feature = "windows-pipes", test))]
+        #[cfg(any(all(windows, feature = "windows-pipes"), test))]
         let pipe_name_opt = self.config.dd_apm_windows_pipe_name.as_ref();
-        #[cfg(not(any(feature = "windows-pipes", test)))]
+        #[cfg(not(any(all(windows, feature = "windows-pipes"), test)))]
         let pipe_name_opt: Option<&String> = None;
 
         if let Some(pipe_name) = pipe_name_opt {
@@ -163,7 +163,9 @@ impl MiniAgent {
             {
                 let _ = pipe_name; // Suppress unused variable warning
                 unreachable!(
-                    "Named pipe flag should never be true without the feature and Windows"
+                    "Named pipes are only supported on Windows with the windows-pipes feature \
+                    enabled, cannot use pipe: {}.",
+                    pipe_name
                 );
             }
         } else {
@@ -270,17 +272,15 @@ impl MiniAgent {
         S::Future: Send,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
-        // pipe_name already includes \\.\pipe\ prefix from config
-        let pipe_path = pipe_name;
-
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
 
         loop {
             // Create a new pipe instance
-            let pipe = match ServerOptions::new().create(pipe_path) {
+            // pipe_name already includes \\.\pipe\ prefix from config
+            let pipe = match ServerOptions::new().create(pipe_name) {
                 Ok(pipe) => {
-                    debug!("Created pipe server instance '{}' in byte mode", pipe_path);
+                    debug!("Created pipe server instance '{}' in byte mode", pipe_name);
                     pipe
                 }
                 Err(e) => {
@@ -307,7 +307,7 @@ impl MiniAgent {
                         return Err(e.into());
                     }
                     Ok(()) => {
-                        debug!("Client connected to '{}'", pipe_path);
+                        debug!("Client connected to '{}'", pipe_name);
                         pipe
                     }
                 },
@@ -389,9 +389,9 @@ impl MiniAgent {
             }
             (_, INFO_ENDPOINT_PATH) => match Self::info_handler(
                 config.dd_apm_receiver_port,
-                #[cfg(feature = "windows-pipes")]
+                #[cfg(all(windows, feature = "windows-pipes"))]
                 config.dd_apm_windows_pipe_name.as_deref(),
-                #[cfg(not(feature = "windows-pipes"))]
+                #[cfg(not(all(windows, feature = "windows-pipes")))]
                 None,
                 config.dd_dogstatsd_port,
             ) {

@@ -34,7 +34,7 @@ pub struct DogStatsDConfig {
     /// Optional namespace to prepend to all metric names (e.g., "myapp")
     pub metric_namespace: Option<String>,
     /// Optional Windows named pipe name. (e.g., "\\\\.\\pipe\\my_pipe").
-    #[cfg(feature = "windows-pipes")]
+    #[cfg(all(windows, feature = "windows-pipes"))]
     pub windows_pipe_name: Option<String>,
 }
 
@@ -163,7 +163,11 @@ impl DogStatsD {
             #[cfg(not(all(windows, feature = "windows-pipes")))]
             {
                 let _ = pipe_name_ref; // Suppress unused variable warning
-                unreachable!("Named pipe flag should never be true without the feature")
+                unreachable!(
+                    "Named pipes are only supported on Windows with the windows-pipes feature \
+                    enabled, cannot use pipe: {}.",
+                    pipe_name_ref
+                );
             }
         } else {
             // UDP socket for all platforms
