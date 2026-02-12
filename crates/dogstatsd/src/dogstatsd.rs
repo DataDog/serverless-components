@@ -39,7 +39,6 @@ pub struct DogStatsDConfig {
     pub windows_pipe_name: Option<String>,
     /// Optional socket receive buffer size (SO_RCVBUF) in bytes.
     /// If None, uses the OS default. Increase this to reduce packet loss under high load.
-    /// Corresponds to `DD_DOGSTATSD_SO_RCVBUF` in the Datadog Agent.
     pub so_rcvbuf: Option<usize>,
 }
 
