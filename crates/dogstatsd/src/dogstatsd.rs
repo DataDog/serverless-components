@@ -266,14 +266,22 @@ impl DogStatsD {
             queue_size,
         } = self;
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(QUEUE_SIZE);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(queue_size);
         // Buffer pool: processor returns used buffers, reader reuses them.
         // Avoids a heap allocation + zero-fill per packet in steady state.
         let (pool_tx, pool_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let reader_token = cancel_token.clone();
         tokio::spawn(async move {
-            read_loop(buffer_reader, tx, reader_token, buf_size, pool_rx).await;
+            read_loop(
+                buffer_reader,
+                tx,
+                reader_token,
+                buf_size,
+                queue_size,
+                pool_rx,
+            )
+            .await;
         });
 
         process_loop(
