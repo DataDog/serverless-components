@@ -226,12 +226,19 @@ async fn start_dogstatsd(
     // 2. Start the aggregator service in the background
     tokio::spawn(service.run());
 
+    #[cfg(all(windows, feature = "windows-pipes"))]
     let dogstatsd_config = DogStatsDConfig {
         host: AGENT_HOST.to_string(),
         port,
         metric_namespace,
-        #[cfg(all(windows, feature = "windows-pipes"))]
         windows_pipe_name,
+    };
+
+    #[cfg(not(all(windows, feature = "windows-pipes")))]
+    let dogstatsd_config = DogStatsDConfig {
+        host: AGENT_HOST.to_string(),
+        port,
+        metric_namespace,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
 

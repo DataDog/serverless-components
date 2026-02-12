@@ -95,7 +95,7 @@ jobs:
       - shell: bash
         run: |
           if [[ "${{ inputs.runner }}" == "windows-2022" ]]; then
-            cargo nextest run --workspace --features datadog-trace-agent/windows-pipes,dogstatsd/windows-pipes
+            cargo nextest run --workspace --features datadog-serverless-compat/windows-pipes
           else
             cargo nextest run --workspace
           fi
