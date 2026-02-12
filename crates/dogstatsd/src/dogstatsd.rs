@@ -24,9 +24,8 @@ use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::S
 const DEFAULT_BUFFER_SIZE: usize = 8192;
 
 // Internal queue capacity between the socket reader and metric processor.
-// Matches the Go agent's `dogstatsd_queue_size` default.
 // At 8 KB per packet this caps user-space buffering at ~8 MB.
-const QUEUE_SIZE: usize = 1024;
+const DEFAULT_QUEUE_SIZE: usize = 1024;
 
 /// Configuration for the DogStatsD server
 pub struct DogStatsDConfig {
@@ -46,6 +45,9 @@ pub struct DogStatsDConfig {
     /// Both the server and client must agree — the client must batch metrics
     /// into packets of this size for the increase to take effect.
     pub buffer_size: Option<usize>,
+    /// Internal queue capacity between the socket reader and metric processor.
+    /// Defaults to 1024. Increase if the processor can't keep up with burst traffic.
+    pub queue_size: Option<usize>,
 }
 
 /// Represents the source of a DogStatsD message. Varies by transport method.
@@ -123,6 +125,7 @@ pub struct DogStatsD {
     buffer_reader: BufferReader,
     metric_namespace: Option<String>,
     buf_size: usize,
+    queue_size: usize,
 }
 
 impl DogStatsD {
@@ -195,6 +198,7 @@ impl DogStatsD {
             Some(size) => size,
             None => DEFAULT_BUFFER_SIZE,
         };
+        let queue_size = config.queue_size.unwrap_or(DEFAULT_QUEUE_SIZE);
 
         DogStatsD {
             cancel_token,
@@ -202,13 +206,14 @@ impl DogStatsD {
             buffer_reader,
             metric_namespace: config.metric_namespace.clone(),
             buf_size,
+            queue_size,
         }
     }
 
     /// Starts the DogStatsD server with a dedicated reader task.
     ///
     /// Spawns a reader task that drains the socket into a bounded channel
-    /// (`QUEUE_SIZE` capacity), while this task processes packets from the
+    /// (`DEFAULT_QUEUE_SIZE` capacity), while this task processes packets from the
     /// channel. This decoupling prevents packet loss when the OS `SO_RCVBUF`
     /// is small (e.g. Lambda caps it at ~416 KiB) by moving buffering into
     /// user space. If the queue fills up, the reader drops packets rather
@@ -220,13 +225,14 @@ impl DogStatsD {
             buffer_reader,
             metric_namespace,
             buf_size,
+            queue_size,
         } = self;
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(QUEUE_SIZE);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(queue_size);
 
         let reader_token = cancel_token.clone();
         tokio::spawn(async move {
-            read_loop(buffer_reader, tx, reader_token, buf_size).await;
+            read_loop(buffer_reader, tx, reader_token, buf_size, queue_size).await;
         });
 
         process_loop(
@@ -266,6 +272,7 @@ async fn read_loop(
     tx: tokio::sync::mpsc::Sender<(Vec<u8>, MessageSource)>,
     cancel: tokio_util::sync::CancellationToken,
     buf_size: usize,
+    queue_capacity: usize,
 ) {
     let mut dropped: u64 = 0;
     loop {
@@ -296,7 +303,7 @@ async fn read_loop(
     if dropped > 0 {
         error!(
             "DogStatsD reader exiting, {} total packets dropped (queue capacity: {})",
-            dropped, QUEUE_SIZE
+            dropped, queue_capacity
         );
     }
 }
@@ -582,6 +589,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use tracing_test::traced_test;
 
+    use super::*;
+
     #[tokio::test]
     async fn test_dogstatsd_multi_distribution() {
         let response = setup_and_consume_dogstatsd(
@@ -771,7 +780,8 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
             ),
             metric_namespace,
-            buf_size: super::DEFAULT_BUFFER_SIZE,
+            buf_size: DEFAULT_BUFFER_SIZE,
+            queue_size: DEFAULT_QUEUE_SIZE,
         };
         dogstatsd.consume_statsd().await;
 
