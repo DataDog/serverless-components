@@ -284,10 +284,10 @@ async fn create_udp_socket(
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
-    // Log the kernel's rmem_max cap so operators can tell whether the requested
-    // SO_RCVBUF was capped by the OS (diagnostic, not required for operation).
+    // Log the kernel's rmem_max cap so operators can tell
+    // whether the requested SO_RCVBUF was capped by the OS.
     if let Ok(rmem_max) = std::fs::read_to_string("/proc/sys/net/core/rmem_max") {
-        debug!("DogStatsD kernel rmem_max={} bytes", rmem_max.trim());
+        debug!("DogStatsD Kernel rmem_max={} bytes", rmem_max.trim());
     }
 
     if let Some(buf_size) = so_rcvbuf {
