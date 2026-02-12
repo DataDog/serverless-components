@@ -322,7 +322,7 @@ async fn test_mini_agent_tcp_with_real_flushers() {
     agent_handle.abort();
 }
 
-#[cfg(all(test, windows))]
+#[cfg(all(test, windows, feature = "windows-pipes"))]
 #[tokio::test]
 #[serial]
 async fn test_mini_agent_named_pipe_with_real_flushers() {

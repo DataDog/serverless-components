@@ -567,6 +567,7 @@ pub mod test_helpers {
     use super::*;
 
     /// Create a test config with TCP transport
+    #[allow(clippy::unwrap_used)]
     pub fn create_tcp_test_config(port: u16) -> Config {
         Config {
             dd_site: "mock-datadoghq.com".to_string(),
