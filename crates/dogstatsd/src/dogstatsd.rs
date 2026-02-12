@@ -20,7 +20,8 @@ use tracing::{debug, error, trace};
 #[cfg(all(windows, feature = "windows-pipes"))]
 use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
 
-// Default buffer size for receiving DogStatsD UDP packets (one recv_from call).
+// Default buffer size for receiving DogStatsD packets (one read call).
+// Used for both UDP recv_from and Windows named pipe reads.
 const DEFAULT_BUFFER_SIZE: usize = 8192;
 
 /// Configuration for the DogStatsD server
@@ -186,7 +187,17 @@ impl DogStatsD {
             BufferReader::UdpSocket(socket)
         };
 
-        let buf_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
+        let buf_size = match config.buffer_size {
+            Some(0) => {
+                error!(
+                    "DogStatsD buffer_size cannot be 0, falling back to default ({})",
+                    DEFAULT_BUFFER_SIZE
+                );
+                DEFAULT_BUFFER_SIZE
+            }
+            Some(size) => size,
+            None => DEFAULT_BUFFER_SIZE,
+        };
 
         DogStatsD {
             cancel_token,
@@ -556,6 +567,61 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
             actual,
             requested
         );
+    async fn test_dogstatsd_custom_buffer_size() {
+        // Use a large buffer to verify custom buf_size is wired through.
+        // The MirrorTest reader copies data into the caller's buffer, so
+        // a payload that fits within the custom size should parse correctly.
+        let payload = "large.buf.metric:1|c\nlarge.buf.metric2:2|c\n";
+        let custom_buf_size: usize = 16384;
+
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
+        let service_task = tokio::spawn(service.run());
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+
+        let dogstatsd = DogStatsD {
+            cancel_token,
+            aggregator_handle: handle.clone(),
+            buffer_reader: BufferReader::MirrorTest(
+                payload.as_bytes().to_vec(),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+            ),
+            metric_namespace: None,
+            buf_size: custom_buf_size,
+        };
+        dogstatsd.consume_statsd().await;
+
+        let response = handle.flush().await.expect("Failed to flush");
+        assert_eq!(response.series.len(), 1);
+        assert_eq!(response.series[0].series.len(), 2);
+
+        handle.shutdown().expect("Failed to shutdown");
+        service_task.await.expect("Service task failed");
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_dogstatsd_zero_buffer_size_falls_back_to_default() {
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
+        tokio::spawn(service.run());
+
+        let config = super::DogStatsDConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            metric_namespace: None,
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            windows_pipe_name: None,
+            so_rcvbuf: None,
+            buffer_size: Some(0),
+        };
+
+        let dogstatsd = DogStatsD::new(&config, handle.clone(), cancel_token).await;
+        assert_eq!(dogstatsd.buf_size, super::DEFAULT_BUFFER_SIZE);
+        assert!(logs_contain("buffer_size cannot be 0"));
+
+        handle.shutdown().expect("Failed to shutdown");
     }
 
     async fn setup_and_consume_dogstatsd(
