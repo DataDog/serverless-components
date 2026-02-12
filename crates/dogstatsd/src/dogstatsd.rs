@@ -275,10 +275,12 @@ async fn create_udp_socket(
     addr: &str,
     so_rcvbuf: Option<usize>,
 ) -> std::io::Result<tokio::net::UdpSocket> {
-    let socket_addr: SocketAddr = addr.parse().map_err(|e| {
+    // Resolve via lookup_host to support hostnames (e.g. "localhost:8125"),
+    // matching the previous behavior of tokio::net::UdpSocket::bind().
+    let socket_addr = tokio::net::lookup_host(addr).await?.next().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("Invalid address '{}': {}", addr, e),
+            format!("Could not resolve address '{}'", addr),
         )
     })?;
 
@@ -286,6 +288,7 @@ async fn create_udp_socket(
 
     // Log the kernel's rmem_max cap so operators can tell
     // whether the requested SO_RCVBUF was capped by the OS.
+    #[cfg(target_os = "linux")]
     if let Ok(rmem_max) = std::fs::read_to_string("/proc/sys/net/core/rmem_max") {
         debug!("DogStatsD Kernel rmem_max={} bytes", rmem_max.trim());
     }
@@ -520,6 +523,34 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         assert!(response.series[0].series[0]
             .metric
             .starts_with("custom.namespace.my.metric"));
+    }
+
+    #[tokio::test]
+    async fn test_create_udp_socket_default_so_rcvbuf() {
+        let socket = super::create_udp_socket("127.0.0.1:0", None).await.unwrap();
+        let std_socket = socket.into_std().unwrap();
+        let s2 = socket2::Socket::from(std_socket);
+        let buf_size = s2.recv_buffer_size().unwrap();
+        assert!(buf_size > 0, "default SO_RCVBUF should be non-zero");
+    }
+
+    #[tokio::test]
+    async fn test_create_udp_socket_custom_so_rcvbuf() {
+        let requested: usize = 262_144;
+        let socket = super::create_udp_socket("127.0.0.1:0", Some(requested))
+            .await
+            .unwrap();
+        let std_socket = socket.into_std().unwrap();
+        let s2 = socket2::Socket::from(std_socket);
+        let actual = s2.recv_buffer_size().unwrap();
+        // The kernel may double the value (Linux) or cap it, but it should
+        // be at least as large as the requested size.
+        assert!(
+            actual >= requested,
+            "SO_RCVBUF actual ({}) should be >= requested ({})",
+            actual,
+            requested
+        );
     }
 
     async fn setup_and_consume_dogstatsd(
