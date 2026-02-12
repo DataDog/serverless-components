@@ -55,7 +55,7 @@ pub async fn send_tcp_request(
     Ok(response)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 /// Send an HTTP request over named pipe and return the response
 pub async fn send_named_pipe_request(
     pipe_name: &str,

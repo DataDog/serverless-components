@@ -16,12 +16,8 @@ use crate::metric::{id, parse, Metric};
 use tracing::{debug, error, trace};
 
 // Windows-specific imports
-#[cfg(windows)]
-use {
-    std::sync::Arc,
-    tokio::io::AsyncReadExt,
-    tokio::net::windows::named_pipe::{ClientOptions, ServerOptions},
-};
+#[cfg(all(windows, feature = "windows-pipes"))]
+use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
 
 // DogStatsD buffer size for receiving metrics
 // TODO(astuyve) buf should be dynamic
@@ -38,6 +34,7 @@ pub struct DogStatsDConfig {
     /// Optional namespace to prepend to all metric names (e.g., "myapp")
     pub metric_namespace: Option<String>,
     /// Optional Windows named pipe name. (e.g., "\\\\.\\pipe\\my_pipe").
+    #[cfg(all(windows, feature = "windows-pipes"))]
     pub windows_pipe_name: Option<String>,
 }
 
@@ -47,7 +44,7 @@ pub enum MessageSource {
     /// Message received from a network socket (UDP)
     Network(SocketAddr),
     /// Message received from a Windows named pipe (Arc for efficient cloning)
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "windows-pipes"))]
     NamedPipe(Arc<String>),
 }
 
@@ -55,7 +52,7 @@ impl std::fmt::Display for MessageSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Network(addr) => write!(f, "{}", addr),
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "windows-pipes"))]
             Self::NamedPipe(name) => write!(f, "{}", name),
         }
     }
@@ -71,7 +68,7 @@ enum BufferReader {
     MirrorTest(Vec<u8>, SocketAddr),
 
     /// Windows named pipe reader (Windows-only transport)
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "windows-pipes"))]
     NamedPipe {
         pipe_name: Arc<String>,
         receiver: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>,
@@ -98,7 +95,7 @@ impl BufferReader {
                 // Mirror Reader: returns immediately with stored data
                 Ok((data.clone(), MessageSource::Network(*socket)))
             }
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "windows-pipes"))]
             BufferReader::NamedPipe {
                 pipe_name,
                 receiver,
@@ -135,11 +132,17 @@ impl DogStatsD {
         aggregator_handle: AggregatorHandle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> DogStatsD {
-        #[allow(unused_variables)] // pipe_name unused on non-Windows
-        let buffer_reader = if let Some(ref pipe_name) = config.windows_pipe_name {
-            #[cfg(windows)]
+        // Determine if we should use a named pipe or UDP/UDS
+        #[cfg(all(windows, feature = "windows-pipes"))]
+        let pipe_name_opt = config.windows_pipe_name.as_ref();
+        #[cfg(not(all(windows, feature = "windows-pipes")))]
+        let pipe_name_opt: Option<&String> = None;
+
+        let buffer_reader = if let Some(pipe_name_ref) = pipe_name_opt {
+            // Windows named pipe transport
+            #[cfg(all(windows, feature = "windows-pipes"))]
             {
-                let pipe_name = Arc::new(pipe_name.clone());
+                let pipe_name = Arc::new(pipe_name_ref.clone());
 
                 // Create channel for receiving data from client handlers
                 let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -157,10 +160,14 @@ impl DogStatsD {
                     receiver,
                 }
             }
-            #[cfg(not(windows))]
-            #[allow(clippy::panic)]
+            #[cfg(not(all(windows, feature = "windows-pipes")))]
             {
-                panic!("Named pipes are only supported on Windows.")
+                let _ = pipe_name_ref; // Suppress unused variable warning
+                unreachable!(
+                    "Named pipes are only supported on Windows with the windows-pipes feature \
+                    enabled, cannot use pipe: {}.",
+                    pipe_name_ref
+                );
             }
         } else {
             // UDP socket for all platforms
@@ -265,7 +272,7 @@ impl DogStatsD {
 /// Uses a multi-instance approach (like winio in the main agent):
 /// - Creates new server instance for each client
 /// - Spawns task to handle each client
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 async fn run_named_pipe_server(
     pipe_name: Arc<String>,
     sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
@@ -350,7 +357,7 @@ async fn run_named_pipe_server(
                             break;
                         }
                         Ok(_) => {
-                            if let Ok(_) = std::str::from_utf8(&buf[..complete_message_size]) {
+                            if std::str::from_utf8(&buf[..complete_message_size]).is_ok() {
                                 debug!(
                                     "Sent {} bytes from '{}'",
                                     complete_message_size, pipe_name_clone

@@ -16,7 +16,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 use common::helpers::send_named_pipe_request;
 
 /// Create a test config with TCP transport
@@ -24,8 +24,10 @@ pub fn create_tcp_test_config() -> Config {
     Config {
         dd_site: "mock-datadoghq.com".to_string(),
         dd_apm_receiver_port: 8126,
+        #[cfg(all(windows, feature = "windows-pipes"))]
         dd_apm_windows_pipe_name: None,
         dd_dogstatsd_port: 8125,
+        #[cfg(all(windows, feature = "windows-pipes"))]
         dd_dogstatsd_windows_pipe_name: None,
         env_type: trace_utils::EnvironmentType::AzureFunction,
         app_name: Some("test-app".to_string()),
@@ -138,7 +140,7 @@ async fn test_mini_agent_tcp_handles_requests() {
     agent_handle.abort();
 }
 
-#[cfg(all(test, windows))]
+#[cfg(all(test, windows, feature = "windows-pipes"))]
 #[tokio::test]
 async fn test_mini_agent_named_pipe_handles_requests() {
     // Use just the pipe name without \\.\pipe\ prefix, matching datadog-agent behavior

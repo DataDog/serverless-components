@@ -81,8 +81,10 @@ impl Tags {
 pub struct Config {
     pub dd_site: String,
     pub dd_apm_receiver_port: u16,
+    #[cfg(any(all(windows, feature = "windows-pipes"), test))]
     pub dd_apm_windows_pipe_name: Option<String>,
     pub dd_dogstatsd_port: u16,
+    #[cfg(any(all(windows, feature = "windows-pipes"), test))]
     pub dd_dogstatsd_windows_pipe_name: Option<String>,
     pub env_type: trace_utils::EnvironmentType,
     pub app_name: Option<String>,
@@ -122,7 +124,7 @@ impl Config {
         // Windows named pipe name for APM receiver.
         // Normalize by adding \\.\pipe\ prefix if not present
         let dd_apm_windows_pipe_name: Option<String> = {
-            #[cfg(any(windows, test))]
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             {
                 env::var("DD_APM_WINDOWS_PIPE_NAME").ok().map(|pipe_name| {
                     if pipe_name.starts_with("\\\\.\\pipe\\") || pipe_name.starts_with(r"\\.\pipe\")
@@ -133,7 +135,7 @@ impl Config {
                     }
                 })
             }
-            #[cfg(not(any(windows, test)))]
+            #[cfg(not(any(all(windows, feature = "windows-pipes"), test)))]
             {
                 None
             }
@@ -148,7 +150,7 @@ impl Config {
         };
 
         let dd_dogstatsd_windows_pipe_name: Option<String> = {
-            #[cfg(any(windows, test))]
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             {
                 env::var("DD_DOGSTATSD_WINDOWS_PIPE_NAME")
                     .ok()
@@ -162,7 +164,7 @@ impl Config {
                         }
                     })
             }
-            #[cfg(not(any(windows, test)))]
+            #[cfg(not(any(all(windows, feature = "windows-pipes"), test)))]
             {
                 None
             }
@@ -223,8 +225,10 @@ impl Config {
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 100,
             dd_apm_receiver_port,
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name,
             dd_dogstatsd_port,
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_dogstatsd_windows_pipe_name,
             dd_site,
             trace_intake: Endpoint {
@@ -378,6 +382,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(any(all(windows, feature = "windows-pipes"), test))]
     fn test_apm_windows_pipe_name() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
@@ -399,6 +404,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(any(all(windows, feature = "windows-pipes"), test))]
     fn test_dogstatsd_windows_pipe_name() {
         env::set_var("DD_API_KEY", "_not_a_real_key_");
         env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
@@ -456,6 +462,7 @@ mod tests {
         assert!(config_res.is_ok());
         let config = config_res.unwrap();
         assert_eq!(config.dd_apm_receiver_port, 8126);
+        #[cfg(any(all(windows, feature = "windows-pipes"), test))]
         assert_eq!(config.dd_apm_windows_pipe_name, None);
         env::remove_var("DD_API_KEY");
         env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
