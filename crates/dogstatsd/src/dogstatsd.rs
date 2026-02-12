@@ -719,8 +719,8 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         let payload = "large.buf.metric:1|c\nlarge.buf.metric2:2|c\n";
         let custom_buf_size: usize = 16384;
 
-        let (service, handle) = AggregatorService::new(EMPTY_TAGS, 1_024)
-            .expect("aggregator service creation failed");
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
         let service_task = tokio::spawn(service.run());
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
@@ -748,8 +748,8 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     #[traced_test]
     async fn test_dogstatsd_zero_buffer_size_falls_back_to_default() {
         let cancel_token = tokio_util::sync::CancellationToken::new();
-        let (service, handle) = AggregatorService::new(EMPTY_TAGS, 1_024)
-            .expect("aggregator service creation failed");
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
         tokio::spawn(service.run());
 
         let config = super::DogStatsDConfig {
@@ -774,8 +774,8 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         metric_namespace: Option<String>,
     ) -> crate::aggregator_service::FlushResponse {
         // Create the aggregator service
-        let (service, handle) = AggregatorService::new(EMPTY_TAGS, 1_024)
-            .expect("aggregator service creation failed");
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
 
         // Start the service in a background task
         let service_task = tokio::spawn(service.run());
