@@ -342,11 +342,7 @@ fn process_packet(
         return;
     }
 
-    debug!(
-        "Received UDP packet: {} bytes from {}",
-        buf.len(),
-        src
-    );
+    debug!("Received UDP packet: {} bytes from {}", buf.len(), src);
 
     #[allow(clippy::expect_used)]
     let msgs = std::str::from_utf8(buf).expect("couldn't parse as string");
@@ -356,10 +352,7 @@ fn process_packet(
         .iter()
         .filter(|m| !m.is_empty())
         .count();
-    debug!(
-        "Packet contains {} metric strings",
-        metric_count_in_packet
-    );
+    debug!("Packet contains {} metric strings", metric_count_in_packet);
     insert_metrics(statsd_metric_strings.into_iter(), aggregator, namespace);
 }
 
