@@ -21,8 +21,6 @@ use tracing::{debug, error, trace};
 use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
 
 // Default buffer size for receiving DogStatsD UDP packets (one recv_from call).
-// Configurable via `DD_DOGSTATSD_BUFFER_SIZE` in the Go agent.
-// https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
 const DEFAULT_BUFFER_SIZE: usize = 8192;
 
 /// Configuration for the DogStatsD server
@@ -42,7 +40,6 @@ pub struct DogStatsDConfig {
     /// Max size of a single UDP packet read, in bytes. Defaults to 8192.
     /// Both the server and client must agree — the client must batch metrics
     /// into packets of this size for the increase to take effect.
-    /// Corresponds to `DD_DOGSTATSD_BUFFER_SIZE` in the Datadog Agent.
     pub buffer_size: Option<usize>,
 }
 
