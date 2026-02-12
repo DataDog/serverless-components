@@ -112,7 +112,10 @@ impl BufferReader {
                     buf[..len].copy_from_slice(&data[..len]);
                     Ok((len, MessageSource::NamedPipe(pipe_name.clone())))
                 }
-                None => Ok((0, MessageSource::NamedPipe(pipe_name.clone()))),
+                None => Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "named pipe channel closed",
+                )),
             },
         }
     }
@@ -292,6 +295,9 @@ async fn read_loop(
                 continue;
             }
         };
+        if len == 0 {
+            continue;
+        }
         buf.truncate(len);
         match tx.try_send((buf, source)) {
             Ok(()) => {}
@@ -353,7 +359,7 @@ fn process_packet(
         return;
     }
 
-    debug!("Received UDP packet: {} bytes from {}", buf.len(), src);
+    debug!("Received packet: {} bytes from {}", buf.len(), src);
 
     #[allow(clippy::expect_used)]
     let msgs = std::str::from_utf8(buf).expect("couldn't parse as string");
