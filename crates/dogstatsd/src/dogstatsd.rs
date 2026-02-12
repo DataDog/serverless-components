@@ -13,7 +13,7 @@ use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
 use socket2::{Domain, Protocol, Socket, Type};
-use tracing::{debug, error, trace};
+use tracing::{debug, error};
 
 // Windows-specific imports
 #[cfg(all(windows, feature = "windows-pipes"))]
@@ -213,11 +213,15 @@ impl DogStatsD {
     /// Starts the DogStatsD server with a dedicated reader task.
     ///
     /// Spawns a reader task that drains the socket into a bounded channel
-    /// (`DEFAULT_QUEUE_SIZE` capacity), while this task processes packets from the
-    /// channel. This decoupling prevents packet loss when the OS `SO_RCVBUF`
-    /// is small (e.g. Lambda caps it at ~416 KiB) by moving buffering into
-    /// user space. If the queue fills up, the reader drops packets rather
-    /// than blocking — matching the Go agent's `dogstatsd_queue_size` behavior.
+    /// with `queue_size` capacity, while this task processes packets from the
+    /// channel.
+    ///
+    /// This decoupling prevents packet loss when the OS `SO_RCVBUF`
+    /// is small (or capped by the OS) by moving buffering into
+    /// user space.
+    ///
+    /// If the queue fills up, the reader drops packets rather
+    /// than blocking.
     pub async fn spin(self) {
         let DogStatsD {
             cancel_token,
@@ -353,7 +357,7 @@ fn process_packet(
 
     #[allow(clippy::expect_used)]
     let msgs = std::str::from_utf8(buf).expect("couldn't parse as string");
-    trace!("Received message: {} from {}", msgs, src);
+    debug!("Received message: {} from {}", msgs, src);
     let statsd_metric_strings: Vec<&str> = msgs.split('\n').collect();
     let metric_count_in_packet = statsd_metric_strings
         .iter()
