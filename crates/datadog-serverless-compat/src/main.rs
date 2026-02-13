@@ -18,7 +18,8 @@ use zstd::zstd_safe::CompressionLevel;
 
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
-    config, env_verifier, mini_agent, proxy_flusher, stats_flusher, stats_processor,
+    config, env_verifier, metrics_collector, mini_agent, proxy_flusher, stats_flusher,
+    stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
 };
@@ -38,6 +39,7 @@ use dogstatsd::{
 use dogstatsd::metric::{SortedTags, EMPTY_TAGS};
 use tokio_util::sync::CancellationToken;
 
+const CPU_METRICS_COLLECTION_INTERVAL: u64 = 3;
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
@@ -102,6 +104,10 @@ pub async fn main() {
     let dd_statsd_metric_namespace: Option<String> = env::var("DD_STATSD_METRIC_NAMESPACE")
         .ok()
         .and_then(|val| parse_metric_namespace(&val));
+
+    let dd_enhanced_metrics = env::var("DD_ENHANCED_METRICS")
+        .map(|val| val.to_lowercase() != "false")
+        .unwrap_or(true);
 
     let https_proxy = env::var("DD_PROXY_HTTPS")
         .or_else(|_| env::var("HTTPS_PROXY"))
@@ -169,7 +175,7 @@ pub async fn main() {
         }
     });
 
-    let (metrics_flusher, _aggregator_handle) = if dd_use_dogstatsd {
+    let (metrics_flusher, aggregator_handle) = if dd_use_dogstatsd {
         debug!("Starting dogstatsd");
         let (_, metrics_flusher, aggregator_handle) = start_dogstatsd(
             dd_dogstatsd_port,
@@ -191,6 +197,23 @@ pub async fn main() {
         info!("dogstatsd disabled");
         (None, None)
     };
+
+    // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
+    // Use the existing aggregator handle
+    // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
+    if dd_enhanced_metrics {
+        if let Some(ref handle) = aggregator_handle {
+            let cpu_collector_handle = handle.clone();
+            tokio::spawn(async move {
+                let mut cpu_collector = metrics_collector::CpuMetricsCollector::new(
+                    cpu_collector_handle,
+                    None,
+                    -1,
+                    CPU_METRICS_COLLECTION_INTERVAL,
+                );
+            });
+        }
+    }
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     flush_interval.tick().await; // discard first tick, which is instantaneous

@@ -29,6 +29,8 @@ libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev =
 datadog-fips = { path = "../datadog-fips" }
 reqwest = { version = "0.12.23", features = ["json", "http2"], default-features = false }
 bytes = "1.10.1"
+dogstatsd = { path = "../dogstatsd", default-features = true }
+num_cpus = "1.16"
 
 [dev-dependencies]
 rmp-serde = "1.1.1"
