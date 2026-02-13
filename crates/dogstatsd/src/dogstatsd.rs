@@ -13,6 +13,7 @@ use std::str::Split;
 use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
+use socket2::{Domain, Protocol, Socket, Type};
 use tracing::{debug, error, trace};
 
 // Windows-specific imports
@@ -36,6 +37,9 @@ pub struct DogStatsDConfig {
     /// Optional Windows named pipe name. (e.g., "\\\\.\\pipe\\my_pipe").
     #[cfg(all(windows, feature = "windows-pipes"))]
     pub windows_pipe_name: Option<String>,
+    /// Optional socket receive buffer size (SO_RCVBUF) in bytes.
+    /// If None, uses the OS default. Increase this to reduce packet loss under high load.
+    pub so_rcvbuf: Option<usize>,
 }
 
 /// Represents the source of a DogStatsD message. Varies by transport method.
@@ -174,9 +178,9 @@ impl DogStatsD {
             let addr = format!("{}:{}", config.host, config.port);
             // TODO (UDS socket)
             #[allow(clippy::expect_used)]
-            let socket = tokio::net::UdpSocket::bind(addr)
+            let socket = create_udp_socket(&addr, config.so_rcvbuf)
                 .await
-                .expect("couldn't bind to address");
+                .expect("couldn't create UDP socket");
             BufferReader::UdpSocket(socket)
         };
 
@@ -265,6 +269,53 @@ impl DogStatsD {
             }
         }
     }
+}
+
+async fn create_udp_socket(
+    addr: &str,
+    so_rcvbuf: Option<usize>,
+) -> std::io::Result<tokio::net::UdpSocket> {
+    // Resolve via lookup_host to support hostnames (e.g. "localhost:8125"),
+    // matching the previous behavior of tokio::net::UdpSocket::bind().
+    let socket_addr = tokio::net::lookup_host(addr).await?.next().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Could not resolve address '{}'", addr),
+        )
+    })?;
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+
+    // Log the kernel's rmem_max cap so operators can tell
+    // whether the requested SO_RCVBUF was capped by the OS.
+    #[cfg(target_os = "linux")]
+    if let Ok(rmem_max) = std::fs::read_to_string("/proc/sys/net/core/rmem_max") {
+        debug!("DogStatsD Kernel rmem_max={} bytes", rmem_max.trim());
+    }
+
+    if let Some(buf_size) = so_rcvbuf {
+        socket.set_recv_buffer_size(buf_size)?;
+
+        // The kernel may cap the value; log what we actually got.
+        let actual = socket.recv_buffer_size().unwrap_or(0);
+        debug!(
+            "DogStatsD SO_RCVBUF: requested={} bytes, actual={} bytes",
+            buf_size, actual
+        );
+    } else {
+        debug!(
+            "DogStatsD using default SO_RCVBUF: {} bytes",
+            socket.recv_buffer_size().unwrap_or(0)
+        );
+    }
+
+    // Required for tokio compatibility
+    socket.set_nonblocking(true)?;
+
+    socket.bind(&socket_addr.into())?;
+
+    let std_socket: std::net::UdpSocket = socket.into();
+    tokio::net::UdpSocket::from_std(std_socket)
 }
 
 /// Named Pipe server - accepts client connections and forwards metrics.
@@ -472,6 +523,34 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         assert!(response.series[0].series[0]
             .metric
             .starts_with("custom.namespace.my.metric"));
+    }
+
+    #[tokio::test]
+    async fn test_create_udp_socket_default_so_rcvbuf() {
+        let socket = super::create_udp_socket("127.0.0.1:0", None).await.unwrap();
+        let std_socket = socket.into_std().unwrap();
+        let s2 = socket2::Socket::from(std_socket);
+        let buf_size = s2.recv_buffer_size().unwrap();
+        assert!(buf_size > 0, "default SO_RCVBUF should be non-zero");
+    }
+
+    #[tokio::test]
+    async fn test_create_udp_socket_custom_so_rcvbuf() {
+        let requested: usize = 262_144;
+        let socket = super::create_udp_socket("127.0.0.1:0", Some(requested))
+            .await
+            .unwrap();
+        let std_socket = socket.into_std().unwrap();
+        let s2 = socket2::Socket::from(std_socket);
+        let actual = s2.recv_buffer_size().unwrap();
+        // The kernel may double the value (Linux) or cap it, but it should
+        // be at least as large as the requested size.
+        assert!(
+            actual >= requested,
+            "SO_RCVBUF actual ({}) should be >= requested ({})",
+            actual,
+            requested
+        );
     }
 
     async fn setup_and_consume_dogstatsd(
