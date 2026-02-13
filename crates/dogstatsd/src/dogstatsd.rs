@@ -761,7 +761,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
             windows_pipe_name: None,
             so_rcvbuf: None,
             buffer_size: Some(0),
-            queue_size: DEFAULT_QUEUE_SIZE,
+            queue_size: None,
         };
 
         let dogstatsd = DogStatsD::new(&config, handle.clone(), cancel_token).await;
