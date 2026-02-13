@@ -575,8 +575,8 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     #[tokio::test]
     async fn test_dogstatsd_custom_buffer_size() {
         // Use a large buffer to verify custom buf_size is wired through.
-        // The MirrorTest reader copies data into the caller's buffer, so
-        // a payload that fits within the custom size should parse correctly.
+        // The MirrorTest reader returns pre-stored data (ignoring buf_size),
+        // so this test ensures the buf_size field is properly wired into DogStatsD.
         let payload = "large.buf.metric:1|c\nlarge.buf.metric2:2|c\n";
         let custom_buf_size: usize = 16384;
 
