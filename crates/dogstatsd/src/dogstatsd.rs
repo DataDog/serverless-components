@@ -270,6 +270,7 @@ impl DogStatsD {
         // Buffer pool: processor returns used buffers, reader reuses them.
         // Avoids a heap allocation + zero-fill per packet in steady state.
         let (pool_tx, pool_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reader_pool_tx = pool_tx.clone();
 
         let reader_token = cancel_token.clone();
         tokio::spawn(async move {
@@ -280,6 +281,7 @@ impl DogStatsD {
                 buf_size,
                 queue_size,
                 pool_rx,
+                reader_pool_tx,
             )
             .await;
         });
@@ -332,41 +334,51 @@ async fn read_loop(
     cancel: tokio_util::sync::CancellationToken,
     buf_size: usize,
     queue_capacity: usize,
-    mut pool: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    mut pool_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    pool_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
 ) {
     let mut dropped: u64 = 0;
     while !cancel.is_cancelled() {
         // Get a buffer from the pool, or allocate if the pool is empty (cold start).
-        let mut buf = pool.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
+        let mut buf = pool_rx.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
 
         // Async wait for the first packet
         let (len, source) = match reader.read_into(&mut buf).await {
             Ok(r) => r,
             Err(e) => {
                 error!("DogStatsD read error: {}", e);
+                let _ = pool_tx.send(buf);
                 continue;
             }
         };
-        if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped) {
+        if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped, &pool_tx) {
             break;
         }
 
         // Drain any packets already in the kernel buffer without going
         // through tokio's event loop — just raw non-blocking syscalls.
         loop {
-            let mut buf = pool.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
+            let mut buf = pool_rx.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
             match reader.try_read_into(&mut buf) {
                 Ok(Some((len, source))) => {
-                    if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped) {
+                    if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped, &pool_tx) {
                         break;
                     }
                 }
-                Ok(None) => break, // No more pending packets
+                Ok(None) => {
+                    let _ = pool_tx.send(buf);
+                    break;
+                }
                 Err(e) => {
                     error!("DogStatsD read error: {}", e);
+                    let _ = pool_tx.send(buf);
                     break;
                 }
             }
+        }
+        // If the channel was closed during batch drain, exit immediately.
+        if tx.is_closed() {
+            break;
         }
     }
     if dropped > 0 {
@@ -378,22 +390,28 @@ async fn read_loop(
 }
 
 /// Sends a packet to the channel. Returns `false` if the channel is closed
-/// (caller should exit the loop).
+/// (caller should exit the loop). On failure, returns the buffer to the pool
+/// so it can be reused.
 fn try_send_packet(
     tx: &tokio::sync::mpsc::Sender<Packet>,
     packet: Packet,
     dropped: &mut u64,
+    pool: &tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
 ) -> bool {
     match tx.try_send(packet) {
         Ok(()) => true,
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+        Err(tokio::sync::mpsc::error::TrySendError::Full(packet)) => {
+            let _ = pool.send(packet.buf);
             *dropped += 1;
             if dropped.is_power_of_two() {
                 debug!("DogStatsD queue full, {} packets dropped so far", *dropped);
             }
             true
         }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(packet)) => {
+            let _ = pool.send(packet.buf);
+            false
+        }
     }
 }
 
