@@ -201,29 +201,39 @@ pub async fn main() {
     // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
     // Use the existing aggregator handle
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
-    if dd_enhanced_metrics {
-        if let Some(ref handle) = aggregator_handle {
-            let cpu_collector_handle = handle.clone();
-            tokio::spawn(async move {
-                let mut cpu_collector = metrics_collector::CpuMetricsCollector::new(
-                    cpu_collector_handle,
-                    None,
-                    -1,
-                    CPU_METRICS_COLLECTION_INTERVAL,
-                );
-            });
-        }
-    }
+    let cpu_collector = if dd_enhanced_metrics {
+        aggregator_handle.as_ref().map(|handle| {
+            metrics_collector::CpuMetricsCollector::new(
+                handle.clone(),
+                None,
+                -1,
+                CPU_METRICS_COLLECTION_INTERVAL,
+            )
+        })
+    } else {
+        info!("Enhanced metrics disabled");
+        None
+    };
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
+    let mut cpu_collection_interval =
+        interval(Duration::from_secs(CPU_METRICS_COLLECTION_INTERVAL));
     flush_interval.tick().await; // discard first tick, which is instantaneous
+    cpu_collection_interval.tick().await;
 
     loop {
-        flush_interval.tick().await;
-
-        if let Some(metrics_flusher) = metrics_flusher.as_ref() {
-            debug!("Flushing dogstatsd metrics");
-            metrics_flusher.flush().await;
+        tokio::select! {
+            _ = flush_interval.tick() => {
+                if let Some(metrics_flusher) = metrics_flusher.as_ref() {
+                    debug!("Flushing dogstatsd metrics");
+                    metrics_flusher.flush().await;
+                }
+            }
+            _ = cpu_collection_interval.tick() => {
+                if let Some(cpu_collector) = cpu_collector.as_ref() {
+                    cpu_collector.collect_and_submit();
+                }
+            }
         }
     }
 }
