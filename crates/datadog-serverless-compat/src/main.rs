@@ -297,26 +297,29 @@ pub async fn main() {
     // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
     // Use the existing aggregator handle
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
-    if dd_enhanced_metrics {
-        if let Some(ref handle) = aggregator_handle {
-            let cpu_collector_handle = handle.clone();
-            tokio::spawn(async move {
-                let mut cpu_collector = metrics_collector::CpuMetricsCollector::new(
-                    cpu_collector_handle,
-                    None,
-                    -1,
-                    CPU_METRICS_COLLECTION_INTERVAL,
-                );
-            });
-        }
-    }
+    let cpu_collector = if dd_enhanced_metrics {
+        aggregator_handle.as_ref().map(|handle| {
+            metrics_collector::CpuMetricsCollector::new(
+                handle.clone(),
+                None,
+                -1,
+                CPU_METRICS_COLLECTION_INTERVAL,
+            )
+        })
+    } else {
+        info!("Enhanced metrics disabled");
+        None
+    };
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     let mut instance_metrics_collection_interval = interval(Duration::from_secs(
         INSTANCE_METRICS_COLLECTION_INTERVAL_SECS,
     ));
+    let mut cpu_collection_interval =
+        interval(Duration::from_secs(CPU_METRICS_COLLECTION_INTERVAL));
     flush_interval.tick().await; // discard first tick, which is instantaneous
     instance_metrics_collection_interval.tick().await;
+    cpu_collection_interval.tick().await;
 
     // Builders for log batches that failed transiently in the previous flush
     // cycle. They are redriven on the next cycle before new batches are sent.
@@ -330,6 +333,12 @@ pub async fn main() {
                     tokio::spawn(async move {
                         metrics_flusher.flush().await;
                     });
+                }
+
+                _ = cpu_collection_interval.tick() => {
+                    if let Some(cpu_collector) = cpu_collector.as_ref() {
+                        cpu_collector.collect_and_submit();
+                    }
                 }
 
                 if let Some(log_flusher) = log_flusher.as_ref() {
