@@ -38,9 +38,9 @@ pub struct DogStatsDConfig {
     /// Optional socket receive buffer size (SO_RCVBUF) in bytes.
     /// If None, uses the OS default. Increase this to reduce packet loss under high load.
     pub so_rcvbuf: Option<usize>,
-    /// Max size of a single UDP packet read, in bytes. Defaults to 8192.
-    /// Both the server and client must agree — the client must batch metrics
-    /// into packets of this size for the increase to take effect.
+    /// Max size of a single read from any transport (UDP or named pipe), in bytes.
+    /// Defaults to 8192. For UDP, the client must batch metrics into packets of
+    /// this size for the increase to take effect.
     pub buffer_size: Option<usize>,
 }
 
@@ -145,6 +145,18 @@ impl DogStatsD {
         #[cfg(not(all(windows, feature = "windows-pipes")))]
         let pipe_name_opt: Option<&String> = None;
 
+        let buf_size = match config.buffer_size {
+            Some(0) => {
+                error!(
+                    "DogStatsD buffer_size cannot be 0, falling back to default ({})",
+                    DEFAULT_BUFFER_SIZE
+                );
+                DEFAULT_BUFFER_SIZE
+            }
+            Some(size) => size,
+            None => DEFAULT_BUFFER_SIZE,
+        };
+
         let buffer_reader = if let Some(pipe_name_ref) = pipe_name_opt {
             // Windows named pipe transport
             #[cfg(all(windows, feature = "windows-pipes"))]
@@ -158,8 +170,10 @@ impl DogStatsD {
                 // Spawn server accept loop
                 let server_pipe_name = pipe_name.clone();
                 let server_cancel = cancel_token.clone();
+                let pipe_buf_size = buf_size;
                 tokio::spawn(async move {
-                    run_named_pipe_server(server_pipe_name, sender, server_cancel).await;
+                    run_named_pipe_server(server_pipe_name, sender, server_cancel, pipe_buf_size)
+                        .await;
                 });
 
                 BufferReader::NamedPipe {
@@ -185,18 +199,6 @@ impl DogStatsD {
                 .await
                 .expect("couldn't create UDP socket");
             BufferReader::UdpSocket(socket)
-        };
-
-        let buf_size = match config.buffer_size {
-            Some(0) => {
-                error!(
-                    "DogStatsD buffer_size cannot be 0, falling back to default ({})",
-                    DEFAULT_BUFFER_SIZE
-                );
-                DEFAULT_BUFFER_SIZE
-            }
-            Some(size) => size,
-            None => DEFAULT_BUFFER_SIZE,
         };
 
         DogStatsD {
@@ -344,6 +346,7 @@ async fn run_named_pipe_server(
     pipe_name: Arc<String>,
     sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     cancel_token: tokio_util::sync::CancellationToken,
+    buf_size: usize,
 ) {
     loop {
         if cancel_token.is_cancelled() {
@@ -383,7 +386,7 @@ async fn run_named_pipe_server(
         let cancel_clone = cancel_token.clone();
         let pipe_name_clone = pipe_name.clone();
         tokio::spawn(async move {
-            let mut buf = [0u8; DEFAULT_BUFFER_SIZE];
+            let mut buf = vec![0u8; buf_size];
             let mut server = server;
             // Byte mode requires manual buffering to handle messages split across reads
             // so let's track where we're writing each read in the buffer
@@ -438,7 +441,7 @@ async fn run_named_pipe_server(
                 start_write_index = end_index - complete_message_size;
 
                 // If the message is bigger than the buffer size, drop it and go on.
-                if start_write_index >= DEFAULT_BUFFER_SIZE {
+                if start_write_index >= buf_size {
                     start_write_index = 0;
                 } else if start_write_index > 0 {
                     // Keep incomplete data in the buffer
