@@ -233,6 +233,7 @@ async fn start_dogstatsd(
         metric_namespace,
         windows_pipe_name,
         so_rcvbuf: None,
+        buffer_size: None,
     };
 
     #[cfg(not(all(windows, feature = "windows-pipes")))]
