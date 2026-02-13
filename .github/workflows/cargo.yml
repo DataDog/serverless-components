@@ -93,4 +93,9 @@ jobs:
         shell: bash
         run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
       - shell: bash
-        run: cargo nextest run --workspace
+        run: |
+          if [[ "${{ inputs.runner }}" == "windows-2022" ]]; then
+            cargo nextest run --workspace --features datadog-serverless-compat/windows-pipes
+          else
+            cargo nextest run --workspace
+          fi
