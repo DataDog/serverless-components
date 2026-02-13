@@ -11,6 +11,7 @@ pub mod aggregator;
 pub mod config;
 pub mod env_verifier;
 pub mod http_utils;
+pub mod metrics_collector;
 pub mod mini_agent;
 pub mod proxy_flusher;
 pub mod stats_flusher;
