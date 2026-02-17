@@ -376,6 +376,10 @@ async fn read_loop(
                 continue;
             }
         };
+        if len == 0 {
+            let _ = pool_tx.send(buf);
+            continue;
+        }
         if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped, &pool_tx) {
             break;
         }
@@ -385,6 +389,9 @@ async fn read_loop(
         loop {
             let mut buf = pool_rx.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
             match reader.try_read_into(&mut buf) {
+                Ok(Some((0, _))) => {
+                    let _ = pool_tx.send(buf);
+                }
                 Ok(Some((len, source))) => {
                     if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped, &pool_tx) {
                         break;
