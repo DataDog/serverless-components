@@ -204,8 +204,11 @@ mod tests {
             },
             dd_site: "datadoghq.com".to_string(),
             dd_apm_receiver_port: 8126,
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name: None,
             dd_dogstatsd_port: 8125,
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
+            dd_dogstatsd_windows_pipe_name: None,
             env_type: trace_utils::EnvironmentType::CloudFunction,
             os: "linux".to_string(),
             obfuscation_config: ObfuscationConfig::new().unwrap(),

@@ -4,52 +4,109 @@
 mod common;
 
 use common::helpers::{create_test_trace_payload, send_tcp_request};
+use common::mock_server::MockServer;
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
-    config::Config, mini_agent::MiniAgent, proxy_flusher::ProxyFlusher,
+    config::{test_helpers::create_tcp_test_config, Config},
+    mini_agent::MiniAgent,
+    proxy_flusher::ProxyFlusher,
+    trace_flusher::TraceFlusher,
     trace_processor::ServerlessTraceProcessor,
 };
 use http_body_util::BodyExt;
 use hyper::StatusCode;
-use libdd_trace_utils::trace_utils;
 use serde_json::Value;
+use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 use common::helpers::send_named_pipe_request;
 
-/// Create a test config with TCP transport
-pub fn create_tcp_test_config() -> Config {
-    Config {
-        dd_site: "mock-datadoghq.com".to_string(),
-        dd_apm_receiver_port: 8126,
-        dd_apm_windows_pipe_name: None,
-        dd_dogstatsd_port: 8125,
-        env_type: trace_utils::EnvironmentType::AzureFunction,
-        app_name: Some("test-app".to_string()),
-        max_request_content_length: 10_000_000,
-        obfuscation_config: libdd_trace_obfuscation::obfuscation_config::ObfuscationConfig::new()
-            .unwrap(),
-        os: std::env::consts::OS.to_string(),
-        tags: datadog_trace_agent::config::Tags::new(),
-        stats_flush_interval_secs: 10,
-        trace_flush_interval_secs: 5,
-        trace_intake: libdd_common::Endpoint::default(),
-        trace_stats_intake: libdd_common::Endpoint::default(),
-        profiling_intake: libdd_common::Endpoint::default(),
-        proxy_request_timeout_secs: 30,
-        proxy_request_max_retries: 3,
-        proxy_request_retry_backoff_base_ms: 100,
-        verify_env_timeout_ms: 1000,
-        proxy_url: None,
+const FLUSH_WAIT_DURATION: Duration = Duration::from_millis(1500);
+
+/// Helper to configure a config with mock server endpoints
+pub fn configure_mock_endpoints(config: &mut Config, mock_server_url: &str) {
+    let trace_url = format!("{}/api/v0.2/traces", mock_server_url);
+    let stats_url = format!("{}/api/v0.6/stats", mock_server_url);
+
+    config.trace_intake = libdd_common::Endpoint {
+        url: trace_url.parse().unwrap(),
+        api_key: Some("test-api-key".into()),
+        ..Default::default()
+    };
+    config.trace_stats_intake = libdd_common::Endpoint {
+        url: stats_url.parse().unwrap(),
+        api_key: Some("test-api-key".into()),
+        ..Default::default()
+    };
+    config.trace_flush_interval_secs = 1;
+    config.stats_flush_interval_secs = 1;
+}
+
+/// Helper to create a mini agent with real flushers
+pub fn create_mini_agent_with_real_flushers(config: Arc<Config>) -> MiniAgent {
+    use datadog_trace_agent::{
+        aggregator::TraceAggregator, stats_flusher::ServerlessStatsFlusher,
+        stats_processor::ServerlessStatsProcessor, trace_flusher::ServerlessTraceFlusher,
+    };
+
+    let aggregator = Arc::new(tokio::sync::Mutex::new(TraceAggregator::default()));
+    MiniAgent {
+        config: config.clone(),
+        trace_processor: Arc::new(ServerlessTraceProcessor {}),
+        trace_flusher: Arc::new(ServerlessTraceFlusher::new(
+            aggregator.clone(),
+            config.clone(),
+        )),
+        stats_processor: Arc::new(ServerlessStatsProcessor {}),
+        stats_flusher: Arc::new(ServerlessStatsFlusher {}),
+        env_verifier: Arc::new(MockEnvVerifier),
+        proxy_flusher: Arc::new(ProxyFlusher::new(config.clone())),
     }
+}
+
+/// Helper to verify trace request sent to mock server
+pub fn verify_trace_request(mock_server: &common::mock_server::MockServer) {
+    let trace_reqs = mock_server.get_requests_for_path("/api/v0.2/traces");
+
+    assert!(
+        !trace_reqs.is_empty(),
+        "Expected at least one trace request to mock server"
+    );
+
+    let trace_req = &trace_reqs[0];
+    assert_eq!(trace_req.method, "POST", "Expected POST method");
+
+    let content_type = trace_req
+        .headers
+        .iter()
+        .find(|(k, _)| k.to_lowercase() == "content-type")
+        .map(|(_, v)| v.as_str());
+    assert_eq!(
+        content_type,
+        Some("application/x-protobuf"),
+        "Expected protobuf content-type"
+    );
+
+    let api_key = trace_req
+        .headers
+        .iter()
+        .find(|(k, _)| k.to_lowercase() == "dd-api-key")
+        .map(|(_, v)| v.as_str());
+    assert_eq!(api_key, Some("test-api-key"), "Expected API key header");
+
+    assert!(
+        !trace_req.body.is_empty(),
+        "Expected non-empty trace payload"
+    );
 }
 
 #[cfg(test)]
 #[tokio::test]
+#[serial]
 async fn test_mini_agent_tcp_handles_requests() {
-    let config = Arc::new(create_tcp_test_config());
+    let config = Arc::new(create_tcp_test_config(8126));
     let test_port = config.dd_apm_receiver_port;
     let mini_agent = MiniAgent {
         config: config.clone(),
@@ -137,15 +194,14 @@ async fn test_mini_agent_tcp_handles_requests() {
     agent_handle.abort();
 }
 
-#[cfg(all(test, windows))]
+#[cfg(all(test, windows, feature = "windows-pipes"))]
 #[tokio::test]
 async fn test_mini_agent_named_pipe_handles_requests() {
     // Use just the pipe name without \\.\pipe\ prefix, matching datadog-agent behavior
     let pipe_name = "dd_trace_integration_test";
     let pipe_path = format!(r"\\.\pipe\{}", pipe_name); // Full path for client connections
-    let mut config = create_tcp_test_config();
+    let mut config = create_tcp_test_config(0);
     config.dd_apm_windows_pipe_name = Some(pipe_path.clone());
-    config.dd_apm_receiver_port = 0;
     let config = Arc::new(config);
 
     let mini_agent = MiniAgent {
@@ -214,5 +270,106 @@ async fn test_mini_agent_named_pipe_handles_requests() {
     );
 
     // Clean up
+    agent_handle.abort();
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[serial]
+async fn test_mini_agent_tcp_with_real_flushers() {
+    let mock_server: MockServer = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut config = create_tcp_test_config(8127);
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let mini_agent = create_mini_agent_with_real_flushers(config);
+
+    let agent_handle = tokio::spawn(async move {
+        let _ = mini_agent.start_mini_agent().await;
+    });
+
+    // Wait for server to be ready
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None).await {
+            if response.status().is_success() {
+                server_ready = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    // Send trace data
+    let trace_payload = create_test_trace_payload();
+    let trace_response = send_tcp_request(test_port, "/v0.4/traces", "POST", Some(trace_payload))
+        .await
+        .expect("Failed to send /v0.4/traces request");
+    assert_eq!(trace_response.status(), StatusCode::OK);
+
+    // Wait for flush
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+
+    verify_trace_request(&mock_server);
+
+    agent_handle.abort();
+}
+
+#[cfg(all(test, windows, feature = "windows-pipes"))]
+#[tokio::test]
+#[serial]
+async fn test_mini_agent_named_pipe_with_real_flushers() {
+    let mock_server = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let pipe_name = r"\\.\pipe\dd_trace_real_flusher_test";
+    let mut config = create_tcp_test_config(0);
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    config.dd_apm_windows_pipe_name = Some(pipe_name.to_string());
+    config.dd_apm_receiver_port = 0;
+    let config = Arc::new(config);
+
+    let mini_agent = create_mini_agent_with_real_flushers(config);
+
+    let agent_handle = tokio::spawn(async move {
+        let _ = mini_agent.start_mini_agent().await;
+    });
+
+    // Wait for server to be ready
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_named_pipe_request(pipe_name, "/info", "GET", None).await {
+            if response.status().is_success() {
+                server_ready = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent named pipe server failed to start within timeout"
+    );
+
+    // Send trace data via named pipe
+    let trace_payload = create_test_trace_payload();
+    let trace_response =
+        send_named_pipe_request(pipe_name, "/v0.4/traces", "POST", Some(trace_payload))
+            .await
+            .expect("Failed to send /v0.4/traces request over named pipe");
+    assert_eq!(trace_response.status(), StatusCode::OK);
+
+    // Wait for flush
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+
+    verify_trace_request(&mock_server);
+
     agent_handle.abort();
 }

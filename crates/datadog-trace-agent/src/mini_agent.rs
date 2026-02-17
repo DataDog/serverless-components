@@ -16,7 +16,7 @@ use tracing::{debug, error};
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
 use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "windows-pipes"))]
 use tokio::net::windows::named_pipe::ServerOptions;
 
 use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
@@ -129,7 +129,12 @@ impl MiniAgent {
         });
 
         // Determine which transport to use based on configuration
-        if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
+        #[cfg(any(all(windows, feature = "windows-pipes"), test))]
+        let pipe_name_opt = self.config.dd_apm_windows_pipe_name.as_ref();
+        #[cfg(not(any(all(windows, feature = "windows-pipes"), test)))]
+        let pipe_name_opt: Option<&String> = None;
+
+        if let Some(pipe_name) = pipe_name_opt {
             debug!("Mini Agent started: listening on named pipe {}", pipe_name);
         } else {
             debug!(
@@ -142,9 +147,9 @@ impl MiniAgent {
             now.elapsed().as_millis()
         );
 
-        if let Some(ref pipe_name) = self.config.dd_apm_windows_pipe_name {
+        if let Some(pipe_name) = pipe_name_opt {
             // Windows named pipe transport
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "windows-pipes"))]
             {
                 Self::serve_named_pipe(
                     pipe_name,
@@ -154,14 +159,14 @@ impl MiniAgent {
                 )
                 .await?;
             }
-
-            #[cfg(not(windows))]
+            #[cfg(not(all(windows, feature = "windows-pipes")))]
             {
-                error!(
-                    "Named pipes are only supported on Windows, cannot use pipe: {}",
+                let _ = pipe_name; // Suppress unused variable warning
+                unreachable!(
+                    "Named pipes are only supported on Windows with the windows-pipes feature \
+                    enabled, cannot use pipe: {}.",
                     pipe_name
                 );
-                return Err("Named pipes are only supported on Windows".into());
             }
         } else {
             // TCP transport
@@ -250,7 +255,7 @@ impl MiniAgent {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "windows-pipes"))]
     async fn serve_named_pipe<S>(
         pipe_name: &str,
         service: S,
@@ -267,17 +272,15 @@ impl MiniAgent {
         S::Future: Send,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
-        // pipe_name already includes \\.\pipe\ prefix from config
-        let pipe_path = pipe_name;
-
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
 
         loop {
             // Create a new pipe instance
-            let pipe = match ServerOptions::new().create(&pipe_path) {
+            // pipe_name already includes \\.\pipe\ prefix from config
+            let pipe = match ServerOptions::new().create(pipe_name) {
                 Ok(pipe) => {
-                    debug!("Created pipe server instance '{}' in byte mode", pipe_path);
+                    debug!("Created pipe server instance '{}' in byte mode", pipe_name);
                     pipe
                 }
                 Err(e) => {
@@ -304,7 +307,7 @@ impl MiniAgent {
                         return Err(e.into());
                     }
                     Ok(()) => {
-                        debug!("Client connected to '{}'", pipe_path);
+                        debug!("Client connected to '{}'", pipe_name);
                         pipe
                     }
                 },
@@ -386,7 +389,10 @@ impl MiniAgent {
             }
             (_, INFO_ENDPOINT_PATH) => match Self::info_handler(
                 config.dd_apm_receiver_port,
+                #[cfg(all(windows, feature = "windows-pipes"))]
                 config.dd_apm_windows_pipe_name.as_deref(),
+                #[cfg(not(all(windows, feature = "windows-pipes")))]
+                None,
                 config.dd_dogstatsd_port,
             ) {
                 Ok(res) => Ok(res),

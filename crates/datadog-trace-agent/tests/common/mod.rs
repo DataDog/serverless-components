@@ -4,4 +4,5 @@
 //! Common test utilities, mocks, and helpers for integration tests
 
 pub mod helpers;
+pub mod mock_server;
 pub mod mocks;

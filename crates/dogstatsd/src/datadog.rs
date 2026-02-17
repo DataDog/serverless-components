@@ -427,9 +427,14 @@ pub struct Series {
 }
 
 impl Series {
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
+    /// Returns the number of individual metrics in this batch.
+    pub fn len(&self) -> usize {
         self.series.len()
+    }
+
+    /// Returns true if this batch contains no metrics.
+    pub fn is_empty(&self) -> bool {
+        self.series.is_empty()
     }
 }
 
