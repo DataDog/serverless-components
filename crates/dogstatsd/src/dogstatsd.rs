@@ -13,7 +13,7 @@ use crate::aggregator_service::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
 use socket2::{Domain, Protocol, Socket, Type};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 // Windows-specific imports
 #[cfg(all(windows, feature = "windows-pipes"))]
@@ -376,17 +376,17 @@ fn process_packet(
         return;
     }
 
-    debug!("Received packet: {} bytes from {}", buf.len(), src);
+    trace!("Received packet: {} bytes from {}", buf.len(), src);
 
     #[allow(clippy::expect_used)]
     let msgs = std::str::from_utf8(buf).expect("couldn't parse as string");
-    debug!("Received message: {} from {}", msgs, src);
+    trace!("Received message: {} from {}", msgs, src);
     let statsd_metric_strings: Vec<&str> = msgs.split('\n').collect();
     let metric_count_in_packet = statsd_metric_strings
         .iter()
         .filter(|m| !m.is_empty())
         .count();
-    debug!("Packet contains {} metric strings", metric_count_in_packet);
+    trace!("Packet contains {} metric strings", metric_count_in_packet);
     insert_metrics(statsd_metric_strings.into_iter(), aggregator, namespace);
 }
 
