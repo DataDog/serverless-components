@@ -240,6 +240,7 @@ async fn start_dogstatsd(
         host: AGENT_HOST.to_string(),
         port,
         metric_namespace,
+        so_rcvbuf: None,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
 
