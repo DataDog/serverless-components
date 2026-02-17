@@ -297,6 +297,53 @@ async fn test_send_with_retry_immediate_failure_after_one_attempt() {
     mock.assert_async().await;
 }
 
+/// Verifies that `spin()` exits promptly when cancelled on a quiet socket
+/// (no packets arriving). Without cancellation-aware awaiting in the reader,
+/// the task would block on `recv_from` indefinitely.
+#[cfg(test)]
+#[tokio::test]
+async fn test_spin_exits_on_cancellation_without_traffic() {
+    use dogstatsd::metric::SortedTags;
+
+    let (service, handle) =
+        AggregatorService::new(SortedTags::parse("test:value").unwrap(), CONTEXTS)
+            .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+
+    let cancel_token = CancellationToken::new();
+    let dogstatsd = DogStatsD::new(
+        &DogStatsDConfig {
+            host: "127.0.0.1".to_string(),
+            port: 18128,
+            metric_namespace: None,
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            windows_pipe_name: None,
+            so_rcvbuf: None,
+            buffer_size: None,
+            queue_size: None,
+        },
+        handle.clone(),
+        cancel_token.clone(),
+    )
+    .await;
+
+    let spin_handle = tokio::spawn(async move {
+        dogstatsd.spin().await;
+    });
+
+    // Cancel immediately — no packets sent
+    cancel_token.cancel();
+
+    // spin() must exit within 500ms; if it blocks on recv_from this times out.
+    let result = timeout(Duration::from_millis(500), spin_handle).await;
+    assert!(
+        result.is_ok(),
+        "spin() should exit promptly after cancellation on a quiet socket"
+    );
+
+    handle.shutdown().expect("shutdown failed");
+}
+
 /// Verifies that `buffer_size` actually controls how many bytes the server
 /// reads per UDP packet. Sends a payload larger than a small buffer and
 /// checks that metrics are lost, then sends the same payload to a server
