@@ -20,11 +20,9 @@ use tracing::{debug, error, trace};
 #[cfg(all(windows, feature = "windows-pipes"))]
 use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
 
-// DogStatsD buffer size for receiving metrics
-// TODO(astuyve) buf should be dynamic
-// Max buffer size is configurable in Go Agent with a default of 8KB
-// https://github.com/DataDog/datadog-agent/blob/85939a62b5580b2a15549f6936f257e61c5aa153/pkg/config/config_template.yaml#L2154-L2158
-const BUFFER_SIZE: usize = 8192;
+// Default buffer size for receiving DogStatsD packets (one read call).
+// Used for both UDP recv_from and Windows named pipe reads.
+const DEFAULT_BUFFER_SIZE: usize = 8192;
 
 /// Configuration for the DogStatsD server
 pub struct DogStatsDConfig {
@@ -40,6 +38,10 @@ pub struct DogStatsDConfig {
     /// Optional socket receive buffer size (SO_RCVBUF) in bytes.
     /// If None, uses the OS default. Increase this to reduce packet loss under high load.
     pub so_rcvbuf: Option<usize>,
+    /// Max size of a single read from any transport (UDP or named pipe), in bytes.
+    /// Defaults to 8192. For UDP, the client must batch metrics into packets of
+    /// this size for the increase to take effect.
+    pub buffer_size: Option<usize>,
 }
 
 /// Represents the source of a DogStatsD message. Varies by transport method.
@@ -82,11 +84,11 @@ enum BufferReader {
 impl BufferReader {
     /// This is the main entry point for receiving metric data.
     /// Note: Different transports have different blocking behaviors.
-    async fn read(&self) -> std::io::Result<(Vec<u8>, MessageSource)> {
+    async fn read(&self, buf_size: usize) -> std::io::Result<(Vec<u8>, MessageSource)> {
         match self {
             BufferReader::UdpSocket(socket) => {
                 // UDP socket: blocks until a packet arrives
-                let mut buf = [0; BUFFER_SIZE];
+                let mut buf = vec![0u8; buf_size];
 
                 #[allow(clippy::expect_used)]
                 let (amt, src) = socket
@@ -123,6 +125,7 @@ pub struct DogStatsD {
     aggregator_handle: AggregatorHandle,
     buffer_reader: BufferReader,
     metric_namespace: Option<String>,
+    buf_size: usize,
 }
 
 impl DogStatsD {
@@ -142,6 +145,18 @@ impl DogStatsD {
         #[cfg(not(all(windows, feature = "windows-pipes")))]
         let pipe_name_opt: Option<&String> = None;
 
+        let buf_size = match config.buffer_size {
+            Some(0) => {
+                error!(
+                    "DogStatsD buffer_size cannot be 0, falling back to default ({})",
+                    DEFAULT_BUFFER_SIZE
+                );
+                DEFAULT_BUFFER_SIZE
+            }
+            Some(size) => size,
+            None => DEFAULT_BUFFER_SIZE,
+        };
+
         let buffer_reader = if let Some(pipe_name_ref) = pipe_name_opt {
             // Windows named pipe transport
             #[cfg(all(windows, feature = "windows-pipes"))]
@@ -155,8 +170,10 @@ impl DogStatsD {
                 // Spawn server accept loop
                 let server_pipe_name = pipe_name.clone();
                 let server_cancel = cancel_token.clone();
+                let pipe_buf_size = buf_size;
                 tokio::spawn(async move {
-                    run_named_pipe_server(server_pipe_name, sender, server_cancel).await;
+                    run_named_pipe_server(server_pipe_name, sender, server_cancel, pipe_buf_size)
+                        .await;
                 });
 
                 BufferReader::NamedPipe {
@@ -189,6 +206,7 @@ impl DogStatsD {
             aggregator_handle,
             buffer_reader,
             metric_namespace: config.metric_namespace.clone(),
+            buf_size,
         }
     }
 
@@ -206,7 +224,7 @@ impl DogStatsD {
         #[allow(clippy::expect_used)]
         let (buf, src) = self
             .buffer_reader
-            .read()
+            .read(self.buf_size)
             .await
             .expect("didn't receive data");
 
@@ -328,6 +346,7 @@ async fn run_named_pipe_server(
     pipe_name: Arc<String>,
     sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     cancel_token: tokio_util::sync::CancellationToken,
+    buf_size: usize,
 ) {
     loop {
         if cancel_token.is_cancelled() {
@@ -367,7 +386,7 @@ async fn run_named_pipe_server(
         let cancel_clone = cancel_token.clone();
         let pipe_name_clone = pipe_name.clone();
         tokio::spawn(async move {
-            let mut buf = [0u8; BUFFER_SIZE];
+            let mut buf = vec![0u8; buf_size];
             let mut server = server;
             // Byte mode requires manual buffering to handle messages split across reads
             // so let's track where we're writing each read in the buffer
@@ -422,7 +441,7 @@ async fn run_named_pipe_server(
                 start_write_index = end_index - complete_message_size;
 
                 // If the message is bigger than the buffer size, drop it and go on.
-                if start_write_index >= BUFFER_SIZE {
+                if start_write_index >= buf_size {
                     start_write_index = 0;
                 } else if start_write_index > 0 {
                     // Keep incomplete data in the buffer
@@ -553,6 +572,64 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         );
     }
 
+    #[tokio::test]
+    async fn test_dogstatsd_custom_buffer_size() {
+        // Use a large buffer to verify custom buf_size is wired through.
+        // The MirrorTest reader returns pre-stored data (ignoring buf_size),
+        // so this test ensures the buf_size field is properly wired into DogStatsD.
+        let payload = "large.buf.metric:1|c\nlarge.buf.metric2:2|c\n";
+        let custom_buf_size: usize = 16384;
+
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
+        let service_task = tokio::spawn(service.run());
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+
+        let dogstatsd = DogStatsD {
+            cancel_token,
+            aggregator_handle: handle.clone(),
+            buffer_reader: BufferReader::MirrorTest(
+                payload.as_bytes().to_vec(),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+            ),
+            metric_namespace: None,
+            buf_size: custom_buf_size,
+        };
+        dogstatsd.consume_statsd().await;
+
+        let response = handle.flush().await.expect("Failed to flush");
+        assert_eq!(response.series.len(), 1);
+        assert_eq!(response.series[0].series.len(), 2);
+
+        handle.shutdown().expect("Failed to shutdown");
+        service_task.await.expect("Service task failed");
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_dogstatsd_zero_buffer_size_falls_back_to_default() {
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
+        tokio::spawn(service.run());
+
+        let config = super::DogStatsDConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            metric_namespace: None,
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            windows_pipe_name: None,
+            so_rcvbuf: None,
+            buffer_size: Some(0),
+        };
+
+        let dogstatsd = DogStatsD::new(&config, handle.clone(), cancel_token).await;
+        assert_eq!(dogstatsd.buf_size, super::DEFAULT_BUFFER_SIZE);
+        assert!(logs_contain("buffer_size cannot be 0"));
+
+        handle.shutdown().expect("Failed to shutdown");
+    }
+
     async fn setup_and_consume_dogstatsd(
         statsd_string: &str,
         metric_namespace: Option<String>,
@@ -574,6 +651,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
             ),
             metric_namespace,
+            buf_size: super::DEFAULT_BUFFER_SIZE,
         };
         dogstatsd.consume_statsd().await;
 

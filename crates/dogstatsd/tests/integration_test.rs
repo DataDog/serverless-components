@@ -96,13 +96,22 @@ async fn dogstatsd_server_ships_series() {
 }
 
 async fn start_dogstatsd(aggregator_handle: AggregatorHandle) -> CancellationToken {
+    start_dogstatsd_on_port(aggregator_handle, 18125, None).await
+}
+
+async fn start_dogstatsd_on_port(
+    aggregator_handle: AggregatorHandle,
+    port: u16,
+    buffer_size: Option<usize>,
+) -> CancellationToken {
     let dogstatsd_config = DogStatsDConfig {
         host: "127.0.0.1".to_string(),
-        port: 18125,
+        port,
         metric_namespace: None,
         #[cfg(all(windows, feature = "windows-pipes"))]
         windows_pipe_name: None,
         so_rcvbuf: None,
+        buffer_size,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
     let dogstatsd_client = DogStatsD::new(
@@ -287,6 +296,84 @@ async fn test_send_with_retry_immediate_failure_after_one_attempt() {
     mock.assert_async().await;
 }
 
+/// Verifies that `buffer_size` actually controls how many bytes the server
+/// reads per UDP packet. Sends a payload larger than a small buffer and
+/// checks that metrics are lost, then sends the same payload to a server
+/// with a large enough buffer and checks that all metrics arrive.
+#[cfg(test)]
+#[tokio::test]
+async fn test_buffer_size_limits_udp_read() {
+    use dogstatsd::metric::SortedTags;
+
+    // Build a payload of ~40 metrics, each ~30 bytes → ~1200 bytes total.
+    // With buffer_size=256 the server will truncate the packet and lose most
+    // metrics. With buffer_size=8192 everything fits.
+    let metrics: Vec<String> = (0..40)
+        .map(|i| format!("buf.test.m{}:{}|c", i, i))
+        .collect();
+    let payload = metrics.join("\n") + "\n";
+    assert!(
+        payload.len() > 256,
+        "payload must exceed the small buffer size"
+    );
+
+    // --- Small buffer: expect truncation ---
+    let (service_small, handle_small) =
+        AggregatorService::new(SortedTags::parse("test:value").unwrap(), CONTEXTS)
+            .expect("aggregator service creation failed");
+    tokio::spawn(service_small.run());
+
+    let cancel_small = start_dogstatsd_on_port(handle_small.clone(), 18126, Some(256)).await;
+    sleep(Duration::from_millis(50)).await;
+
+    let socket = UdpSocket::bind("0.0.0.0:0").await.expect("unable to bind");
+    socket
+        .send_to(payload.as_bytes(), "127.0.0.1:18126")
+        .await
+        .expect("send failed");
+    sleep(Duration::from_millis(100)).await;
+
+    let resp_small = handle_small.flush().await.expect("flush failed");
+    let small_count: usize = resp_small.series.iter().map(|s| s.len()).sum();
+
+    cancel_small.cancel();
+    handle_small.shutdown().expect("shutdown failed");
+
+    // --- Large buffer: expect all metrics ---
+    let (service_large, handle_large) =
+        AggregatorService::new(SortedTags::parse("test:value").unwrap(), CONTEXTS)
+            .expect("aggregator service creation failed");
+    tokio::spawn(service_large.run());
+
+    let cancel_large = start_dogstatsd_on_port(handle_large.clone(), 18127, Some(8192)).await;
+    sleep(Duration::from_millis(50)).await;
+
+    let socket2 = UdpSocket::bind("0.0.0.0:0").await.expect("unable to bind");
+    socket2
+        .send_to(payload.as_bytes(), "127.0.0.1:18127")
+        .await
+        .expect("send failed");
+    sleep(Duration::from_millis(100)).await;
+
+    let resp_large = handle_large.flush().await.expect("flush failed");
+    let large_count: usize = resp_large.series.iter().map(|s| s.len()).sum();
+
+    cancel_large.cancel();
+    handle_large.shutdown().expect("shutdown failed");
+
+    // The small buffer must have fewer metrics than the large buffer
+    assert!(
+        small_count < large_count,
+        "small buffer ({} metrics) should receive fewer metrics than large buffer ({} metrics)",
+        small_count,
+        large_count
+    );
+    assert_eq!(
+        large_count, 40,
+        "large buffer should receive all 40 metrics"
+    );
+}
+
 #[cfg(test)]
 #[cfg(all(windows, feature = "windows-pipes"))]
 #[tokio::test]
@@ -310,6 +397,7 @@ async fn test_named_pipe_basic_communication() {
                     metric_namespace: None,
                     windows_pipe_name: Some(pipe_name.to_string()),
                     so_rcvbuf: None,
+                    buffer_size: None,
                 },
                 handle,
                 cancel_token,
@@ -365,6 +453,7 @@ async fn test_named_pipe_disconnect_reconnect() {
                     metric_namespace: None,
                     windows_pipe_name: Some(pipe_name.to_string()),
                     so_rcvbuf: None,
+                    buffer_size: None,
                 },
                 handle,
                 cancel_token_clone,
@@ -435,6 +524,7 @@ async fn test_named_pipe_cancellation() {
                     metric_namespace: None,
                     windows_pipe_name: Some(pipe_name.to_string()),
                     so_rcvbuf: None,
+                    buffer_size: None,
                 },
                 handle,
                 cancel_token_clone,
@@ -479,6 +569,7 @@ async fn test_buffer_split_message() {
                     metric_namespace: None,
                     windows_pipe_name: Some(pipe_name.to_string()),
                     so_rcvbuf: None,
+                    buffer_size: None,
                 },
                 handle,
                 cancel_token_clone,
