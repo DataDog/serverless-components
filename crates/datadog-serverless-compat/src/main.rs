@@ -234,6 +234,7 @@ async fn start_dogstatsd(
         windows_pipe_name,
         so_rcvbuf: None,
         buffer_size: None,
+        queue_size: None,
     };
 
     #[cfg(not(all(windows, feature = "windows-pipes")))]
@@ -243,6 +244,7 @@ async fn start_dogstatsd(
         metric_namespace,
         so_rcvbuf: None,
         buffer_size: None,
+        queue_size: None,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
 

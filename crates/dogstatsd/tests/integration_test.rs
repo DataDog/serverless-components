@@ -112,6 +112,7 @@ async fn start_dogstatsd_on_port(
         windows_pipe_name: None,
         so_rcvbuf: None,
         buffer_size,
+        queue_size: None,
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
     let dogstatsd_client = DogStatsD::new(
@@ -398,6 +399,7 @@ async fn test_named_pipe_basic_communication() {
                     windows_pipe_name: Some(pipe_name.to_string()),
                     so_rcvbuf: None,
                     buffer_size: None,
+                    queue_size: None,
                 },
                 handle,
                 cancel_token,
@@ -454,6 +456,7 @@ async fn test_named_pipe_disconnect_reconnect() {
                     windows_pipe_name: Some(pipe_name.to_string()),
                     so_rcvbuf: None,
                     buffer_size: None,
+                    queue_size: None,
                 },
                 handle,
                 cancel_token_clone,
@@ -525,6 +528,7 @@ async fn test_named_pipe_cancellation() {
                     windows_pipe_name: Some(pipe_name.to_string()),
                     so_rcvbuf: None,
                     buffer_size: None,
+                    queue_size: None,
                 },
                 handle,
                 cancel_token_clone,
@@ -570,6 +574,7 @@ async fn test_buffer_split_message() {
                     windows_pipe_name: Some(pipe_name.to_string()),
                     so_rcvbuf: None,
                     buffer_size: None,
+                    queue_size: None,
                 },
                 handle,
                 cancel_token_clone,
