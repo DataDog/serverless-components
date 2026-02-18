@@ -297,6 +297,121 @@ async fn test_send_with_retry_immediate_failure_after_one_attempt() {
     mock.assert_async().await;
 }
 
+/// Verifies that `spin()` exits promptly when cancelled on a quiet socket
+/// (no packets arriving). Without cancellation-aware awaiting in the reader,
+/// the task would block on `recv_from` indefinitely.
+#[cfg(test)]
+#[tokio::test]
+async fn test_spin_exits_on_cancellation_without_traffic() {
+    use dogstatsd::metric::SortedTags;
+
+    let (service, handle) =
+        AggregatorService::new(SortedTags::parse("test:value").unwrap(), CONTEXTS)
+            .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+
+    let cancel_token = CancellationToken::new();
+    let dogstatsd = DogStatsD::new(
+        &DogStatsDConfig {
+            host: "127.0.0.1".to_string(),
+            port: 18128,
+            metric_namespace: None,
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            windows_pipe_name: None,
+            so_rcvbuf: None,
+            buffer_size: None,
+            queue_size: None,
+        },
+        handle.clone(),
+        cancel_token.clone(),
+    )
+    .await;
+
+    let spin_handle = tokio::spawn(async move {
+        dogstatsd.spin().await;
+    });
+
+    // Cancel immediately — no packets sent
+    cancel_token.cancel();
+
+    // spin() must exit within 500ms; if it blocks on recv_from this times out.
+    let result = timeout(Duration::from_millis(500), spin_handle).await;
+    assert!(
+        result.is_ok(),
+        "spin() should exit promptly after cancellation on a quiet socket"
+    );
+
+    handle.shutdown().expect("shutdown failed");
+}
+
+/// Verifies that when the internal queue is full, the server drops packets
+/// rather than blocking, and still delivers the metrics it did accept.
+/// Uses queue_size=1 so the queue saturates almost immediately.
+#[cfg(test)]
+#[tokio::test]
+async fn test_queue_full_drops_packets_without_blocking() {
+    use dogstatsd::metric::SortedTags;
+
+    let (service, handle) =
+        AggregatorService::new(SortedTags::parse("test:value").unwrap(), CONTEXTS)
+            .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+
+    let cancel_token = CancellationToken::new();
+    let dogstatsd = DogStatsD::new(
+        &DogStatsDConfig {
+            host: "127.0.0.1".to_string(),
+            port: 18129,
+            metric_namespace: None,
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            windows_pipe_name: None,
+            so_rcvbuf: None,
+            buffer_size: None,
+            queue_size: Some(1),
+        },
+        handle.clone(),
+        cancel_token.clone(),
+    )
+    .await;
+
+    let spin_handle = tokio::spawn(async move {
+        dogstatsd.spin().await;
+    });
+
+    sleep(Duration::from_millis(50)).await;
+
+    // Fire 200 packets as fast as possible — with queue_size=1, most will be dropped.
+    let socket = UdpSocket::bind("0.0.0.0:0").await.expect("bind failed");
+    for i in 0..200 {
+        let msg = format!("qfull.m{}:{}|c\n", i, i);
+        let _ = socket.send_to(msg.as_bytes(), "127.0.0.1:18129").await;
+    }
+
+    // Give the processor time to consume what it received.
+    sleep(Duration::from_millis(300)).await;
+
+    let response = handle.flush().await.expect("flush failed");
+    let received: usize = response.series.iter().map(|s| s.len()).sum();
+
+    // With queue_size=1, we expect some metrics to arrive but not all 200.
+    // The exact number depends on timing, so just verify:
+    // 1. At least some metrics got through (server isn't broken)
+    // 2. Fewer than all 200 arrived (drops happened)
+    assert!(
+        received > 0,
+        "expected at least some metrics to arrive, got 0"
+    );
+    assert!(
+        received < 200,
+        "expected some packets to be dropped with queue_size=1, but all {} arrived",
+        received
+    );
+
+    cancel_token.cancel();
+    let _ = timeout(Duration::from_millis(500), spin_handle).await;
+    handle.shutdown().expect("shutdown failed");
+}
+
 /// Verifies that `buffer_size` actually controls how many bytes the server
 /// reads per UDP packet. Sends a payload larger than a small buffer and
 /// checks that metrics are lost, then sends the same payload to a server
