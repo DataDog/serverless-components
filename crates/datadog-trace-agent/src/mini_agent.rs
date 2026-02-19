@@ -31,6 +31,10 @@ const PROFILING_ENDPOINT_PATH: &str = "/profiling/v1/input";
 const TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const STATS_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
+/// Sentinel file written on startup in Lambda Lite mode.
+/// dd-trace (Node.js) checks this path via DATADOG_MINI_AGENT_PATH in constants.js
+/// to decide whether to switch from LogExporter (stdout) to AgentExporter (HTTP :8126).
+const LAMBDA_LITE_SENTINEL_PATH: &str = "/tmp/datadog/mini_agent_ready";
 
 pub struct MiniAgent {
     pub config: Arc<config::Config>,
@@ -146,6 +150,18 @@ impl MiniAgent {
             "Time taken to start the Mini Agent: {} ms",
             now.elapsed().as_millis()
         );
+
+        // Write a sentinel file so that Node.js dd-trace detects a running agent and
+        // switches from LogExporter (stdout) to AgentExporter (HTTP :8126).
+        // Only written for Lambda Lite; standard Lambda invocations use the Lambda
+        // Extension path (/opt/extensions/datadog-agent) instead.
+        // /opt is read-only in Lambda Lite, so we use /tmp/datadog/ (created by the
+        // serverless-compat JS layer before spawning this binary).
+        if crate::http_utils::is_lambda_lite() {
+            if let Err(e) = std::fs::write(LAMBDA_LITE_SENTINEL_PATH, b"") {
+                debug!("Could not write mini agent sentinel file: {}", e);
+            }
+        }
 
         if let Some(pipe_name) = pipe_name_opt {
             // Windows named pipe transport
