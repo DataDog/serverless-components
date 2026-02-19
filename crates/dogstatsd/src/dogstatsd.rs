@@ -960,10 +960,8 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
 
         // 0xFF 0xFE are invalid UTF-8 bytes
         let invalid_bytes: &[u8] = &[0xFF, 0xFE, b':', b'1', b'|', b'c'];
-        let src = MessageSource::Network(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            0,
-        ));
+        let src =
+            MessageSource::Network(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0));
         process_packet(invalid_bytes, &src, &handle, None);
 
         assert!(logs_contain("Received non-UTF-8 packet"));
