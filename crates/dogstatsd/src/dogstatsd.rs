@@ -494,8 +494,18 @@ fn process_packet(
 
     trace!("Received packet: {} bytes from {}", buf.len(), src);
 
-    #[allow(clippy::expect_used)]
-    let msgs = std::str::from_utf8(buf).expect("couldn't parse as string");
+    let msgs = match std::str::from_utf8(buf) {
+        Ok(s) => s,
+        Err(e) => {
+            error!(
+                "Received non-UTF-8 packet ({} bytes) from {}, dropping: {}",
+                buf.len(),
+                src,
+                e
+            );
+            return;
+        }
+    };
     trace!("Received message: {} from {}", msgs, src);
     let statsd_metric_strings: Vec<&str> = msgs.split('\n').collect();
     let metric_count_in_packet = statsd_metric_strings
@@ -939,5 +949,31 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         service_task.await.expect("Service task failed");
 
         response
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_dogstatsd_non_utf8_packet_does_not_panic() {
+        let (service, handle) =
+            AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
+        let service_task = tokio::spawn(service.run());
+
+        // 0xFF 0xFE are invalid UTF-8 bytes
+        let invalid_bytes: &[u8] = &[0xFF, 0xFE, b':', b'1', b'|', b'c'];
+        let src = MessageSource::Network(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            0,
+        ));
+        process_packet(invalid_bytes, &src, &handle, None);
+
+        assert!(logs_contain("Received non-UTF-8 packet"));
+
+        // No metrics should have been inserted
+        let response = handle.flush().await.expect("Failed to flush");
+        assert_eq!(response.series.len(), 0);
+        assert_eq!(response.distributions.len(), 0);
+
+        handle.shutdown().expect("Failed to shutdown");
+        service_task.await.expect("Service task failed");
     }
 }
