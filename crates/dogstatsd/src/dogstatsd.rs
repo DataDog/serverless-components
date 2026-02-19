@@ -818,6 +818,22 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     }
 
     #[tokio::test]
+    async fn test_dogstatsd_filter_lambda_enhanced_invocations() {
+        let response = setup_and_consume_dogstatsd(
+            "aws.lambda.enhanced.invocations:1|c\ncustom.metric:5|c\n",
+            None,
+        )
+        .await;
+
+        // aws.lambda.enhanced.invocations should be filtered out
+        assert_eq!(response.series.len(), 1);
+        assert_eq!(response.series[0].series.len(), 1);
+        assert!(response.series[0].series[0]
+            .metric
+            .starts_with("custom.metric"));
+    }
+
+    #[tokio::test]
     async fn test_create_udp_socket_default_so_rcvbuf() {
         let socket = super::create_udp_socket("127.0.0.1:0", None).await.unwrap();
         let std_socket = socket.into_std().unwrap();
