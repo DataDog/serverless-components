@@ -114,6 +114,23 @@ pub fn verify_request_content_length(
     None
 }
 
+/// Environment variable set by the Lambda runtime to indicate the initialisation type.
+/// Lambda Lite (web function / snap-start mode) sets this to `"native-http"`;
+/// standard on-demand invocations set it to `"on-demand"`.
+const ENV_LAMBDA_INIT_TYPE: &str = "AWS_LAMBDA_INITIALIZATION_TYPE";
+
+/// Returns true if the current environment is Lambda Lite (web function / snap start mode).
+///
+/// Determined by checking [`ENV_LAMBDA_INIT_TYPE`]` == "native-http"`. This is used to gate
+/// behaviour specific to long-running web server deployments on Lambda Lite.
+pub fn is_lambda_lite() -> bool {
+    is_lambda_lite_from_env(std::env::var(ENV_LAMBDA_INIT_TYPE).ok().as_deref())
+}
+
+fn is_lambda_lite_from_env(val: Option<&str>) -> bool {
+    val == Some("native-http")
+}
+
 /// Builds a reqwest client with optional proxy configuration and timeout.
 /// Uses rustls TLS by default. FIPS-compliant TLS is available via the fips feature
 pub fn build_client(
@@ -135,7 +152,28 @@ mod tests {
     use hyper::StatusCode;
     use libdd_common::hyper_migration;
 
+    use super::is_lambda_lite_from_env;
     use super::verify_request_content_length;
+
+    #[test]
+    fn test_is_lambda_lite_native_http() {
+        assert!(is_lambda_lite_from_env(Some("native-http")));
+    }
+
+    #[test]
+    fn test_is_lambda_lite_on_demand() {
+        assert!(!is_lambda_lite_from_env(Some("on-demand")));
+    }
+
+    #[test]
+    fn test_is_lambda_lite_empty_string() {
+        assert!(!is_lambda_lite_from_env(Some("")));
+    }
+
+    #[test]
+    fn test_is_lambda_lite_unset() {
+        assert!(!is_lambda_lite_from_env(None));
+    }
 
     fn create_test_headers_with_content_length(val: &str) -> HeaderMap {
         let mut map = HeaderMap::new();
