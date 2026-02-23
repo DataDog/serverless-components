@@ -18,11 +18,12 @@ use zstd::zstd_safe::CompressionLevel;
 
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
-    config, env_verifier, metrics_collector, mini_agent, proxy_flusher, stats_flusher,
-    stats_processor,
+    config, env_verifier, mini_agent, proxy_flusher, stats_flusher, stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
 };
+
+use datadog_metrics_collector::cpu::CpuMetricsCollector;
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
@@ -203,12 +204,7 @@ pub async fn main() {
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
     let cpu_collector = if dd_enhanced_metrics {
         aggregator_handle.as_ref().map(|handle| {
-            metrics_collector::CpuMetricsCollector::new(
-                handle.clone(),
-                None,
-                -1,
-                CPU_METRICS_COLLECTION_INTERVAL,
-            )
+            CpuMetricsCollector::new(handle.clone(), None, -1, CPU_METRICS_COLLECTION_INTERVAL)
         })
     } else {
         info!("Enhanced metrics disabled");

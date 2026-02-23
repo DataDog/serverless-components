@@ -391,6 +391,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-metrics-collector"
+version = "0.1.0"
+dependencies = [
+ "dogstatsd",
+ "num_cpus",
+ "tracing",
+]
+
+[[package]]
 name = "datadog-protos"
 version = "0.1.0"
 source = "git+https://github.com/DataDog/saluki/?rev=f863626dbfe3c59bb390985fa6530b0621c2a0a2#f863626dbfe3c59bb390985fa6530b0621c2a0a2"
@@ -408,6 +417,7 @@ dependencies = [
 name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
+ "datadog-metrics-collector",
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils",

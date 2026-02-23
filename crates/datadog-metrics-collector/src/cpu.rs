@@ -238,6 +238,17 @@ impl CpuMetricsCollector {
     pub fn collect_and_submit(&self) {
         if let Some(cpu_stats) = read_cpu_stats() {
             // Submit metrics
+            debug!("Collected cpu stats!");
+            debug!("CPU usage: {}", cpu_stats.total);
+            if let Some(limit) = cpu_stats.limit {
+                debug!(
+                    "CPU limit: {}%, defaulted: {}",
+                    limit, cpu_stats.defaulted_limit
+                );
+            } else {
+                debug!("CPU limit: None, defaulted: {}", cpu_stats.defaulted_limit);
+            }
+            debug!("Submitting CPU metrics!");
         } else {
             debug!("Skipping CPU metrics collection - could not find data to generate CPU usage and limit enhanced metrics");
         }
