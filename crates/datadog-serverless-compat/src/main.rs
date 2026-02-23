@@ -202,9 +202,9 @@ pub async fn main() {
     // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
     // Use the existing aggregator handle
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
-    let cpu_collector = if dd_enhanced_metrics {
+    let mut cpu_collector = if dd_enhanced_metrics {
         aggregator_handle.as_ref().map(|handle| {
-            CpuMetricsCollector::new(handle.clone(), None, -1, CPU_METRICS_COLLECTION_INTERVAL)
+            CpuMetricsCollector::new(handle.clone(), None, -1.0, CPU_METRICS_COLLECTION_INTERVAL)
         })
     } else {
         info!("Enhanced metrics disabled");
@@ -226,8 +226,8 @@ pub async fn main() {
                 }
             }
             _ = cpu_collection_interval.tick() => {
-                if let Some(cpu_collector) = cpu_collector.as_ref() {
-                    cpu_collector.collect_and_submit();
+                if let Some(ref mut collector) = cpu_collector {
+                    collector.collect_and_submit();
                 }
             }
         }
