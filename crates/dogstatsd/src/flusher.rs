@@ -401,4 +401,142 @@ mod tests {
         // Should attempt to flush and return Some with failed metrics (since we're not mocking the API)
         assert!(result.is_some());
     }
+
+    // ---- should_try_next_batch tests ----
+
+    /// Helper to build a minimal reqwest::Response with a given status code.
+    async fn mock_response(status: u16) -> Response {
+        http::Response::builder()
+            .status(status)
+            .body("")
+            .unwrap()
+            .into()
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_accepted() {
+        let resp = Ok(mock_response(202).await);
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(continue_shipping, "202 should continue to next batch");
+        assert!(!should_retry, "202 should not retry");
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_ok_non_accepted() {
+        // 200 OK is unexpected for the intake API (it expects 202)
+        let resp = Ok(mock_response(200).await);
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(
+            !continue_shipping,
+            "unexpected 200 is not 4xx, should not continue"
+        );
+        assert!(
+            should_retry,
+            "unexpected 200 is not 4xx, should retry (treated as transient)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_400_permanent() {
+        let resp = Ok(mock_response(400).await);
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(
+            continue_shipping,
+            "4xx permanent error should continue to next batch"
+        );
+        assert!(!should_retry, "4xx permanent error should not retry");
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_403_permanent() {
+        let resp = Ok(mock_response(403).await);
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(
+            continue_shipping,
+            "403 permanent error should continue to next batch"
+        );
+        assert!(!should_retry, "403 permanent error should not retry");
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_500_temporary() {
+        let resp = Ok(mock_response(500).await);
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(
+            !continue_shipping,
+            "5xx temporary error should not continue"
+        );
+        assert!(should_retry, "5xx temporary error should retry");
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_503_temporary() {
+        let resp = Ok(mock_response(503).await);
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(
+            !continue_shipping,
+            "503 temporary error should not continue"
+        );
+        assert!(should_retry, "503 temporary error should retry");
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_payload_error() {
+        let resp = Err(ShippingError::Payload("bad data".to_string()));
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(
+            continue_shipping,
+            "payload error should continue to next batch (data is malformed)"
+        );
+        assert!(
+            !should_retry,
+            "payload error should not retry (data won't change)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_destination_error_temporary() {
+        let resp = Err(ShippingError::Destination(
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+            "server down".to_string(),
+        ));
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(
+            !continue_shipping,
+            "5xx destination error should not continue"
+        );
+        assert!(should_retry, "5xx destination error should retry");
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_destination_error_permanent() {
+        let resp = Err(ShippingError::Destination(
+            Some(StatusCode::FORBIDDEN),
+            "bad key".to_string(),
+        ));
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(
+            !continue_shipping,
+            "4xx destination error should not continue"
+        );
+        assert!(!should_retry, "4xx destination error should not retry");
+    }
+
+    #[tokio::test]
+    async fn test_should_try_next_batch_destination_error_no_status() {
+        // No status code (e.g., timeout / connection refused)
+        let resp = Err(ShippingError::Destination(
+            None,
+            "connection refused".to_string(),
+        ));
+        let (continue_shipping, should_retry) = should_try_next_batch(resp).await;
+        assert!(
+            !continue_shipping,
+            "no-status destination error should not continue"
+        );
+        assert!(
+            should_retry,
+            "no-status destination error should retry (transient)"
+        );
+    }
 }

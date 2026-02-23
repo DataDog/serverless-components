@@ -757,4 +757,108 @@ pub mod tests {
         assert_eq!(deserialized.sketches().len(), 10);
         assert_eq!(deserialized, distribution);
     }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn count_aggregation_sums_values() {
+        let mut aggregator = Aggregator::new(EMPTY_TAGS, 10).unwrap();
+
+        let m1 = parse("hits:3|c|#env:prod|T1656581409").expect("parse failed");
+        let m2 = parse("hits:7|c|#env:prod|T1656581409").expect("parse failed");
+        let m3 = parse("hits:5|c|#env:prod|T1656581409").expect("parse failed");
+
+        aggregator.insert(m1).unwrap();
+        aggregator.insert(m2).unwrap();
+        aggregator.insert(m3).unwrap();
+
+        // Same name + tags + timestamp bucket = one context, values summed
+        assert_eq!(aggregator.map.len(), 1);
+
+        let entry = aggregator
+            .get_entry_by_id(
+                "hits".into(),
+                &Some(SortedTags::parse("env:prod").unwrap()),
+                1656581400,
+            )
+            .unwrap();
+        assert_eq!(entry.value.get_value().unwrap(), 15.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn gauge_aggregation_last_wins() {
+        let mut aggregator = Aggregator::new(EMPTY_TAGS, 10).unwrap();
+
+        let m1 = parse("cpu:30.0|g|#host:a|T1656581409").expect("parse failed");
+        let m2 = parse("cpu:55.0|g|#host:a|T1656581409").expect("parse failed");
+        let m3 = parse("cpu:42.0|g|#host:a|T1656581409").expect("parse failed");
+
+        aggregator.insert(m1).unwrap();
+        aggregator.insert(m2).unwrap();
+        aggregator.insert(m3).unwrap();
+
+        // Same context, gauge = last value wins
+        assert_eq!(aggregator.map.len(), 1);
+
+        let entry = aggregator
+            .get_entry_by_id(
+                "cpu".into(),
+                &Some(SortedTags::parse("host:a").unwrap()),
+                1656581400,
+            )
+            .unwrap();
+        assert_eq!(entry.value.get_value().unwrap(), 42.0);
+    }
+
+    #[test]
+    fn distribution_aggregation_merges_sketches() {
+        let mut aggregator = Aggregator::new(EMPTY_TAGS, 10).unwrap();
+
+        let m1 = parse("latency:10.0|d|#svc:web|T1656581409").expect("parse failed");
+        let m2 = parse("latency:20.0|d|#svc:web|T1656581409").expect("parse failed");
+        let m3 = parse("latency:30.0|d|#svc:web|T1656581409").expect("parse failed");
+
+        aggregator.insert(m1).unwrap();
+        aggregator.insert(m2).unwrap();
+        aggregator.insert(m3).unwrap();
+
+        // Same context, distributions merge into one sketch
+        assert_eq!(aggregator.map.len(), 1);
+
+        let entry = aggregator
+            .get_entry_by_id(
+                "latency".into(),
+                &Some(SortedTags::parse("svc:web").unwrap()),
+                1656581400,
+            )
+            .unwrap();
+        let sketch = entry.value.get_sketch().unwrap();
+        assert!((sketch.min().unwrap() - 10.0).abs() < PRECISION);
+        assert!((sketch.max().unwrap() - 30.0).abs() < PRECISION);
+        assert!((sketch.sum().unwrap() - 60.0).abs() < PRECISION);
+        assert_eq!(sketch.count(), 3);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn mixed_metric_types_stay_separate() {
+        let mut aggregator = Aggregator::new(EMPTY_TAGS, 10).unwrap();
+
+        // Same name but different types and tags keep different contexts
+        let count = parse("req:1|c|#route:a|T1656581409").expect("parse failed");
+        let gauge = parse("req:5|g|#route:b|T1656581409").expect("parse failed");
+        let dist = parse("req:100|d|#route:c|T1656581409").expect("parse failed");
+
+        aggregator.insert(count).unwrap();
+        aggregator.insert(gauge).unwrap();
+        aggregator.insert(dist).unwrap();
+
+        assert_eq!(aggregator.map.len(), 3);
+
+        let series = aggregator.to_series();
+        assert_eq!(series.len(), 2); // count + gauge
+
+        let protos = aggregator.distributions_to_protobuf();
+        assert_eq!(protos.sketches().len(), 1); // distribution
+    }
 }
