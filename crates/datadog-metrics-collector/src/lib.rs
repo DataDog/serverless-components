@@ -9,3 +9,4 @@
 
 pub mod azure_instance;
 pub mod azure_tags;
+pub mod cpu;
