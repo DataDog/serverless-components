@@ -21,6 +21,7 @@ const CGROUP_CPU_PERIOD_PATH: &str = "/sys/fs/cgroup/cpu/cpu.cfs_period_us"; // 
 const CGROUP_CPU_QUOTA_PATH: &str = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"; // Specifies the total amount of time, in microseconds, for which all tasks in a cgroup can run during one period
 
 const CPU_USAGE_METRIC: &str = "azure.functions.enhanced.test.cpu.usage";
+const CPU_USAGE_PRECISE_METRIC: &str = "azure.functions.enhanced.test.cpu.usage.precise";
 const CPU_LIMIT_METRIC: &str = "azure.functions.enhanced.test.cpu.limit";
 
 /// Statistics from cgroup v1 files, normalized to nanoseconds
@@ -47,11 +48,11 @@ fn read_cpu_stats() -> Option<CpuStats> {
 fn build_cpu_stats(cgroup_stats: &CgroupStats) -> Option<CpuStats> {
     let total = cgroup_stats.total?;
 
-    let (limit_pct, defaulted) = compute_cpu_limit_nc(cgroup_stats);
+    let (limit_nc, defaulted) = compute_cpu_limit_nc(cgroup_stats);
 
     Some(CpuStats {
         total: total as f64,
-        limit: Some(limit_pct),
+        limit: Some(limit_nc),
         defaulted_limit: defaulted,
     })
 }
@@ -170,8 +171,10 @@ fn compute_cgroup_cpu_limit_nc(cgroup_stats: &CgroupStats) -> Option<f64> {
     let mut limit_nc = None;
 
     if let Some(cpu_count) = cgroup_stats.cpu_count {
+        debug!("CPU count from cpuset: {cpu_count}");
         let host_cpu_count = num_cpus::get() as u64;
         if cpu_count != host_cpu_count {
+            debug!("CPU count from cpuset is not equal to host CPU count");
             let cpuset_limit_nc = cpu_count as f64 * 1000000000.0; // Convert to nanocores
             limit_nc = Some(cpuset_limit_nc);
             debug!(
@@ -189,7 +192,7 @@ fn compute_cgroup_cpu_limit_nc(cgroup_stats: &CgroupStats) -> Option<f64> {
             None => {
                 limit_nc = Some(quota_limit_nc);
                 debug!(
-                    "limit_pct is None, setting CPU limit from cfs quota: {} nanocores",
+                    "limit_nc is None, setting CPU limit from cfs quota: {} nanocores",
                     quota_limit_nc
                 );
             }
@@ -208,8 +211,9 @@ fn compute_cgroup_cpu_limit_nc(cgroup_stats: &CgroupStats) -> Option<f64> {
 pub struct CpuMetricsCollector {
     aggregator: AggregatorHandle,
     tags: Option<SortedTags>,
-    last_usage_ns: f64,
     collection_interval_secs: u64,
+    last_usage_ns: f64,
+    last_collection_time: std::time::Instant,
 }
 
 impl CpuMetricsCollector {
@@ -219,19 +223,18 @@ impl CpuMetricsCollector {
     ///
     /// * `aggregator` - The aggregator handle to submit metrics to
     /// * `tags` - Optional tags to attach to all metrics
-    /// * `last_usage_ns` - The last usage time in nanoseconds
     /// * `collection_interval_secs` - The interval in seconds to collect the metrics
     pub fn new(
         aggregator: AggregatorHandle,
         tags: Option<SortedTags>,
-        last_usage_ns: f64,
         collection_interval_secs: u64,
     ) -> Self {
         Self {
             aggregator,
             tags,
-            last_usage_ns,
             collection_interval_secs,
+            last_usage_ns: -1.0,
+            last_collection_time: std::time::Instant::now(),
         }
     }
 
@@ -241,28 +244,52 @@ impl CpuMetricsCollector {
             debug!("Collected cpu stats!");
             let current_usage_ns = cpu_stats.total;
             debug!("CPU usage: {}", cpu_stats.total);
-            
+            let now_instant = std::time::Instant::now();
+
             // Skip first collection
             if self.last_usage_ns == -1.0 {
                 debug!("First CPU collection, skipping rate computation");
                 self.last_usage_ns = current_usage_ns;
+                self.last_collection_time = now_instant;
                 return;
             }
 
-            let delta_ns = current_usage_ns - self.last_usage_ns as f64;
+            let delta_ns = current_usage_ns - self.last_usage_ns;
             self.last_usage_ns = current_usage_ns;
+            let elapsed_secs = self.last_collection_time.elapsed().as_secs_f64();
+            debug!("Elapsed time: {} seconds", elapsed_secs);
+            self.last_collection_time = now_instant;
 
             // Divide nanoseconds delta by collection interval to get usage rate in nanocores
             let usage_rate_nc = delta_ns / self.collection_interval_secs as f64;
             debug!("Usage rate: {} nanocores/s", usage_rate_nc);
+            let precise_usage_rate_nc = delta_ns / elapsed_secs;
+            debug!("Precise usage rate: {} nanocores/s", precise_usage_rate_nc);
 
-            let now = std::time::UNIX_EPOCH.elapsed()
+            let now = std::time::UNIX_EPOCH
+                .elapsed()
                 .map(|d| d.as_secs())
                 .unwrap_or(0)
                 .try_into()
                 .unwrap_or(0);
 
-            let usage_metric = Metric::new(CPU_USAGE_METRIC.into(), MetricValue::distribution(usage_rate_nc), self.tags.clone(), Some(now));
+            let precise_metric = Metric::new(
+                CPU_USAGE_PRECISE_METRIC.into(),
+                MetricValue::distribution(precise_usage_rate_nc),
+                self.tags.clone(),
+                Some(now),
+            );
+
+            if let Err(e) = self.aggregator.insert_batch(vec![precise_metric]) {
+                error!("Failed to insert CPU usage precise metric: {}", e);
+            }
+
+            let usage_metric = Metric::new(
+                CPU_USAGE_METRIC.into(),
+                MetricValue::distribution(usage_rate_nc),
+                self.tags.clone(),
+                Some(now),
+            );
 
             if let Err(e) = self.aggregator.insert_batch(vec![usage_metric]) {
                 error!("Failed to insert CPU usage metric: {}", e);
@@ -273,7 +300,12 @@ impl CpuMetricsCollector {
                 if cpu_stats.defaulted_limit {
                     debug!("CPU limit defaulted to host CPU count");
                 }
-                let limit_metric = Metric::new(CPU_LIMIT_METRIC.into(), MetricValue::distribution(limit), self.tags.clone(), Some(now));
+                let limit_metric = Metric::new(
+                    CPU_LIMIT_METRIC.into(),
+                    MetricValue::distribution(limit),
+                    self.tags.clone(),
+                    Some(now),
+                );
                 if let Err(e) = self.aggregator.insert_batch(vec![limit_metric]) {
                     error!("Failed to insert CPU limit metric: {}", e);
                 }

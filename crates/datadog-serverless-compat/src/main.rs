@@ -52,7 +52,7 @@ pub async fn main() {
         .map(|val| val.to_lowercase())
         .unwrap_or("info".to_string());
 
-    let (_, env_type) = match read_cloud_env() {
+    let (app_name, env_type) = match read_cloud_env() {
         Some(value) => value,
         None => {
             error!("Unable to identify environment. Shutting down Mini Agent.");
@@ -204,7 +204,19 @@ pub async fn main() {
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
     let mut cpu_collector = if dd_enhanced_metrics {
         aggregator_handle.as_ref().map(|handle| {
-            CpuMetricsCollector::new(handle.clone(), None, -1.0, CPU_METRICS_COLLECTION_INTERVAL)
+            // Elastic Premium and Premium plans use WEBSITE_INSTANCE_ID to identify the instance
+            // Flex Consumption and Consumption plans use WEBSITE_POD_NAME or CONTAINER_NAME
+            let instance_id = env::var("WEBSITE_INSTANCE_ID")
+                .or_else(|_| env::var("WEBSITE_POD_NAME"))
+                .or_else(|_| env::var("CONTAINER_NAME"))
+                .ok();
+            debug!("Instance ID: {:?}", instance_id);
+            let mut tag_str = format!("functionname:{}", app_name);
+            if let Some(id) = instance_id {
+                tag_str.push_str(&format!(",instance_id:{}", id));
+            }
+            let tags = SortedTags::parse(&tag_str).ok();
+            CpuMetricsCollector::new(handle.clone(), tags, CPU_METRICS_COLLECTION_INTERVAL)
         })
     } else {
         info!("Enhanced metrics disabled");
