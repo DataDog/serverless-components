@@ -112,6 +112,9 @@ impl Flusher {
         }
 
         debug!("Flushing {n_series} series and {n_distributions} distributions");
+        for (i, dist) in distributions.iter().enumerate() {
+            debug!("Distribution batch {i}: {:?}", dist);
+        }
 
         // Save copies for potential error returns
         let series_copy = series.clone();
