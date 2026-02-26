@@ -84,15 +84,17 @@ impl Metric {
             .join(".");
 
         // Determine the service based on metric prefix first
-        let service = if metric_name.starts_with(JVM_PREFIX)
-            || metric_name.starts_with(RUNTIME_PREFIX)
-        {
-            OriginService::ServerlessRuntime
-        } else if metric_prefix == AWS_LAMBDA_PREFIX || metric_prefix == GOOGLE_CLOUD_RUN_PREFIX || metric_prefix == AZURE_FUNCTIONS_PREFIX {
-            OriginService::ServerlessEnhanced
-        } else {
-            OriginService::ServerlessCustom
-        };
+        let service =
+            if metric_name.starts_with(JVM_PREFIX) || metric_name.starts_with(RUNTIME_PREFIX) {
+                OriginService::ServerlessRuntime
+            } else if metric_prefix == AWS_LAMBDA_PREFIX
+                || metric_prefix == GOOGLE_CLOUD_RUN_PREFIX
+                || metric_prefix == AZURE_FUNCTIONS_PREFIX
+            {
+                OriginService::ServerlessEnhanced
+            } else {
+                OriginService::ServerlessCustom
+            };
 
         // Then determine the category based on tags
         let category = if has_tag_value(&tags, AWS_LAMBDA_TAG_KEY, "") {

@@ -8,3 +8,7 @@
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
 pub mod cpu;
+#[cfg(not(target_os = "windows"))]
+pub mod linux;
+#[cfg(target_os = "windows")]
+pub mod windows;
