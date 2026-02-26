@@ -18,6 +18,7 @@ const AZURE_FUNCTIONS_TAG_VALUE: &str = "azurefunction";
 const DATADOG_PREFIX: &str = "datadog.";
 const AWS_LAMBDA_PREFIX: &str = "aws.lambda";
 const GOOGLE_CLOUD_RUN_PREFIX: &str = "gcp.run";
+const AZURE_FUNCTIONS_PREFIX: &str = "azure.functions";
 const JVM_PREFIX: &str = "jvm.";
 const RUNTIME_PREFIX: &str = "runtime.";
 
@@ -87,7 +88,7 @@ impl Metric {
             || metric_name.starts_with(RUNTIME_PREFIX)
         {
             OriginService::ServerlessRuntime
-        } else if metric_prefix == AWS_LAMBDA_PREFIX || metric_prefix == GOOGLE_CLOUD_RUN_PREFIX {
+        } else if metric_prefix == AWS_LAMBDA_PREFIX || metric_prefix == GOOGLE_CLOUD_RUN_PREFIX || metric_prefix == AZURE_FUNCTIONS_PREFIX {
             OriginService::ServerlessEnhanced
         } else {
             OriginService::ServerlessCustom
