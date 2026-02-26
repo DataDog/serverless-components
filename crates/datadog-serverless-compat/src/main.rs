@@ -23,6 +23,8 @@ use datadog_trace_agent::{
     trace_processor,
 };
 
+use datadog_metrics_collector::cpu::CpuMetricsCollector;
+
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use dogstatsd::{
@@ -38,6 +40,7 @@ use dogstatsd::{
 use dogstatsd::metric::{SortedTags, EMPTY_TAGS};
 use tokio_util::sync::CancellationToken;
 
+const CPU_METRICS_COLLECTION_INTERVAL: u64 = 3;
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
@@ -49,7 +52,7 @@ pub async fn main() {
         .map(|val| val.to_lowercase())
         .unwrap_or("info".to_string());
 
-    let (_, env_type) = match read_cloud_env() {
+    let (app_name, env_type) = match read_cloud_env() {
         Some(value) => value,
         None => {
             error!("Unable to identify environment. Shutting down Mini Agent.");
@@ -102,6 +105,10 @@ pub async fn main() {
     let dd_statsd_metric_namespace: Option<String> = env::var("DD_STATSD_METRIC_NAMESPACE")
         .ok()
         .and_then(|val| parse_metric_namespace(&val));
+
+    let dd_enhanced_metrics = env::var("DD_ENHANCED_METRICS")
+        .map(|val| val.to_lowercase() != "false")
+        .unwrap_or(true);
 
     let https_proxy = env::var("DD_PROXY_HTTPS")
         .or_else(|_| env::var("HTTPS_PROXY"))
@@ -169,7 +176,7 @@ pub async fn main() {
         }
     });
 
-    let (metrics_flusher, _aggregator_handle) = if dd_use_dogstatsd {
+    let (metrics_flusher, aggregator_handle) = if dd_use_dogstatsd {
         debug!("Starting dogstatsd");
         let (_, metrics_flusher, aggregator_handle) = start_dogstatsd(
             dd_dogstatsd_port,
@@ -193,15 +200,49 @@ pub async fn main() {
         (None, None)
     };
 
+    // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
+    // Use the existing aggregator handle
+    // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
+    let mut cpu_collector = if dd_enhanced_metrics {
+        aggregator_handle.as_ref().map(|handle| {
+            // Elastic Premium and Premium plans use WEBSITE_INSTANCE_ID to identify the instance
+            // Flex Consumption and Consumption plans use WEBSITE_POD_NAME or CONTAINER_NAME
+            let instance_id = env::var("WEBSITE_INSTANCE_ID")
+                .or_else(|_| env::var("WEBSITE_POD_NAME"))
+                .or_else(|_| env::var("CONTAINER_NAME"))
+                .ok();
+            debug!("Instance ID: {:?}", instance_id);
+            let mut tag_str = format!("functionname:{}", app_name);
+            if let Some(id) = instance_id {
+                tag_str.push_str(&format!(",instance_id:{}", id));
+            }
+            let tags = SortedTags::parse(&tag_str).ok();
+            CpuMetricsCollector::new(handle.clone(), tags, CPU_METRICS_COLLECTION_INTERVAL)
+        })
+    } else {
+        info!("Enhanced metrics disabled");
+        None
+    };
+
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
+    let mut cpu_collection_interval =
+        interval(Duration::from_secs(CPU_METRICS_COLLECTION_INTERVAL));
     flush_interval.tick().await; // discard first tick, which is instantaneous
+    cpu_collection_interval.tick().await;
 
     loop {
-        flush_interval.tick().await;
-
-        if let Some(metrics_flusher) = metrics_flusher.as_ref() {
-            debug!("Flushing dogstatsd metrics");
-            metrics_flusher.flush().await;
+        tokio::select! {
+            _ = flush_interval.tick() => {
+                if let Some(metrics_flusher) = metrics_flusher.as_ref() {
+                    debug!("Flushing dogstatsd metrics");
+                    metrics_flusher.flush().await;
+                }
+            }
+            _ = cpu_collection_interval.tick() => {
+                if let Some(ref mut collector) = cpu_collector {
+                    collector.collect_and_submit();
+                }
+            }
         }
     }
 }
