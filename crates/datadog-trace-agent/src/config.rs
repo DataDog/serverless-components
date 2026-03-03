@@ -109,6 +109,8 @@ pub struct Config {
     /// timeout for environment verification, in milliseconds
     pub verify_env_timeout_ms: u64,
     pub proxy_url: Option<String>,
+    /// Skip SSL certificate validation
+    pub skip_ssl_validation: bool,
 }
 
 impl Config {
@@ -250,6 +252,9 @@ impl Config {
             proxy_url: env::var("DD_PROXY_HTTPS")
                 .or_else(|_| env::var("HTTPS_PROXY"))
                 .ok(),
+            skip_ssl_validation: env::var("DD_SKIP_SSL_VALIDATION")
+                .map(|v| v.to_lowercase() == "true" || v == "1")
+                .unwrap_or(false),
             tags,
         })
     }
@@ -593,6 +598,7 @@ pub mod test_helpers {
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 1000,
             proxy_url: None,
+            skip_ssl_validation: false,
         }
     }
 }

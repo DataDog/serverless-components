@@ -6,18 +6,29 @@ use tracing::debug;
 /// Creates a reqwest client builder with TLS configuration.
 /// When the "fips" feature is enabled, it uses a FIPS-compliant TLS configuration.
 /// Otherwise, it uses reqwest's default rustls TLS implementation.
+///
+/// `verify_certs`: when false, TLS certificate verification is disabled (e.g. for self-signed or dev).
 #[cfg(not(feature = "fips"))]
-pub fn create_reqwest_client_builder() -> Result<ClientBuilder, Box<dyn Error>> {
+pub fn create_reqwest_client_builder(
+    ssl_verification: bool,
+) -> Result<ClientBuilder, Box<dyn Error>> {
     // Just return the default builder with rustls TLS. This is the one place we should be okay
     // to call reqwest::Client::builder().
     #[allow(clippy::disallowed_methods)]
-    Ok(reqwest::Client::builder().use_rustls_tls())
+    Ok(reqwest::Client::builder()
+        .use_rustls_tls()
+        .danger_accept_invalid_certs(!ssl_verification))
 }
 
 /// Creates a reqwest client builder with FIPS-compliant TLS configuration.
 /// This version loads native root certificates and verifies FIPS compliance.
+/// Skip SSL is not supported in FIPS; certificate verification is always enabled.
 #[cfg(feature = "fips")]
-pub fn create_reqwest_client_builder() -> Result<ClientBuilder, Box<dyn Error>> {
+pub fn create_reqwest_client_builder(
+    ssl_verification: bool,
+) -> Result<ClientBuilder, Box<dyn Error>> {
+    let _ = ssl_verification; // FIPS does not allow skip SSL validation
+
     // Get the runtime crypto provider that should have been configured at the start of the
     // application using something like rustls::crypto::default_fips_provider().install_default()
     let provider =

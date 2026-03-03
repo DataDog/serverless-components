@@ -213,6 +213,7 @@ mod tests {
             os: "linux".to_string(),
             obfuscation_config: ObfuscationConfig::new().unwrap(),
             proxy_url: None,
+            skip_ssl_validation: false,
             profiling_intake: Endpoint {
                 url: hyper::Uri::from_static("https://proxy.agent.notdog.com/proxy"),
                 api_key: Some("dummy_api_key".into()),

@@ -275,8 +275,8 @@ async fn start_dogstatsd(
                 timeout: DOGSTATSD_TIMEOUT_DURATION,
                 retry_strategy: RetryStrategy::LinearBackoff(3, 1),
                 compression_level: CompressionLevel::try_from(6).unwrap_or_default(),
-                // Not supported yet
                 ca_cert_path: None,
+                skip_ssl_validation: false, // not configurable in serverless-compat
             });
             Some(metrics_flusher)
         }

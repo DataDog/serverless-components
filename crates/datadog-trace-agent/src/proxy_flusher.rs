@@ -43,6 +43,7 @@ impl ProxyFlusher {
         );
         let client = build_client(
             config.proxy_url.as_deref(),
+            config.skip_ssl_validation,
             Duration::from_secs(config.proxy_request_timeout_secs),
         )
         .unwrap_or_else(|e| {

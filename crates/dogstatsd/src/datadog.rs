@@ -150,11 +150,12 @@ impl DdApi {
         metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
         https_proxy: Option<String>,
         ca_cert_path: Option<String>,
+        skip_ssl_validation: bool,
         timeout: Duration,
         retry_strategy: RetryStrategy,
         compression_level: CompressionLevel,
     ) -> Self {
-        let client = build_client(https_proxy, ca_cert_path, timeout)
+        let client = build_client(https_proxy, ca_cert_path, skip_ssl_validation, timeout)
             .inspect_err(|e| {
                 error!("Unable to create client {:?}", e);
             })
@@ -295,9 +296,11 @@ pub enum RetryStrategy {
 fn build_client(
     https_proxy: Option<String>,
     ca_cert_path: Option<String>,
+    skip_ssl_validation: bool,
     timeout: Duration,
 ) -> Result<Client, Box<dyn Error>> {
-    let mut builder = create_reqwest_client_builder()?.timeout(timeout);
+    let verify_certs = !skip_ssl_validation;
+    let mut builder = create_reqwest_client_builder(verify_certs)?.timeout(timeout);
 
     // Load custom TLS certificate if configured
     if let Some(cert_path) = &ca_cert_path {

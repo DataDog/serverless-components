@@ -115,12 +115,16 @@ pub fn verify_request_content_length(
 }
 
 /// Builds a reqwest client with optional proxy configuration and timeout.
-/// Uses rustls TLS by default. FIPS-compliant TLS is available via the fips feature
+/// Uses rustls TLS by default. FIPS-compliant TLS is available via the fips feature.
+///
+/// `skip_ssl_validation`: when true, TLS certificate verification is disabled (e.g. for self-signed or dev).
 pub fn build_client(
     proxy_url: Option<&str>,
+    skip_ssl_validation: bool,
     timeout: Duration,
 ) -> Result<reqwest::Client, Box<dyn Error>> {
-    let mut builder = create_reqwest_client_builder()?.timeout(timeout);
+    let verify_certs = !skip_ssl_validation;
+    let mut builder = create_reqwest_client_builder(verify_certs)?.timeout(timeout);
     if let Some(proxy) = proxy_url {
         builder = builder.proxy(reqwest::Proxy::https(proxy)?);
     }
