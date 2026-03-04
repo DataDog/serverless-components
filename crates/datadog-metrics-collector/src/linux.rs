@@ -30,57 +30,6 @@ struct CgroupStats {
 
 pub struct LinuxCpuStatsReader;
 
-pub fn log_cgroup_processes() {
-    let tasks = match fs::read_to_string("/sys/fs/cgroup/cpu/cgroup.procs") {
-        Ok(t) => t,
-        Err(e) => { debug!("Failed to read cgroup tasks: {}", e); return; }
-    };
-
-    debug!("Processes in cgroup:");
-    let mut total_ns: u64 = 0;
-
-    for line in tasks.lines() {
-        let pid: u32 = match line.trim().parse() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-
-        let comm = fs::read_to_string(format!("/proc/{}/comm", pid))
-            .unwrap_or_default();
-        let comm = comm.trim();
-
-        let stat = match fs::read_to_string(format!("/proc/{}/stat", pid)) {
-            Ok(s) => s,
-            Err(_) => {
-                debug!("PID={} name={} (exited)", pid, comm);
-                continue;
-            }
-        };
-
-        let fields: Vec<&str> = stat.split_whitespace().collect();
-        if fields.len() < 15 {
-            continue;
-        }
-        let utime: u64 = fields[13].parse().unwrap_or(0);
-        let stime: u64 = fields[14].parse().unwrap_or(0);
-        let ns = (utime + stime) * 10_000_000;
-        total_ns += ns;
-
-        debug!("PID={} name={} CPU: {} ns (user: {} ns, kernel: {} ns)",
-            pid, comm, ns, utime * 10_000_000, stime * 10_000_000);
-    }
-
-    debug!("Sum of cgroup PIDs: {} ns", total_ns);
-
-    if let Ok(cgroup) = fs::read_to_string(CGROUP_CPU_USAGE_PATH) {
-        if let Ok(cgroup_ns) = cgroup.trim().parse::<u64>() {
-            debug!("cpuacct.usage: {} ns", cgroup_ns);
-            debug!("cgroup PIDs sum is {:.1}% of cpuacct.usage", total_ns as f64 / cgroup_ns as f64 * 100.0);
-        }
-    }
-}
-
-
 fn read_proc_stat_snapshot() -> Option<u64> {
     let contents = fs::read_to_string(PROC_STAT_PATH).ok()?;
     let cpu_line = contents.lines().find(|l| l.starts_with("cpu "))?;
@@ -98,13 +47,6 @@ fn read_proc_stat_snapshot() -> Option<u64> {
 impl CpuStatsReader for LinuxCpuStatsReader {
     fn read(&self) -> Option<CpuStats> {
         debug!("Reading CPU stats from Linux - using procstat");
-        log_cgroup_processes();
-        // let total_time_ns = read_proc_stat_snapshot()?;
-        // Some(CpuStats {
-        //     total: total_time_ns as f64,
-        //     limit: Some(num_cpus::get() as f64 * 1000000000.0),
-        //     defaulted_limit: true,
-        // })
         let cgroup_stats = read_cgroup_stats();
         build_cpu_stats(&cgroup_stats)
     }
@@ -116,8 +58,11 @@ fn build_cpu_stats(cgroup_stats: &CgroupStats) -> Option<CpuStats> {
 
     let (limit_nc, defaulted) = compute_cpu_limit_nc(cgroup_stats);
 
+    let host_total = read_proc_stat_snapshot().unwrap_or(0);
+
     Some(CpuStats {
         total: total as f64,
+        host_total: host_total as f64,
         limit: Some(limit_nc),
         defaulted_limit: defaulted,
     })
