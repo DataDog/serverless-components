@@ -3,8 +3,8 @@
 
 //! CPU metrics collector for Azure Functions
 //!
-//! This module provides OS-agnostic CPU metrics collection, computing CPU usage
-//! adnd limit and submitting them as distribution metrics to Datadog.
+//! This module provides OS-agnostic CPU stats collection, CPU usage
+//! and limit computation, and metrics submission to Datadog.
 //!
 //! All CPU metrics are reported in nanocores (1 core = 1,000,000,000 nanocores).
 

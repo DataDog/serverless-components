@@ -9,7 +9,6 @@
 //! All CPU metrics are reported in nanocores (1 core = 1,000,000,000 nanocores).
 
 use crate::cpu::{CpuStats, CpuStatsReader};
-use num_cpus;
 use std::fs;
 use std::io;
 use tracing::debug;
@@ -18,6 +17,8 @@ const CGROUP_CPU_USAGE_PATH: &str = "/sys/fs/cgroup/cpu/cpuacct.usage"; // Repor
 const CGROUP_CPUSET_CPUS_PATH: &str = "/sys/fs/cgroup/cpuset/cpuset.cpus"; // Specifies the CPUs that tasks in this cgroup are permitted to access
 const CGROUP_CPU_PERIOD_PATH: &str = "/sys/fs/cgroup/cpu/cpu.cfs_period_us"; // Specifies a period of time, in microseconds, for how regularly a cgroup's access to CPU resources should be reallocated
 const CGROUP_CPU_QUOTA_PATH: &str = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"; // Specifies the total amount of time, in microseconds, for which all tasks in a cgroup can run during one period
+const PROC_UPTIME_PATH: &str = "/proc/uptime"; // Reports the total uptime of the system, in seconds
+const PROC_STAT_PATH: &str = "/proc/stat"; // Reports the total CPU time, in nanoseconds, consumed by all processes and threads in the system
 
 /// Statistics from cgroup v1 files, normalized to nanoseconds
 struct CgroupStats {
@@ -29,8 +30,81 @@ struct CgroupStats {
 
 pub struct LinuxCpuStatsReader;
 
+pub fn log_cgroup_processes() {
+    let tasks = match fs::read_to_string("/sys/fs/cgroup/cpu/cgroup.procs") {
+        Ok(t) => t,
+        Err(e) => { debug!("Failed to read cgroup tasks: {}", e); return; }
+    };
+
+    debug!("Processes in cgroup:");
+    let mut total_ns: u64 = 0;
+
+    for line in tasks.lines() {
+        let pid: u32 = match line.trim().parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        let comm = fs::read_to_string(format!("/proc/{}/comm", pid))
+            .unwrap_or_default();
+        let comm = comm.trim();
+
+        let stat = match fs::read_to_string(format!("/proc/{}/stat", pid)) {
+            Ok(s) => s,
+            Err(_) => {
+                debug!("PID={} name={} (exited)", pid, comm);
+                continue;
+            }
+        };
+
+        let fields: Vec<&str> = stat.split_whitespace().collect();
+        if fields.len() < 15 {
+            continue;
+        }
+        let utime: u64 = fields[13].parse().unwrap_or(0);
+        let stime: u64 = fields[14].parse().unwrap_or(0);
+        let ns = (utime + stime) * 10_000_000;
+        total_ns += ns;
+
+        debug!("PID={} name={} CPU: {} ns (user: {} ns, kernel: {} ns)",
+            pid, comm, ns, utime * 10_000_000, stime * 10_000_000);
+    }
+
+    debug!("Sum of cgroup PIDs: {} ns", total_ns);
+
+    if let Ok(cgroup) = fs::read_to_string(CGROUP_CPU_USAGE_PATH) {
+        if let Ok(cgroup_ns) = cgroup.trim().parse::<u64>() {
+            debug!("cpuacct.usage: {} ns", cgroup_ns);
+            debug!("cgroup PIDs sum is {:.1}% of cpuacct.usage", total_ns as f64 / cgroup_ns as f64 * 100.0);
+        }
+    }
+}
+
+
+fn read_proc_stat_snapshot() -> Option<u64> {
+    let contents = fs::read_to_string(PROC_STAT_PATH).ok()?;
+    let cpu_line = contents.lines().find(|l| l.starts_with("cpu "))?;
+    let mut values = cpu_line.split_whitespace();
+    values.next(); // skip "cpu" label
+    let user: u64 = values.next()?.parse().ok()?;
+    let nice: u64 = values.next()?.parse().ok()?;
+    let system: u64 = values.next()?.parse().ok()?;
+    // jiffies to nanoseconds (USER_HZ=100, so 1 jiffy = 10_000_000 ns)
+    let active_ns = (user + nice + system) * 10_000_000;
+    debug!("proc/stat active: {} ns", active_ns);
+    Some(active_ns)
+}
+
 impl CpuStatsReader for LinuxCpuStatsReader {
     fn read(&self) -> Option<CpuStats> {
+        debug!("Reading CPU stats from Linux - using procstat");
+        log_cgroup_processes();
+        // let total_time_ns = read_proc_stat_snapshot()?;
+        // Some(CpuStats {
+        //     total: total_time_ns as f64,
+        //     limit: Some(num_cpus::get() as f64 * 1000000000.0),
+        //     defaulted_limit: true,
+        // })
         let cgroup_stats = read_cgroup_stats();
         build_cpu_stats(&cgroup_stats)
     }
