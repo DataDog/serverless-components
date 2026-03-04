@@ -263,27 +263,30 @@ async fn start_dogstatsd(
 
     let metrics_flusher = match dd_api_key {
         Some(dd_api_key) => {
-            #[allow(clippy::expect_used)]
-            let client = {
-                let mut builder = create_reqwest_client_builder()
-                    .expect("Failed to create HTTP client builder")
-                    .timeout(DOGSTATSD_TIMEOUT_DURATION);
-                if let Some(proxy) = https_proxy {
-                    builder = builder
-                        .proxy(reqwest::Proxy::https(proxy).expect("Failed to create HTTPS proxy"));
+            let client = match build_metrics_client(https_proxy, DOGSTATSD_TIMEOUT_DURATION) {
+                Ok(client) => client,
+                Err(e) => {
+                    error!("Failed to build HTTP client: {e}, won't flush metrics");
+                    return (dogstatsd_cancel_token, None, handle);
                 }
-                builder.build().expect("Failed to build HTTP client")
             };
 
-            #[allow(clippy::expect_used)]
+            let metrics_intake_url_prefix = match Site::new(dd_site)
+                .map_err(|e| e.to_string())
+                .and_then(|site| {
+                    MetricsIntakeUrlPrefix::new(Some(site), None).map_err(|e| e.to_string())
+                }) {
+                Ok(prefix) => prefix,
+                Err(e) => {
+                    error!("Failed to create metrics intake URL: {e}, won't flush metrics");
+                    return (dogstatsd_cancel_token, None, handle);
+                }
+            };
+
             let metrics_flusher = Flusher::new(FlusherConfig {
                 api_key_factory: Arc::new(ApiKeyFactory::new(&dd_api_key)),
                 aggregator_handle: handle.clone(),
-                metrics_intake_url_prefix: MetricsIntakeUrlPrefix::new(
-                    Some(Site::new(dd_site).expect("Failed to parse site")),
-                    None,
-                )
-                .expect("Failed to create intake URL prefix"),
+                metrics_intake_url_prefix,
                 client,
                 retry_strategy: RetryStrategy::LinearBackoff(3, 1),
                 compression_level: CompressionLevel::try_from(6).unwrap_or_default(),
@@ -297,4 +300,15 @@ async fn start_dogstatsd(
     };
 
     (dogstatsd_cancel_token, metrics_flusher, handle)
+}
+
+fn build_metrics_client(
+    https_proxy: Option<String>,
+    timeout: Duration,
+) -> Result<reqwest::Client, Box<dyn std::error::Error>> {
+    let mut builder = create_reqwest_client_builder()?.timeout(timeout);
+    if let Some(proxy) = https_proxy {
+        builder = builder.proxy(reqwest::Proxy::https(proxy)?);
+    }
+    Ok(builder.build()?)
 }

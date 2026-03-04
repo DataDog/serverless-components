@@ -33,6 +33,5 @@ proptest = "1.4.0"
 tracing-test = { version = "0.2.5", default-features = false }
 
 [features]
-default = [ "reqwest/rustls-tls" ]
-fips = [ "reqwest/rustls-tls-no-provider" ]
+default = []
 windows-pipes = ["tokio/io-util"]
