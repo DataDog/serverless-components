@@ -11,6 +11,6 @@ pub mod azure_instance;
 pub mod azure_tags;
 pub mod cpu;
 #[cfg(not(target_os = "windows"))]
-pub mod linux;
+pub(crate) mod linux;
 #[cfg(target_os = "windows")]
-pub mod windows;
+pub(crate) mod windows;
