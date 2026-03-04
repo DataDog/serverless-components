@@ -12,13 +12,14 @@ use dogstatsd::aggregator_service::AggregatorHandle;
 use dogstatsd::metric::{Metric, MetricValue, SortedTags};
 use tracing::{debug, error};
 
-const CPU_USAGE_METRIC: &str = "azure.functions.enhanced.test.cpu.usage";
-const CPU_USAGE_PRECISE_METRIC: &str = "azure.functions.enhanced.test.cpu.usage.precise";
-const CPU_LIMIT_METRIC: &str = "azure.functions.enhanced.test.cpu.limit";
+const CPU_USAGE_METRIC: &str = "azure.functions.enhanced.cpu.usage";
+const CPU_HOST_USAGE_METRIC: &str = "azure.functions.enhanced.cpu.host.usage";
+const CPU_LIMIT_METRIC: &str = "azure.functions.enhanced.cpu.limit";
 
 /// Computed CPU total and limit metrics
 pub struct CpuStats {
     pub total: f64,            // Cumulative CPU usage in nanoseconds
+    pub host_total: f64,       // Cumulative CPU usage on the host in nanoseconds
     pub limit: Option<f64>,    // CPU limit in nanocores
     pub defaulted_limit: bool, // Whether CPU limit was defaulted to host CPU count
 }
@@ -33,6 +34,7 @@ pub struct CpuMetricsCollector {
     tags: Option<SortedTags>,
     collection_interval_secs: u64,
     last_usage_ns: f64,
+    last_host_usage_ns: f64,
     last_collection_time: std::time::Instant,
 }
 
@@ -59,6 +61,7 @@ impl CpuMetricsCollector {
             tags,
             collection_interval_secs,
             last_usage_ns: -1.0,
+            last_host_usage_ns: -1.0,
             last_collection_time: std::time::Instant::now(),
         }
     }
@@ -69,27 +72,26 @@ impl CpuMetricsCollector {
             debug!("Collected cpu stats!");
             let current_usage_ns = cpu_stats.total;
             debug!("CPU usage: {}", cpu_stats.total);
+            let current_host_usage_ns = cpu_stats.host_total;
+            debug!("Host CPU usage: {}", cpu_stats.host_total);
             let now_instant = std::time::Instant::now();
 
             // Skip first collection
             if self.last_usage_ns == -1.0 {
                 debug!("First CPU collection, skipping rate computation");
                 self.last_usage_ns = current_usage_ns;
+                self.last_host_usage_ns = current_host_usage_ns;
                 self.last_collection_time = now_instant;
                 return;
             }
 
             let delta_ns = current_usage_ns - self.last_usage_ns;
             self.last_usage_ns = current_usage_ns;
-            let elapsed_secs = self.last_collection_time.elapsed().as_secs_f64();
-            debug!("Elapsed time: {} seconds", elapsed_secs);
             self.last_collection_time = now_instant;
 
             // Divide nanoseconds delta by collection interval to get usage rate in nanocores
             let usage_rate_nc = delta_ns / self.collection_interval_secs as f64;
             debug!("Usage rate: {} nanocores/s", usage_rate_nc);
-            let precise_usage_rate_nc = delta_ns / elapsed_secs;
-            debug!("Precise usage rate: {} nanocores/s", precise_usage_rate_nc);
 
             let now = std::time::UNIX_EPOCH
                 .elapsed()
@@ -97,17 +99,6 @@ impl CpuMetricsCollector {
                 .unwrap_or(0)
                 .try_into()
                 .unwrap_or(0);
-
-            let precise_metric = Metric::new(
-                CPU_USAGE_PRECISE_METRIC.into(),
-                MetricValue::distribution(precise_usage_rate_nc),
-                self.tags.clone(),
-                Some(now),
-            );
-
-            if let Err(e) = self.aggregator.insert_batch(vec![precise_metric]) {
-                error!("Failed to insert CPU usage precise metric: {}", e);
-            }
 
             let usage_metric = Metric::new(
                 CPU_USAGE_METRIC.into(),
@@ -118,6 +109,21 @@ impl CpuMetricsCollector {
 
             if let Err(e) = self.aggregator.insert_batch(vec![usage_metric]) {
                 error!("Failed to insert CPU usage metric: {}", e);
+            }
+
+            // Host VM-level CPU usage
+            let host_delta_ns = current_host_usage_ns - self.last_host_usage_ns;
+            self.last_host_usage_ns = current_host_usage_ns;
+            let host_usage_rate_nc = host_delta_ns / self.collection_interval_secs as f64;
+            debug!("CPU host usage rate: {} nanocores", host_usage_rate_nc);
+
+            if let Err(e) = self.aggregator.insert_batch(vec![Metric::new(
+                CPU_HOST_USAGE_METRIC.into(),
+                MetricValue::distribution(host_usage_rate_nc),
+                self.tags.clone(),
+                Some(now),
+            )]) {
+                error!("Failed to insert CPU host usage metric: {}", e);
             }
 
             if let Some(limit) = cpu_stats.limit {
