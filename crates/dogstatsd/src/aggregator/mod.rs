@@ -7,4 +7,4 @@ mod core;
 pub mod service;
 
 pub use self::core::*;
-pub use service::*;
+pub use service::{AggregatorHandle, AggregatorService, FlushResponse};
