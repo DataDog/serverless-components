@@ -408,9 +408,11 @@ dependencies = [
 name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
+ "datadog-fips",
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils",
+ "reqwest",
  "tokio",
  "tokio-util",
  "tracing",
@@ -502,7 +504,6 @@ dependencies = [
 name = "dogstatsd"
 version = "0.1.0"
 dependencies = [
- "datadog-fips",
  "datadog-protos",
  "ddsketch-agent",
  "derive_more",
@@ -514,7 +515,6 @@ dependencies = [
  "protobuf",
  "regex",
  "reqwest",
- "rustls-pemfile",
  "serde",
  "serde_json",
  "socket2",
@@ -2134,15 +2134,6 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]
