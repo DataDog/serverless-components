@@ -4,7 +4,7 @@
 use dogstatsd::metric::SortedTags;
 use dogstatsd::{
     aggregator::Aggregator as MetricsAggregator,
-    aggregator_service::{AggregatorHandle, AggregatorService},
+    aggregator::{AggregatorHandle, AggregatorService},
     api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{DdDdUrl, MetricsIntakeUrlPrefix, MetricsIntakeUrlPrefixOverride},
