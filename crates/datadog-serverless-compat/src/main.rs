@@ -26,7 +26,7 @@ use datadog_trace_agent::{
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use dogstatsd::{
-    aggregator_service::{AggregatorHandle, AggregatorService},
+    aggregator::{AggregatorHandle, AggregatorService},
     api_key::ApiKeyFactory,
     constants::CONTEXTS,
     datadog::{MetricsIntakeUrlPrefix, RetryStrategy, Site},

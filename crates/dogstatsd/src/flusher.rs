@@ -1,7 +1,7 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::aggregator_service::AggregatorHandle;
+use crate::aggregator::AggregatorHandle;
 use crate::api_key::ApiKeyFactory;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
 use reqwest::{Response, StatusCode};
@@ -168,7 +168,7 @@ impl Flusher {
                     None // Return None to indicate success
                 } else if series_had_error || sketches_had_error {
                     // Only return the metrics if there was an actual shipping error
-                    error!("Failed to flush some metrics due to shipping errors: {} series and {} sketches", 
+                    error!("Failed to flush some metrics due to shipping errors: {} series and {} sketches",
                         series_failed.len(), sketches_failed.len());
                     // Return the failed metrics for potential retry
                     Some((series_failed, sketches_failed))
@@ -237,7 +237,7 @@ async fn should_try_next_batch(resp: Result<Response, ShippingError>) -> (bool, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aggregator_service::AggregatorService;
+    use crate::aggregator::AggregatorService;
     use crate::constants::CONTEXTS;
     use crate::datadog::{DdDdUrl, MetricsIntakeUrlPrefix, MetricsIntakeUrlPrefixOverride};
     use crate::metric::SortedTags;

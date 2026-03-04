@@ -9,7 +9,7 @@
 
 use std::net::SocketAddr;
 
-use crate::aggregator_service::AggregatorHandle;
+use crate::aggregator::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
 use crate::metric::{id, parse, Metric};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -737,7 +737,7 @@ async fn run_named_pipe_server(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use crate::aggregator_service::AggregatorService;
+    use crate::aggregator::AggregatorService;
     use crate::dogstatsd::{BufferReader, DogStatsD};
     use crate::metric::EMPTY_TAGS;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -934,7 +934,7 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
     async fn setup_and_consume_dogstatsd(
         statsd_string: &str,
         metric_namespace: Option<String>,
-    ) -> crate::aggregator_service::FlushResponse {
+    ) -> crate::aggregator::FlushResponse {
         // Create the aggregator service
         let (service, handle) =
             AggregatorService::new(EMPTY_TAGS, 1_024).expect("aggregator service creation failed");
