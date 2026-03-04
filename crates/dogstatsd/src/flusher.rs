@@ -4,9 +4,8 @@
 use crate::aggregator::AggregatorHandle;
 use crate::api_key::ApiKeyFactory;
 use crate::datadog::{DdApi, MetricsIntakeUrlPrefix, RetryStrategy};
-use reqwest::{Response, StatusCode};
+use reqwest::{Client, Response, StatusCode};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::OnceCell;
 use tracing::{debug, error};
 use zstd::zstd_safe::CompressionLevel;
@@ -16,9 +15,7 @@ pub struct Flusher {
     // Allow accepting a future so the API key resolution is deferred until the flush happens
     api_key_factory: Arc<ApiKeyFactory>,
     metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
-    https_proxy: Option<String>,
-    ca_cert_path: Option<String>,
-    timeout: Duration,
+    client: Client,
     retry_strategy: RetryStrategy,
     aggregator_handle: AggregatorHandle,
     dd_api: OnceCell<Option<DdApi>>,
@@ -29,9 +26,7 @@ pub struct FlusherConfig {
     pub api_key_factory: Arc<ApiKeyFactory>,
     pub aggregator_handle: AggregatorHandle,
     pub metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
-    pub https_proxy: Option<String>,
-    pub ca_cert_path: Option<String>,
-    pub timeout: Duration,
+    pub client: Client,
     pub retry_strategy: RetryStrategy,
     pub compression_level: CompressionLevel,
 }
@@ -41,9 +36,7 @@ impl Flusher {
         Flusher {
             api_key_factory: Arc::clone(&config.api_key_factory),
             metrics_intake_url_prefix: config.metrics_intake_url_prefix,
-            https_proxy: config.https_proxy,
-            ca_cert_path: config.ca_cert_path,
-            timeout: config.timeout,
+            client: config.client,
             retry_strategy: config.retry_strategy,
             aggregator_handle: config.aggregator_handle,
             compression_level: config.compression_level,
@@ -59,9 +52,7 @@ impl Flusher {
                     Some(api_key) => Some(DdApi::new(
                         api_key.to_string(),
                         self.metrics_intake_url_prefix.clone(),
-                        self.https_proxy.clone(),
-                        self.ca_cert_path.clone(),
-                        self.timeout,
+                        self.client.clone(),
                         self.retry_strategy.clone(),
                         self.compression_level,
                     )),
@@ -286,9 +277,7 @@ mod tests {
                 ),
             )
             .expect("failed to create URL"),
-            https_proxy: None,
-            ca_cert_path: None,
-            timeout: Duration::from_secs(5),
+            client: Client::builder().build().expect("failed to build client"),
             retry_strategy: RetryStrategy::Immediate(1),
             compression_level: CompressionLevel::try_from(6)
                 .expect("failed to create compression level"),
@@ -333,9 +322,7 @@ mod tests {
                 ),
             )
             .expect("failed to create URL"),
-            https_proxy: None,
-            ca_cert_path: None,
-            timeout: Duration::from_secs(5),
+            client: Client::builder().build().expect("failed to build client"),
             retry_strategy: RetryStrategy::Immediate(1),
             compression_level: CompressionLevel::try_from(6)
                 .expect("failed to create compression level"),
@@ -383,9 +370,7 @@ mod tests {
                 ),
             )
             .expect("failed to create URL"),
-            https_proxy: None,
-            ca_cert_path: None,
-            timeout: Duration::from_secs(5),
+            client: Client::builder().build().expect("failed to build client"),
             retry_strategy: RetryStrategy::Immediate(1),
             compression_level: CompressionLevel::try_from(6)
                 .expect("failed to create compression level"),

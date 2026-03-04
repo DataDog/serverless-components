@@ -3,16 +3,13 @@
 
 use super::{MetricsIntakeUrlPrefix, Series};
 use crate::flusher::ShippingError;
-use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_protos::metrics::SketchPayload;
 use protobuf::Message;
 use reqwest::{Client, Response};
 use serde_json;
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufReader, Write};
+use std::io::Write;
 use std::time::Duration;
-use tracing::{debug, error, trace};
+use tracing::{debug, trace};
 use zstd::stream::write::Encoder;
 use zstd::zstd_safe::CompressionLevel;
 
@@ -21,7 +18,7 @@ use zstd::zstd_safe::CompressionLevel;
 pub struct DdApi {
     api_key: String,
     metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
-    client: Option<Client>,
+    client: Client,
     retry_strategy: RetryStrategy,
     compression_level: CompressionLevel,
 }
@@ -31,17 +28,10 @@ impl DdApi {
     pub fn new(
         api_key: String,
         metrics_intake_url_prefix: MetricsIntakeUrlPrefix,
-        https_proxy: Option<String>,
-        ca_cert_path: Option<String>,
-        timeout: Duration,
+        client: Client,
         retry_strategy: RetryStrategy,
         compression_level: CompressionLevel,
     ) -> Self {
-        let client = build_client(https_proxy, ca_cert_path, timeout)
-            .inspect_err(|e| {
-                error!("Unable to create client {:?}", e);
-            })
-            .ok();
         DdApi {
             api_key,
             metrics_intake_url_prefix,
@@ -88,10 +78,7 @@ impl DdApi {
         body: Vec<u8>,
         content_type: &str,
     ) -> Result<Response, ShippingError> {
-        let client = &self
-            .client
-            .as_ref()
-            .ok_or_else(|| ShippingError::Destination(None, "No client".to_string()))?;
+        let client = &self.client;
         let start = std::time::Instant::now();
 
         let result = (|| -> std::io::Result<Vec<u8>> {
@@ -173,57 +160,4 @@ impl DdApi {
 pub enum RetryStrategy {
     Immediate(u64),          // attempts
     LinearBackoff(u64, u64), // attempts, delay
-}
-
-fn build_client(
-    https_proxy: Option<String>,
-    ca_cert_path: Option<String>,
-    timeout: Duration,
-) -> Result<Client, Box<dyn Error>> {
-    let mut builder = create_reqwest_client_builder()?.timeout(timeout);
-
-    // Load custom TLS certificate if configured
-    if let Some(cert_path) = &ca_cert_path {
-        match load_custom_cert(cert_path) {
-            Ok(certs) => {
-                let cert_count = certs.len();
-                for cert in certs {
-                    builder = builder.add_root_certificate(cert);
-                }
-                debug!(
-                    "DOGSTATSD | Added {} root certificate(s) from {}",
-                    cert_count, cert_path
-                );
-            }
-            Err(e) => {
-                error!(
-                    "DOGSTATSD | Failed to load TLS certificate from {}: {}, continuing without custom cert",
-                    cert_path, e
-                );
-            }
-        }
-    }
-
-    if let Some(proxy) = https_proxy {
-        builder = builder.proxy(reqwest::Proxy::https(proxy)?);
-    }
-    Ok(builder.build()?)
-}
-
-fn load_custom_cert(cert_path: &str) -> Result<Vec<reqwest::Certificate>, Box<dyn Error>> {
-    let file = File::open(cert_path)?;
-    let mut reader = BufReader::new(file);
-
-    // Parse PEM certificates
-    let certs = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
-
-    if certs.is_empty() {
-        return Err("No certificates found in file".into());
-    }
-
-    // Convert all certificates found in the file
-    certs
-        .into_iter()
-        .map(|cert| reqwest::Certificate::from_der(cert.as_ref()).map_err(Into::into))
-        .collect()
 }

@@ -25,6 +25,7 @@ use datadog_trace_agent::{
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
+use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use dogstatsd::{
     aggregator::{AggregatorHandle, AggregatorService},
     api_key::ApiKeyFactory,
@@ -263,6 +264,18 @@ async fn start_dogstatsd(
     let metrics_flusher = match dd_api_key {
         Some(dd_api_key) => {
             #[allow(clippy::expect_used)]
+            let client = {
+                let mut builder = create_reqwest_client_builder()
+                    .expect("Failed to create HTTP client builder")
+                    .timeout(DOGSTATSD_TIMEOUT_DURATION);
+                if let Some(proxy) = https_proxy {
+                    builder = builder
+                        .proxy(reqwest::Proxy::https(proxy).expect("Failed to create HTTPS proxy"));
+                }
+                builder.build().expect("Failed to build HTTP client")
+            };
+
+            #[allow(clippy::expect_used)]
             let metrics_flusher = Flusher::new(FlusherConfig {
                 api_key_factory: Arc::new(ApiKeyFactory::new(&dd_api_key)),
                 aggregator_handle: handle.clone(),
@@ -271,12 +284,9 @@ async fn start_dogstatsd(
                     None,
                 )
                 .expect("Failed to create intake URL prefix"),
-                https_proxy,
-                timeout: DOGSTATSD_TIMEOUT_DURATION,
+                client,
                 retry_strategy: RetryStrategy::LinearBackoff(3, 1),
                 compression_level: CompressionLevel::try_from(6).unwrap_or_default(),
-                // Not supported yet
-                ca_cert_path: None,
             });
             Some(metrics_flusher)
         }
