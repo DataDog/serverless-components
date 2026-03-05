@@ -25,6 +25,7 @@ use datadog_trace_agent::{
 
 use datadog_metrics_collector::cpu::CpuMetricsCollector;
 
+use libdd_common::azure_app_services;
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
@@ -206,18 +207,45 @@ pub async fn main() {
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
     let mut cpu_collector = if dd_enhanced_metrics {
         aggregator_handle.as_ref().map(|handle| {
-            // Elastic Premium and Premium plans use WEBSITE_INSTANCE_ID to identify the instance
-            // Flex Consumption and Consumption plans use WEBSITE_POD_NAME or CONTAINER_NAME
-            let instance_id = env::var("WEBSITE_INSTANCE_ID")
-                .or_else(|_| env::var("WEBSITE_POD_NAME"))
-                .or_else(|_| env::var("CONTAINER_NAME"))
-                .ok();
-            debug!("Instance ID: {:?}", instance_id);
-            let mut tag_str = format!("functionname:{}", app_name);
-            if let Some(id) = instance_id {
-                tag_str.push_str(&format!(",instance_id:{}", id));
+            let mut tag_parts = vec![format!("functionname:{}", app_name)];
+            // Azure tags from ddcommon
+            if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
+                let aas_tags = [
+                    ("aas.resource.id", aas_metadata.get_resource_id()),
+                    ("aas.resource.group", aas_metadata.get_resource_group()),
+                    ("aas.subscription.id", aas_metadata.get_subscription_id()),
+                    ("aas.site.name", aas_metadata.get_site_name()),
+                ];
+                for (name, value) in aas_tags {
+                    if value != "unknown" {
+                        tag_parts.push(format!("{}:{}", name, value));
+                    }
+                }
             }
-            let tags = SortedTags::parse(&tag_str).ok();
+
+            // Azure region and plan tier from env vars (not in traces)
+            for (tag_name, env_var) in [("region", "REGION_NAME"), ("plan_tier", "WEBSITE_SKU")] {
+                if let Ok(val) = env::var(env_var) {
+                    if !val.is_empty() {
+                        tag_parts.push(format!("{}:{}", tag_name, val));
+                    }
+                }
+            }
+            // Datadog tags
+            // Origin tag is already added by DogStatsD
+            for (tag_name, env_var) in [
+                ("service", "DD_SERVICE"),
+                ("env", "DD_ENV"),
+                ("version", "DD_VERSION"),
+                ("serverless_compat_version", "DD_SERVERLESS_COMPAT_VERSION"),
+            ] {
+                if let Ok(val) = env::var(env_var) {
+                    if !val.is_empty() {
+                        tag_parts.push(format!("{}:{}", tag_name, val));
+                    }
+                }
+            }
+            let tags = SortedTags::parse(&tag_parts.join(",")).ok();
             CpuMetricsCollector::new(handle.clone(), tags, CPU_METRICS_COLLECTION_INTERVAL)
         })
     } else {

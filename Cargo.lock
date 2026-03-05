@@ -422,6 +422,7 @@ dependencies = [
  "datadog-metrics-collector",
  "datadog-trace-agent",
  "dogstatsd",
+ "libdd-common",
  "libdd-trace-utils",
  "reqwest",
  "tokio",
