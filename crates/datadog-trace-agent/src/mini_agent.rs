@@ -71,7 +71,8 @@ impl MiniAgent {
         // start our trace flusher. receives trace payloads and handles buffering + deciding when to
         // flush to backend.
         let trace_flusher = self.trace_flusher.clone();
-        let trace_flusher_handle = tokio::spawn(async move {
+        #[allow(unused_mut)]
+        let mut trace_flusher_handle = tokio::spawn(async move {
             trace_flusher.start_trace_flusher(trace_rx).await;
         });
 
@@ -84,7 +85,8 @@ impl MiniAgent {
         // start our stats flusher.
         let stats_flusher = self.stats_flusher.clone();
         let stats_config = self.config.clone();
-        let stats_flusher_handle = tokio::spawn(async move {
+        #[allow(unused_mut)]
+        let mut stats_flusher_handle = tokio::spawn(async move {
             stats_flusher
                 .start_stats_flusher(stats_config, stats_rx)
                 .await;
