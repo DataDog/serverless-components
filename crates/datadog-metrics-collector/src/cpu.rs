@@ -8,7 +8,7 @@
 //!
 //! All CPU metrics are reported in nanocores (1 core = 1,000,000,000 nanocores).
 
-use dogstatsd::aggregator_service::AggregatorHandle;
+use dogstatsd::aggregator::AggregatorHandle;
 use dogstatsd::metric::{Metric, MetricValue, SortedTags};
 use tracing::{debug, error};
 
