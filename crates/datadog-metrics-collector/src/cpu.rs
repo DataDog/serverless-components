@@ -8,7 +8,7 @@
 //!
 //! All CPU metrics are reported in nanocores (1 core = 1,000,000,000 nanocores).
 
-use dogstatsd::aggregator_service::AggregatorHandle;
+use dogstatsd::aggregator::AggregatorHandle;
 use dogstatsd::metric::{Metric, MetricValue, SortedTags};
 use tracing::{debug, error};
 
@@ -121,7 +121,9 @@ impl CpuMetricsCollector {
             }
             debug!("Submitting CPU metrics!");
         } else {
-            debug!("Skipping CPU metrics collection - could not find data to generate CPU usage and limit enhanced metrics");
+            debug!(
+                "Skipping CPU metrics collection - could not find data to generate CPU usage and limit enhanced metrics"
+            );
         }
     }
 }
