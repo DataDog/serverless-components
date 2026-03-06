@@ -211,10 +211,10 @@ pub async fn main() {
             // Azure tags from ddcommon
             if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
                 let aas_tags = [
-                    ("aas.resource.id", aas_metadata.get_resource_id()),
-                    ("aas.resource.group", aas_metadata.get_resource_group()),
-                    ("aas.subscription.id", aas_metadata.get_subscription_id()),
-                    ("aas.site.name", aas_metadata.get_site_name()),
+                    ("resource_id", aas_metadata.get_resource_id()),
+                    ("resource_group", aas_metadata.get_resource_group()),
+                    ("subscription_id", aas_metadata.get_subscription_id()),
+                    ("name", aas_metadata.get_site_name()),
                 ];
                 for (name, value) in aas_tags {
                     if value != "unknown" {
