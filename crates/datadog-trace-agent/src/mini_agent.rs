@@ -156,10 +156,8 @@ impl MiniAgent {
                 let tcp_service = service.clone();
                 let pipe_service = service;
 
-                let mut tcp_handle = tokio::spawn(Self::serve_accept_loop_tcp(
-                    tcp_listener,
-                    tcp_service,
-                ));
+                let mut tcp_handle =
+                    tokio::spawn(Self::serve_accept_loop_tcp(tcp_listener, tcp_service));
 
                 let mut pipe_handle = tokio::spawn(Self::serve_accept_loop_named_pipe(
                     pipe_name.clone(),
@@ -223,152 +221,24 @@ impl MiniAgent {
         S::Future: Send,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
-        let server = hyper::server::conn::http1::Builder::new();
-        let mut joinset = tokio::task::JoinSet::new();
+        let mut tcp_handle = tokio::spawn(Self::serve_accept_loop_tcp(listener, service));
 
-        loop {
-            let conn = tokio::select! {
-                con_res = listener.accept() => match con_res {
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            io::ErrorKind::ConnectionAborted
-                                | io::ErrorKind::ConnectionReset
-                                | io::ErrorKind::ConnectionRefused
-                        ) =>
-                    {
-                        continue;
-                    }
-                    Err(e) => {
-                        error!("Server error: {e}");
-                        return Err(e.into());
-                    }
-                    Ok((conn, _)) => conn,
-                },
-                finished = async {
-                    match joinset.join_next().await {
-                        Some(finished) => finished,
-                        None => std::future::pending().await,
-                    }
-                } => match finished {
-                    Err(e) if e.is_panic() => {
-                        std::panic::resume_unwind(e.into_panic());
-                    },
-                    Ok(()) | Err(_) => continue,
-                },
-                // If there's some error in the background tasks, we can't send data
-                result = &mut trace_flusher_handle => {
-                    error!("Trace flusher task died: {:?}", result);
-                    return Err("Trace flusher task terminated unexpectedly".into());
-                },
-                result = &mut stats_flusher_handle => {
-                    error!("Stats flusher task died: {:?}", result);
-                    return Err("Stats flusher task terminated unexpectedly".into());
-                },
-            };
-            let conn = hyper_util::rt::TokioIo::new(conn);
-            let server = server.clone();
-            let service = service.clone();
-            joinset.spawn(async move {
-                if let Err(e) = server.serve_connection(conn, service).await {
-                    error!("Connection error: {e}");
-                }
-            });
+        tokio::select! {
+            result = &mut tcp_handle => {
+                error!("TCP accept loop died: {:?}", result);
+                return Err("TCP accept loop terminated unexpectedly".into());
+            },
+            result = &mut trace_flusher_handle => {
+                error!("Trace flusher task died: {:?}", result);
+                return Err("Trace flusher task terminated unexpectedly".into());
+            },
+            result = &mut stats_flusher_handle => {
+                error!("Stats flusher task died: {:?}", result);
+                return Err("Stats flusher task terminated unexpectedly".into());
+            },
         }
     }
 
-    #[cfg(all(windows, feature = "windows-pipes"))]
-    async fn serve_named_pipe<S>(
-        pipe_name: &str,
-        service: S,
-        mut trace_flusher_handle: tokio::task::JoinHandle<()>,
-        mut stats_flusher_handle: tokio::task::JoinHandle<()>,
-    ) -> Result<(), Box<dyn std::error::Error>>
-    where
-        S: hyper::service::Service<
-                hyper::Request<hyper::body::Incoming>,
-                Response = hyper::Response<hyper_migration::Body>,
-            > + Clone
-            + Send
-            + 'static,
-        S::Future: Send,
-        S::Error: std::error::Error + Send + Sync + 'static,
-    {
-        let server = hyper::server::conn::http1::Builder::new();
-        let mut joinset = tokio::task::JoinSet::new();
-
-        loop {
-            // Create a new pipe instance
-            // pipe_name already includes \\.\pipe\ prefix from config
-            let pipe = match ServerOptions::new().create(pipe_name) {
-                Ok(pipe) => {
-                    debug!("Created pipe server instance '{}' in byte mode", pipe_name);
-                    pipe
-                }
-                Err(e) => {
-                    error!("Failed to create named pipe: {e}");
-                    return Err(e.into());
-                }
-            };
-
-            // Wait for client connection
-            let conn = tokio::select! {
-                connect_res = pipe.connect() => match connect_res {
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            io::ErrorKind::ConnectionAborted
-                                | io::ErrorKind::ConnectionReset
-                                | io::ErrorKind::ConnectionRefused
-                        ) =>
-                    {
-                        continue;
-                    }
-                    Err(e) => {
-                        error!("Named pipe connection error: {e}");
-                        return Err(e.into());
-                    }
-                    Ok(()) => {
-                        debug!("Client connected to '{}'", pipe_name);
-                        pipe
-                    }
-                },
-                finished = async {
-                    match joinset.join_next().await {
-                        Some(finished) => finished,
-                        None => std::future::pending().await,
-                    }
-                } => match finished {
-                    Err(e) if e.is_panic() => {
-                        std::panic::resume_unwind(e.into_panic());
-                    },
-                    Ok(()) | Err(_) => continue,
-                },
-                // If there's some error in the background tasks, we can't send data
-                result = &mut trace_flusher_handle => {
-                    error!("Trace flusher task died: {:?}", result);
-                    return Err("Trace flusher task terminated unexpectedly".into());
-                },
-                result = &mut stats_flusher_handle => {
-                    error!("Stats flusher task died: {:?}", result);
-                    return Err("Stats flusher task terminated unexpectedly".into());
-                },
-            };
-
-            // Hyper http parser handles buffering pipe data
-            let conn = hyper_util::rt::TokioIo::new(conn);
-            let server = server.clone();
-            let service = service.clone();
-            joinset.spawn(async move {
-                if let Err(e) = server.serve_connection(conn, service).await {
-                    error!("Connection error: {e}");
-                }
-            });
-        }
-    }
-
-    /// TCP accept loop without flusher monitoring, for use when running alongside named pipes.
-    #[cfg(any(all(windows, feature = "windows-pipes"), test))]
     async fn serve_accept_loop_tcp<S>(
         listener: tokio::net::TcpListener,
         service: S,
