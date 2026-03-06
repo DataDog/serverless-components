@@ -68,7 +68,7 @@ pub async fn main() {
         .map(|val| val.to_lowercase())
         .unwrap_or("info".to_string());
 
-    let (app_name, env_type) = match read_cloud_env() {
+    let (_, env_type) = match read_cloud_env() {
         Some(value) => value,
         None => {
             error!("Unable to identify environment. Shutting down Mini Agent.");
@@ -122,7 +122,7 @@ pub async fn main() {
         .ok()
         .and_then(|val| parse_metric_namespace(&val));
 
-    let dd_enhanced_metrics = env::var("DD_ENHANCED_METRICS")
+    let dd_enhanced_metrics = env::var("DD_ENHANCED_METRICS_ENABLED")
         .map(|val| val.to_lowercase() != "false")
         .unwrap_or(true);
 
@@ -371,14 +371,6 @@ pub async fn main() {
                         metrics_flusher.flush().await;
                     });
                 }
-            }
-            _ = cpu_collection_interval.tick() => {
-                if let Some(ref mut collector) = cpu_collector {
-                    collector.collect_and_submit();
-                }
-            }
-        }
-
                 if let Some(log_flusher) = log_flusher.as_ref() {
                     debug!("Flushing log agent");
                     let retry_in = std::mem::take(&mut pending_log_retries);
@@ -400,7 +392,13 @@ pub async fn main() {
                     collector.collect_and_submit();
                 }
             }
+            _ = cpu_collection_interval.tick() => {
+                if let Some(ref mut collector) = cpu_collector {
+                    collector.collect_and_submit();
+                }
+            }
         }
+        
     }
 }
 

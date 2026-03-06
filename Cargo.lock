@@ -493,6 +493,7 @@ version = "0.1.0"
 dependencies = [
  "dogstatsd",
  "libdd-common 4.0.0",
+ "num_cpus",
  "tracing",
 ]
 
@@ -527,15 +528,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
-]
-
-[[package]]
-name = "datadog-metrics-collector"
-version = "0.1.0"
-dependencies = [
- "dogstatsd",
- "num_cpus",
- "tracing",
 ]
 
 [[package]]
