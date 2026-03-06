@@ -207,7 +207,7 @@ pub async fn main() {
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
     let mut cpu_collector = if dd_enhanced_metrics {
         aggregator_handle.as_ref().map(|handle| {
-            let mut tag_parts = vec![format!("functionname:{}", app_name)];
+            let mut tag_parts = Vec::new();
             // Azure tags from ddcommon
             if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
                 let aas_tags = [
