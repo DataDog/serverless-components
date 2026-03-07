@@ -280,22 +280,22 @@ pub async fn main() {
     };
 
     let (log_flusher, _log_aggregator_handle): (Option<LogFlusher>, Option<LogAggregatorHandle>) =
-        if dd_logs_enabled {
-            debug!("Starting log agent");
-            match start_log_agent(dd_api_key, https_proxy, dd_logs_port) {
-                Some((flusher, handle)) => {
-                    info!("log agent started");
-                    (Some(flusher), Some(handle))
-                }
-                None => {
-                    warn!("log agent failed to start, log flushing disabled");
-                    (None, None)
-                }
+    if dd_logs_enabled {
+        debug!("Starting log agent");
+        match start_log_agent(dd_api_key, https_proxy, dd_logs_port) {
+            Some((flusher, handle)) => {
+                info!("log agent started");
+                (Some(flusher), Some(handle))
             }
-        } else {
-            info!("log agent disabled");
-            (None, None)
-        };
+            None => {
+                warn!("log agent failed to start, log flushing disabled");
+                (None, None)
+            }
+        }
+    } else {
+        info!("log agent disabled");
+        (None, None)
+    };
 
     // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
     // Use the existing aggregator handle
@@ -706,18 +706,10 @@ fn build_cpu_metrics_tags() -> Option<SortedTags> {
         }
     }
 
-    // Azure region and plan tier from env vars (not in traces)
-    for (tag_name, env_var) in [("region", "REGION_NAME"), ("plan_tier", "WEBSITE_SKU")] {
-        if let Ok(val) = env::var(env_var) {
-            if !val.is_empty() {
-                tag_parts.push(format!("{}:{}", tag_name, val));
-            }
-        }
-    }
-
-    // Datadog tags
-    // Origin tag is already added by DogStatsD
+    // Tags from env vars (not in ddcommon) - origin tag is added by DogStatsD
     for (tag_name, env_var) in [
+        ("region", "REGION_NAME"),
+        ("plan_tier", "WEBSITE_SKU"),
         ("service", "DD_SERVICE"),
         ("env", "DD_ENV"),
         ("version", "DD_VERSION"),
