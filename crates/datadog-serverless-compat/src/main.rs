@@ -210,9 +210,6 @@ pub async fn main() {
         (None, None)
     };
 
-    // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
-    // Use the existing aggregator handle
-    // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
     let mut cpu_collector = if dd_enhanced_metrics {
         aggregator_handle.as_ref().map(|handle| {
             let tags = build_cpu_metrics_tags();
@@ -374,18 +371,10 @@ fn build_cpu_metrics_tags() -> Option<SortedTags> {
         }
     }
 
-    // Azure region and plan tier from env vars (not in traces)
-    for (tag_name, env_var) in [("region", "REGION_NAME"), ("plan_tier", "WEBSITE_SKU")] {
-        if let Ok(val) = env::var(env_var) {
-            if !val.is_empty() {
-                tag_parts.push(format!("{}:{}", tag_name, val));
-            }
-        }
-    }
-
-    // Datadog tags
-    // Origin tag is already added by DogStatsD
+    // Tags from env vars (not in ddcommon) - origin tag is added by DogStatsD
     for (tag_name, env_var) in [
+        ("region", "REGION_NAME"),
+        ("plan_tier", "WEBSITE_SKU"),
         ("service", "DD_SERVICE"),
         ("env", "DD_ENV"),
         ("version", "DD_VERSION"),
