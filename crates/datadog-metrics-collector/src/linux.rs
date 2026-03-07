@@ -199,3 +199,91 @@ fn compute_cgroup_cpu_limit_nc(cgroup_stats: &CgroupStats) -> Option<f64> {
     }
     limit_nc
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_stats(
+        cpu_count: Option<u64>,
+        scheduler_quota: Option<u64>,
+        scheduler_period: Option<u64>,
+    ) -> CgroupStats {
+        CgroupStats {
+            total: Some(0),
+            cpu_count,
+            scheduler_quota,
+            scheduler_period,
+        }
+    }
+
+    #[test]
+    fn test_no_limit_returns_none() {
+        let stats = make_stats(None, None, None);
+        assert!(compute_cgroup_cpu_limit_nc(&stats).is_none());
+    }
+
+    #[test]
+    fn test_quota_unlimited_minus_one_returns_none() {
+        // quota=-1 is filtered out during parsing, so None here means unlimited
+        let stats = make_stats(None, None, Some(100_000_000));
+        assert!(compute_cgroup_cpu_limit_nc(&stats).is_none());
+    }
+
+    #[test]
+    fn test_limited_to_2_cores_by_quota() {
+        let stats = make_stats(None, Some(200_000_000), Some(100_000_000)); // 200ms / 100ms = 2 cores
+        let result = compute_cgroup_cpu_limit_nc(&stats);
+        assert!((result.unwrap() - 2_000_000_000.0).abs() < 1_000.0); // Tolerance of 1,000 nanocores due to floating point arithmetic rounding errors
+    }
+
+    #[test]
+    fn test_limited_to_half_core_by_quota() {
+        let stats = make_stats(None, Some(50_000_000), Some(100_000_000)); // 50ms / 100ms = 0.5 cores
+        let result = compute_cgroup_cpu_limit_nc(&stats);
+        assert!((result.unwrap() - 500_000_000.0).abs() < 1_000.0);
+    }
+
+    #[test]
+    fn test_read_cpu_count_single() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("cpuset_single.txt");
+        std::fs::write(&path, "0-3\n").unwrap();
+        let count = read_cpu_count_from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn test_read_cpu_count_mixed() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("cpuset_mixed.txt");
+        std::fs::write(&path, "0-2,16\n").unwrap();
+        let count = read_cpu_count_from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(count, 4); // 0,1,2 + 16
+    }
+
+    #[test]
+    fn test_read_cpu_count_empty_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("cpuset_empty.txt");
+        std::fs::write(&path, "").unwrap();
+        assert!(read_cpu_count_from_file(path.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_compute_cpu_limit_nc_with_quota() {
+        let stats = make_stats(None, Some(200_000_000), Some(100_000_000));
+        let (limit, defaulted) = compute_cpu_limit_nc(&stats);
+        assert!((limit - 2_000_000_000.0).abs() < 1_000.0);
+        assert!(!defaulted);
+    }
+
+    #[test]
+    fn test_compute_cpu_limit_nc_defaults_to_host() {
+        let stats = make_stats(None, None, None);
+        let (limit, defaulted) = compute_cpu_limit_nc(&stats);
+        let expected = num_cpus::get() as f64 * 1_000_000_000.0;
+        assert!((limit - expected).abs() < 1_000.0);
+        assert!(defaulted);
+    }
+}

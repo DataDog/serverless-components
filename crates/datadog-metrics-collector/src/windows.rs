@@ -15,7 +15,7 @@ pub struct WindowsCpuStatsReader;
 
 impl CpuStatsReader for WindowsCpuStatsReader {
     fn read(&self) -> Option<CpuStats> {
-        debug!("CPU enhanced metrics not yet supported on Windows Azure Functions");
+        debug!("CPU enhanced metrics are not yet supported on Windows Azure Functions");
         None
     }
 }
