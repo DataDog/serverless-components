@@ -188,7 +188,7 @@ pub async fn main() {
 
         if dd_use_dogstatsd {
             debug!("Starting dogstatsd");
-            start_dogstatsd_listener(
+            let _ = start_dogstatsd_listener(
                 dd_dogstatsd_port,
                 handle.clone(),
                 dd_statsd_metric_namespace,
@@ -382,6 +382,7 @@ fn build_cpu_metrics_tags() -> Option<SortedTags> {
             }
         }
     }
+
     // Datadog tags
     // Origin tag is already added by DogStatsD
     for (tag_name, env_var) in [

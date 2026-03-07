@@ -30,7 +30,6 @@ pub struct LinuxCpuStatsReader;
 
 impl CpuStatsReader for LinuxCpuStatsReader {
     fn read(&self) -> Option<CpuStats> {
-        debug!("Reading CPU stats from Linux - using procstat");
         let cgroup_stats = read_cgroup_stats();
         build_cpu_stats(&cgroup_stats)
     }
@@ -109,7 +108,6 @@ fn read_cpu_count_from_file(path: &str) -> Result<u64, io::Error> {
             format!("File {path} is empty"),
         ));
     }
-    debug!("Contents of {path}: {cpuset_str}");
 
     let mut cpu_count: u64 = 0;
 
@@ -117,7 +115,6 @@ fn read_cpu_count_from_file(path: &str) -> Result<u64, io::Error> {
         let range: Vec<&str> = part.split('-').collect();
         if range.len() == 2 {
             // Range like "0-3"
-            debug!("Range: {range:?}");
             let start: u64 = range[0].parse().map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -133,7 +130,6 @@ fn read_cpu_count_from_file(path: &str) -> Result<u64, io::Error> {
             cpu_count += end - start + 1;
         } else {
             // Single CPU like "2"
-            debug!("Single CPU: {part}");
             cpu_count += 1;
         }
     }
@@ -163,16 +159,10 @@ fn compute_cgroup_cpu_limit_nc(cgroup_stats: &CgroupStats) -> Option<f64> {
     let mut limit_nc = None;
 
     if let Some(cpu_count) = cgroup_stats.cpu_count {
-        debug!("CPU count from cpuset: {cpu_count}");
         let host_cpu_count = num_cpus::get() as u64;
         if cpu_count != host_cpu_count {
-            debug!("CPU count from cpuset is not equal to host CPU count");
             let cpuset_limit_nc = cpu_count as f64 * 1000000000.0; // Convert to nanocores
             limit_nc = Some(cpuset_limit_nc);
-            debug!(
-                "CPU limit from cpuset: {} CPUs ({} nanocores)",
-                cpu_count, cpuset_limit_nc
-            );
         }
     }
 

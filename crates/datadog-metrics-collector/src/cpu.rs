@@ -65,9 +65,8 @@ impl CpuMetricsCollector {
     pub fn collect_and_submit(&mut self) {
         if let Some(cpu_stats) = self.reader.read() {
             // Submit metrics
-            debug!("Collected cpu stats!");
+            debug!("Collected CPU stats!");
             let current_usage_ns = cpu_stats.total;
-            debug!("CPU usage: {}", cpu_stats.total);
             let now_instant = std::time::Instant::now();
 
             // Skip first collection
@@ -84,7 +83,6 @@ impl CpuMetricsCollector {
 
             // Divide nanoseconds delta by collection interval to get usage rate in nanocores
             let usage_rate_nc = delta_ns / self.collection_interval_secs as f64;
-            debug!("Usage rate: {} nanocores/s", usage_rate_nc);
 
             let now = std::time::UNIX_EPOCH
                 .elapsed()
@@ -105,7 +103,6 @@ impl CpuMetricsCollector {
             }
 
             if let Some(limit) = cpu_stats.limit {
-                debug!("CPU limit: {}", limit);
                 if cpu_stats.defaulted_limit {
                     debug!("CPU limit defaulted to host CPU count");
                 }
