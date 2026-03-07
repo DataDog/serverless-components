@@ -215,45 +215,7 @@ pub async fn main() {
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
     let mut cpu_collector = if dd_enhanced_metrics {
         aggregator_handle.as_ref().map(|handle| {
-            let mut tag_parts = Vec::new();
-            // Azure tags from ddcommon
-            if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
-                let aas_tags = [
-                    ("resource_id", aas_metadata.get_resource_id()),
-                    ("resource_group", aas_metadata.get_resource_group()),
-                    ("subscription_id", aas_metadata.get_subscription_id()),
-                    ("name", aas_metadata.get_site_name()),
-                ];
-                for (name, value) in aas_tags {
-                    if value != "unknown" {
-                        tag_parts.push(format!("{}:{}", name, value));
-                    }
-                }
-            }
-
-            // Azure region and plan tier from env vars (not in traces)
-            for (tag_name, env_var) in [("region", "REGION_NAME"), ("plan_tier", "WEBSITE_SKU")] {
-                if let Ok(val) = env::var(env_var) {
-                    if !val.is_empty() {
-                        tag_parts.push(format!("{}:{}", tag_name, val));
-                    }
-                }
-            }
-            // Datadog tags
-            // Origin tag is already added by DogStatsD
-            for (tag_name, env_var) in [
-                ("service", "DD_SERVICE"),
-                ("env", "DD_ENV"),
-                ("version", "DD_VERSION"),
-                ("serverless_compat_version", "DD_SERVERLESS_COMPAT_VERSION"),
-            ] {
-                if let Ok(val) = env::var(env_var) {
-                    if !val.is_empty() {
-                        tag_parts.push(format!("{}:{}", tag_name, val));
-                    }
-                }
-            }
-            let tags = SortedTags::parse(&tag_parts.join(",")).ok();
+            let tags = build_cpu_metrics_tags();
             CpuMetricsCollector::new(handle.clone(), tags, CPU_METRICS_COLLECTION_INTERVAL)
         })
     } else {
@@ -393,4 +355,50 @@ fn build_metrics_client(
         builder = builder.proxy(reqwest::Proxy::https(proxy)?);
     }
     Ok(builder.build()?)
+}
+
+fn build_cpu_metrics_tags() -> Option<SortedTags> {
+    let mut tag_parts = Vec::new();
+    // Azure tags from ddcommon
+    if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
+        let aas_tags = [
+            ("resource_id", aas_metadata.get_resource_id()),
+            ("resource_group", aas_metadata.get_resource_group()),
+            ("subscription_id", aas_metadata.get_subscription_id()),
+            ("name", aas_metadata.get_site_name()),
+        ];
+        for (name, value) in aas_tags {
+            if value != "unknown" {
+                tag_parts.push(format!("{}:{}", name, value));
+            }
+        }
+    }
+
+    // Azure region and plan tier from env vars (not in traces)
+    for (tag_name, env_var) in [("region", "REGION_NAME"), ("plan_tier", "WEBSITE_SKU")] {
+        if let Ok(val) = env::var(env_var) {
+            if !val.is_empty() {
+                tag_parts.push(format!("{}:{}", tag_name, val));
+            }
+        }
+    }
+    // Datadog tags
+    // Origin tag is already added by DogStatsD
+    for (tag_name, env_var) in [
+        ("service", "DD_SERVICE"),
+        ("env", "DD_ENV"),
+        ("version", "DD_VERSION"),
+        ("serverless_compat_version", "DD_SERVERLESS_COMPAT_VERSION"),
+    ] {
+        if let Ok(val) = env::var(env_var) {
+            if !val.is_empty() {
+                tag_parts.push(format!("{}:{}", tag_name, val));
+            }
+        }
+    }
+
+    if tag_parts.is_empty() {
+        return None;
+    }
+    SortedTags::parse(&tag_parts.join(",")).ok()
 }
