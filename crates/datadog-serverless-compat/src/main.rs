@@ -178,7 +178,8 @@ pub async fn main() {
         }
     });
 
-    let needs_aggregator = dd_use_dogstatsd || dd_enhanced_metrics;
+    let needs_aggregator =
+        dd_use_dogstatsd || (dd_enhanced_metrics && env_type == EnvironmentType::AzureFunction);
 
     let (metrics_flusher, aggregator_handle) = if needs_aggregator {
         debug!("Creating metrics flusher and aggregator");
@@ -213,7 +214,7 @@ pub async fn main() {
     let mut cpu_collector = if dd_enhanced_metrics && env_type == EnvironmentType::AzureFunction {
         aggregator_handle.as_ref().map(|handle| {
             let tags = build_cpu_metrics_tags();
-            CpuMetricsCollector::new(handle.clone(), tags, CPU_METRICS_COLLECTION_INTERVAL)
+            CpuMetricsCollector::new(handle.clone(), tags)
         })
     } else {
         info!("Enhanced metrics disabled");

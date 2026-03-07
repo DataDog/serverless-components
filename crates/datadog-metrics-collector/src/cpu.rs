@@ -30,8 +30,8 @@ pub struct CpuMetricsCollector {
     reader: Box<dyn CpuStatsReader>,
     aggregator: AggregatorHandle,
     tags: Option<SortedTags>,
-    collection_interval_secs: u64,
     last_usage_ns: f64,
+    last_collection_time: std::time::Instant,
 }
 
 impl CpuMetricsCollector {
@@ -41,12 +41,7 @@ impl CpuMetricsCollector {
     ///
     /// * `aggregator` - The aggregator handle to submit metrics to
     /// * `tags` - Optional tags to attach to all metrics
-    /// * `collection_interval_secs` - The interval in seconds to collect the metrics
-    pub fn new(
-        aggregator: AggregatorHandle,
-        tags: Option<SortedTags>,
-        collection_interval_secs: u64,
-    ) -> Self {
+    pub fn new(aggregator: AggregatorHandle, tags: Option<SortedTags>) -> Self {
         #[cfg(target_os = "windows")]
         let reader: Box<dyn CpuStatsReader> = Box::new(crate::windows::WindowsCpuStatsReader);
         #[cfg(not(target_os = "windows"))]
@@ -55,8 +50,8 @@ impl CpuMetricsCollector {
             reader,
             aggregator,
             tags,
-            collection_interval_secs,
             last_usage_ns: -1.0,
+            last_collection_time: std::time::Instant::now(),
         }
     }
 
@@ -71,14 +66,19 @@ impl CpuMetricsCollector {
             if self.last_usage_ns == -1.0 {
                 debug!("First CPU collection, skipping rate computation");
                 self.last_usage_ns = current_usage_ns;
+                self.last_collection_time = now_instant;
                 return;
             }
 
             let delta_ns = current_usage_ns - self.last_usage_ns;
             self.last_usage_ns = current_usage_ns;
+            let elapsed_secs = now_instant
+                .duration_since(self.last_collection_time)
+                .as_secs_f64();
+            self.last_collection_time = now_instant;
 
-            // Divide nanoseconds delta by collection interval to get usage rate in nanocores
-            let usage_rate_nc = delta_ns / self.collection_interval_secs as f64;
+            // Divide nanoseconds delta by elapsed time to get usage rate in nanocores
+            let usage_rate_nc = delta_ns / elapsed_secs;
 
             let now = std::time::UNIX_EPOCH
                 .elapsed()
