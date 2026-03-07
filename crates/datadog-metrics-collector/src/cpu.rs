@@ -32,7 +32,6 @@ pub struct CpuMetricsCollector {
     tags: Option<SortedTags>,
     collection_interval_secs: u64,
     last_usage_ns: f64,
-    last_collection_time: std::time::Instant,
 }
 
 impl CpuMetricsCollector {
@@ -58,7 +57,6 @@ impl CpuMetricsCollector {
             tags,
             collection_interval_secs,
             last_usage_ns: -1.0,
-            last_collection_time: std::time::Instant::now(),
         }
     }
 
@@ -73,13 +71,11 @@ impl CpuMetricsCollector {
             if self.last_usage_ns == -1.0 {
                 debug!("First CPU collection, skipping rate computation");
                 self.last_usage_ns = current_usage_ns;
-                self.last_collection_time = now_instant;
                 return;
             }
 
             let delta_ns = current_usage_ns - self.last_usage_ns;
             self.last_usage_ns = current_usage_ns;
-            self.last_collection_time = now_instant;
 
             // Divide nanoseconds delta by collection interval to get usage rate in nanocores
             let usage_rate_nc = delta_ns / self.collection_interval_secs as f64;
