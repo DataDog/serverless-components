@@ -714,6 +714,7 @@ fn build_cpu_metrics_tags() -> Option<SortedTags> {
             }
         }
     }
+
     // Datadog tags
     // Origin tag is already added by DogStatsD
     for (tag_name, env_var) in [
