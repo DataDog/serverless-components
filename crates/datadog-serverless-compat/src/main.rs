@@ -12,7 +12,7 @@ use tokio::{
     sync::Mutex as TokioMutex,
     time::{Duration, interval},
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 use zstd::zstd_safe::CompressionLevel;
 
@@ -27,11 +27,8 @@ use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentTy
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_log_agent::{
-    aggregator::{
-        AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
-    },
-    config::LogFlusherConfig,
-    flusher::LogFlusher,
+    AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService, LogFlusher,
+    LogFlusherConfig,
 };
 use dogstatsd::{
     aggregator::{AggregatorHandle, AggregatorService},
@@ -207,7 +204,11 @@ pub async fn main() {
     let log_flusher: Option<LogFlusher> = if dd_logs_enabled {
         debug!("Starting log agent");
         let log_flusher = start_log_agent(dd_api_key, https_proxy);
-        info!("log agent started");
+        if log_flusher.is_some() {
+            info!("log agent started");
+        } else {
+            warn!("log agent failed to start, log flushing disabled");
+        }
         log_flusher
     } else {
         info!("log agent disabled");
@@ -339,6 +340,11 @@ fn build_metrics_client(
 }
 
 fn start_log_agent(dd_api_key: Option<String>, https_proxy: Option<String>) -> Option<LogFlusher> {
+    let Some(api_key) = dd_api_key else {
+        error!("DD_API_KEY not set, log agent disabled");
+        return None;
+    };
+
     let (service, handle): (LogAggregatorService, LogAggregatorHandle) =
         LogAggregatorService::new();
     tokio::spawn(service.run());
@@ -365,11 +371,10 @@ fn start_log_agent(dd_api_key: Option<String>, https_proxy: Option<String>) -> O
         }
     };
 
-    if dd_api_key.is_none() {
-        error!("DD_API_KEY not set, log agent won't flush logs");
-    }
-
-    let config = LogFlusherConfig::from_env();
+    let config = LogFlusherConfig {
+        api_key,
+        ..LogFlusherConfig::from_env()
+    };
     Some(LogFlusher::new(config, client, handle))
 }
 

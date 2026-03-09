@@ -495,6 +495,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-log-agent"
+version = "0.1.0"
+dependencies = [
+ "datadog-fips",
+ "http",
+ "mockito",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
 name = "datadog-protos"
 version = "0.1.0"
 source = "git+https://github.com/DataDog/saluki/?rev=f863626dbfe3c59bb390985fa6530b0621c2a0a2#f863626dbfe3c59bb390985fa6530b0621c2a0a2"
@@ -513,10 +529,12 @@ name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
  "datadog-fips",
+ "datadog-log-agent",
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils 1.0.0",
  "reqwest",
+ "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
