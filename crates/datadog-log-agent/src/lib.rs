@@ -9,6 +9,7 @@
 
 pub mod constants;
 pub mod errors;
+pub mod log_entry;
 
 #[cfg(test)]
 mod tests {

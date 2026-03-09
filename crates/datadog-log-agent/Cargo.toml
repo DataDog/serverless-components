@@ -24,3 +24,6 @@ zstd = { version = "0.13.3", default-features = false }
 http = "1"
 mockito = { version = "1.5.0", default-features = false }
 tokio = { version = "1.37.0", default-features = false, features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = []
