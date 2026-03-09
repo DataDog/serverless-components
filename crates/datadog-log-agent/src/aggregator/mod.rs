@@ -3,3 +3,6 @@
 
 pub mod core;
 pub use core::LogAggregator;
+
+pub mod service;
+pub use service::{AggregatorHandle, AggregatorService};
