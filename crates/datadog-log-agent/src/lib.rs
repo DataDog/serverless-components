@@ -8,8 +8,10 @@
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
 pub mod aggregator;
+pub mod config;
 pub mod constants;
 pub mod errors;
+pub mod flusher;
 pub mod log_entry;
 
 #[cfg(test)]
