@@ -108,9 +108,11 @@ pub async fn main() {
         .ok()
         .and_then(|val| parse_metric_namespace(&val));
 
-    let dd_enhanced_metrics = env::var("DD_ENHANCED_METRICS_ENABLED")
-        .map(|val| val.to_lowercase() != "false")
-        .unwrap_or(true);
+    // Only enable enhanced metrics for Azure Functions
+    let dd_enhanced_metrics = env_type == EnvironmentType::AzureFunction
+        && env::var("DD_ENHANCED_METRICS_ENABLED")
+            .map(|val| val.to_lowercase() != "false")
+            .unwrap_or(true);
 
     let https_proxy = env::var("DD_PROXY_HTTPS")
         .or_else(|_| env::var("HTTPS_PROXY"))
@@ -178,8 +180,7 @@ pub async fn main() {
         }
     });
 
-    let needs_aggregator =
-        dd_use_dogstatsd || (dd_enhanced_metrics && env_type == EnvironmentType::AzureFunction);
+    let needs_aggregator = dd_use_dogstatsd || dd_enhanced_metrics;
 
     let (metrics_flusher, aggregator_handle) = if needs_aggregator {
         debug!("Creating metrics flusher and aggregator");
@@ -211,7 +212,7 @@ pub async fn main() {
         (None, None)
     };
 
-    let mut cpu_collector = if dd_enhanced_metrics && env_type == EnvironmentType::AzureFunction {
+    let mut cpu_collector = if dd_enhanced_metrics {
         aggregator_handle.as_ref().map(|handle| {
             let tags = build_cpu_metrics_tags();
             CpuMetricsCollector::new(handle.clone(), tags)
