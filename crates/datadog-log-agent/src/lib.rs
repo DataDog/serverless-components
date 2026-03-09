@@ -7,6 +7,7 @@
 #![cfg_attr(not(test), deny(clippy::todo))]
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
+pub mod aggregator;
 pub mod constants;
 pub mod errors;
 pub mod log_entry;
