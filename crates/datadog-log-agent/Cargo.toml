@@ -23,6 +23,7 @@ zstd = { version = "0.13.3", default-features = false }
 [dev-dependencies]
 http = "1"
 mockito = { version = "1.5.0", default-features = false }
+serde_json = { version = "1.0.116", default-features = false, features = ["alloc"] }
 tokio = { version = "1.37.0", default-features = false, features = ["macros", "rt-multi-thread"] }
 
 [features]
