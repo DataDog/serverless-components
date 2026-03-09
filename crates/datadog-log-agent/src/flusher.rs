@@ -223,30 +223,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_flush_sends_post_with_correct_headers_datadog_mode() {
+    async fn test_flush_sends_post_with_api_key_header() {
+        // Verify that Datadog mode sends both DD-API-KEY and DD-PROTOCOL:
+        // agent-json headers. We call ship_batch directly to bypass
+        // resolve_endpoint (which builds an HTTPS URL incompatible with the
+        // HTTP mock server).
         let (service, handle) = AggregatorService::new();
         tokio::spawn(service.run());
 
         let mut mock_server = mockito::Server::new_async().await;
-        // Datadog mode builds an HTTPS URL from `site` and is not compatible
-        // with an HTTP mock server. Instead we use OPW mode pointing at the
-        // mock and verify that DD-API-KEY is present and the request is
-        // accepted. The DD-PROTOCOL header is absent in OPW mode; its
-        // presence in Datadog mode is validated by the mock match in
-        // test_flush_sends_post_with_dd_protocol_header below.
         let mock = mock_server
             .mock("POST", "/api/v2/logs")
             .match_header("DD-API-KEY", "test-api-key")
+            .match_header("DD-PROTOCOL", "agent-json")
             .with_status(202)
             .create_async()
             .await;
 
         let config = LogFlusherConfig {
             api_key: "test-api-key".to_string(),
-            site: "unused".to_string(),
-            mode: FlusherMode::ObservabilityPipelinesWorker {
-                url: format!("{}/api/v2/logs", mock_server.url()),
-            },
+            site: "datadoghq.com".to_string(),
+            mode: FlusherMode::Datadog,
             additional_endpoints: Vec::new(),
             use_compression: false,
             compression_level: 3,
@@ -254,12 +251,17 @@ mod tests {
         };
 
         let client = reqwest::Client::builder().build().expect("client");
-        let flusher = LogFlusher::new(config, client, handle.clone());
+        let flusher = LogFlusher::new(config, client, handle);
 
-        handle
-            .insert_batch(vec![make_entry("test")])
-            .expect("insert");
-        flusher.flush().await;
+        // Call ship_batch directly to use the mock server's HTTP URL instead
+        // of the HTTPS URL that resolve_endpoint would produce.
+        let url = format!("{}/api/v2/logs", mock_server.url());
+        let batch = b"[{\"message\":\"test\"}]";
+        flusher
+            .ship_batch(batch, &url, false)
+            .await
+            .expect("ship_batch should succeed");
+
         mock.assert_async().await;
     }
 
@@ -326,7 +328,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_flush_retries_on_500_then_succeeds() {
+    async fn test_flush_retries_on_5xx_then_succeeds() {
         let (service, handle) = AggregatorService::new();
         tokio::spawn(service.run());
 
