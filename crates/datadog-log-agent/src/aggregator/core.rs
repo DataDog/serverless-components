@@ -80,29 +80,40 @@ impl LogAggregator {
 
         let mut output = Vec::new();
         output.push(b'[');
-        let mut first = true;
         let mut bytes_in_batch: usize = 0;
         let mut count: usize = 0;
 
-        while let Some(msg) = self.messages.front() {
+        loop {
             if count >= MAX_BATCH_ENTRIES {
                 break;
             }
-            if !first && bytes_in_batch + msg.len() + 1 > MAX_CONTENT_BYTES {
+
+            let msg_len = match self.messages.front() {
+                Some(m) => m.len(),
+                None => break,
+            };
+
+            // Account for the comma separator added before every entry after the first
+            let separator = if count == 0 { 0 } else { 1 };
+            if count > 0 && bytes_in_batch + separator + msg_len > MAX_CONTENT_BYTES {
                 break;
             }
 
-            if !first {
-                output.push(b',');
-            }
-            first = false;
+            // Safe: we just confirmed front() is Some and we hold &mut self
+            let msg = match self.messages.pop_front() {
+                Some(m) => m,
+                None => break,
+            };
 
-            if let Some(msg) = self.messages.pop_front() {
-                self.current_size_bytes = self.current_size_bytes.saturating_sub(msg.len());
-                bytes_in_batch += msg.len();
-                count += 1;
-                output.extend_from_slice(msg.as_bytes());
+            if count > 0 {
+                output.push(b',');
+                bytes_in_batch += 1;
             }
+
+            self.current_size_bytes = self.current_size_bytes.saturating_sub(msg.len());
+            bytes_in_batch += msg.len();
+            count += 1;
+            output.extend_from_slice(msg.as_bytes());
         }
 
         output.push(b']');
