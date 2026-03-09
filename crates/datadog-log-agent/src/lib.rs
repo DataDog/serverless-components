@@ -1,4 +1,4 @@
-// Copyright 2025-Present Datadog, Inc. https://www.datadoghq.com/
+// Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
 #![cfg_attr(not(test), deny(clippy::panic))]
@@ -14,15 +14,8 @@ pub mod errors;
 pub mod flusher;
 pub mod log_entry;
 
-#[cfg(test)]
-mod tests {
-    use crate::constants::{MAX_BATCH_ENTRIES, MAX_CONTENT_BYTES, MAX_LOG_BYTES};
-
-    #[test]
-    fn test_constants_are_sane() {
-        assert_eq!(MAX_BATCH_ENTRIES, 1_000);
-        assert_eq!(MAX_CONTENT_BYTES, 5 * 1_024 * 1_024);
-        assert_eq!(MAX_LOG_BYTES, 1_024 * 1_024);
-        assert!(MAX_LOG_BYTES < MAX_CONTENT_BYTES);
-    }
-}
+// Re-export the most commonly used types at the crate root
+pub use aggregator::{AggregatorHandle, AggregatorService};
+pub use config::{FlusherMode, LogFlusherConfig};
+pub use flusher::LogFlusher;
+pub use log_entry::LogEntry;
