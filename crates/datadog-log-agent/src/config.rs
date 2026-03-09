@@ -81,6 +81,9 @@ impl LogFlusherConfig {
         let mode = if opw_enabled {
             let url =
                 std::env::var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL").unwrap_or_default();
+            if url.is_empty() {
+                tracing::warn!("OPW mode enabled but DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL is not set — log flush will fail");
+            }
             FlusherMode::ObservabilityPipelinesWorker { url }
         } else {
             FlusherMode::Datadog
