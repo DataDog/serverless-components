@@ -235,9 +235,11 @@ pub async fn main() {
     loop {
         tokio::select! {
             _ = flush_interval.tick() => {
-                if let Some(metrics_flusher) = metrics_flusher.as_ref() {
+                if let Some(metrics_flusher) = metrics_flusher.clone() {
                     debug!("Flushing dogstatsd metrics");
-                    metrics_flusher.flush().await;
+                    tokio::spawn(async move {
+                        metrics_flusher.flush().await;
+                    });
                 }
             }
             _ = cpu_collection_interval.tick() => {
