@@ -122,9 +122,11 @@ pub async fn main() {
         .ok()
         .and_then(|val| parse_metric_namespace(&val));
 
-    let dd_enhanced_metrics = env::var("DD_ENHANCED_METRICS_ENABLED")
-        .map(|val| val.to_lowercase() != "false")
-        .unwrap_or(true);
+    // Only enable enhanced metrics for Azure Functions
+    let dd_enhanced_metrics = env_type == EnvironmentType::AzureFunction
+        && env::var("DD_ENHANCED_METRICS_ENABLED")
+            .map(|val| val.to_lowercase() != "false")
+            .unwrap_or(true);
 
     let https_proxy = env::var("DD_PROXY_HTTPS")
         .or_else(|_| env::var("HTTPS_PROXY"))
@@ -300,7 +302,7 @@ pub async fn main() {
     // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
     // Use the existing aggregator handle
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
-    let mut cpu_collector = if dd_enhanced_metrics && env_type == EnvironmentType::AzureFunction {
+    let mut cpu_collector = if dd_enhanced_metrics {
         aggregator_handle.as_ref().map(|handle| {
             let tags = build_cpu_metrics_tags();
             CpuMetricsCollector::new(handle.clone(), tags)
