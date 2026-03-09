@@ -15,6 +15,7 @@ use crate::errors::FlushError;
 const MAX_FLUSH_ATTEMPTS: u32 = 3;
 
 /// Drains log batches from an [`AggregatorHandle`] and ships them to Datadog.
+#[derive(Clone)]
 pub struct LogFlusher {
     config: LogFlusherConfig,
     client: Client,
