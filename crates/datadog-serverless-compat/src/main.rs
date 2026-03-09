@@ -26,6 +26,13 @@ use datadog_trace_agent::{
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
+use datadog_log_agent::{
+    aggregator::{
+        AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
+    },
+    config::LogFlusherConfig,
+    flusher::LogFlusher,
+};
 use dogstatsd::{
     aggregator::{AggregatorHandle, AggregatorService},
     api_key::ApiKeyFactory,
@@ -107,6 +114,9 @@ pub async fn main() {
     let https_proxy = env::var("DD_PROXY_HTTPS")
         .or_else(|_| env::var("HTTPS_PROXY"))
         .ok();
+    let dd_logs_enabled = env::var("DD_LOGS_ENABLED")
+        .map(|val| val.to_lowercase() != "false")
+        .unwrap_or(true);
     debug!("Starting serverless trace mini agent");
 
     let env_filter = format!("h2=off,hyper=off,rustls=off,{}", log_level);
@@ -174,9 +184,9 @@ pub async fn main() {
         debug!("Starting dogstatsd");
         let (_, metrics_flusher, aggregator_handle) = start_dogstatsd(
             dd_dogstatsd_port,
-            dd_api_key,
+            dd_api_key.clone(),
             dd_site,
-            https_proxy,
+            https_proxy.clone(),
             dogstatsd_tags,
             dd_statsd_metric_namespace,
             #[cfg(all(windows, feature = "windows-pipes"))]
@@ -194,6 +204,16 @@ pub async fn main() {
         (None, None)
     };
 
+    let log_flusher: Option<LogFlusher> = if dd_logs_enabled {
+        debug!("Starting log agent");
+        let log_flusher = start_log_agent(dd_api_key, https_proxy);
+        info!("log agent started");
+        log_flusher
+    } else {
+        info!("log agent disabled");
+        None
+    };
+
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     flush_interval.tick().await; // discard first tick, which is instantaneous
 
@@ -203,6 +223,11 @@ pub async fn main() {
         if let Some(metrics_flusher) = metrics_flusher.as_ref() {
             debug!("Flushing dogstatsd metrics");
             metrics_flusher.flush().await;
+        }
+
+        if let Some(log_flusher) = log_flusher.as_ref() {
+            debug!("Flushing log agent");
+            log_flusher.flush().await;
         }
     }
 }
@@ -311,4 +336,82 @@ fn build_metrics_client(
         builder = builder.proxy(reqwest::Proxy::https(proxy)?);
     }
     Ok(builder.build()?)
+}
+
+fn start_log_agent(dd_api_key: Option<String>, https_proxy: Option<String>) -> Option<LogFlusher> {
+    let (service, handle): (LogAggregatorService, LogAggregatorHandle) =
+        LogAggregatorService::new();
+    tokio::spawn(service.run());
+
+    let client = create_reqwest_client_builder()
+        .map_err(|e| error!("failed to create FIPS HTTP client for log agent: {e}"))
+        .ok()
+        .and_then(|b| {
+            let mut builder = b.timeout(DOGSTATSD_TIMEOUT_DURATION);
+            if let Some(ref proxy) = https_proxy {
+                match reqwest::Proxy::https(proxy.as_str()) {
+                    Ok(p) => builder = builder.proxy(p),
+                    Err(e) => error!("invalid HTTPS proxy for log agent: {e}"),
+                }
+            }
+            builder.build().ok()
+        });
+
+    let client = match client {
+        Some(c) => c,
+        None => {
+            error!("failed to build HTTP client for log agent, log flushing disabled");
+            return None;
+        }
+    };
+
+    if dd_api_key.is_none() {
+        error!("DD_API_KEY not set, log agent won't flush logs");
+    }
+
+    let config = LogFlusherConfig::from_env();
+    Some(LogFlusher::new(config, client, handle))
+}
+
+#[cfg(test)]
+mod log_agent_integration_tests {
+    use datadog_log_agent::{
+        AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig,
+    };
+
+    #[tokio::test]
+    async fn test_log_agent_full_pipeline_compiles_and_runs() {
+        let (service, handle) = AggregatorService::new();
+        tokio::spawn(service.run());
+
+        handle
+            .insert_batch(vec![LogEntry {
+                message: "azure function invoked".to_string(),
+                timestamp: 1_700_000_000_000,
+                hostname: Some("my-azure-fn".to_string()),
+                service: Some("payments".to_string()),
+                ddsource: Some("azure-functions".to_string()),
+                ddtags: Some("env:prod".to_string()),
+                status: Some("info".to_string()),
+                attributes: serde_json::Map::new(),
+            }])
+            .expect("insert_batch");
+
+        let batches = handle.get_batches().await.expect("get_batches");
+        assert_eq!(batches.len(), 1);
+
+        let arr: serde_json::Value = serde_json::from_slice(&batches[0]).expect("json");
+        assert_eq!(arr[0]["ddsource"], "azure-functions");
+        assert_eq!(arr[0]["service"], "payments");
+
+        handle.shutdown().expect("shutdown");
+    }
+
+    /// Verify the LogFlusher struct is constructible from within this crate — compile-time test.
+    #[allow(dead_code)]
+    fn _assert_log_flusher_constructible() {
+        let _ = std::mem::size_of::<LogFlusher>();
+        let _ = std::mem::size_of::<LogFlusherConfig>();
+        let _ = std::mem::size_of::<FlusherMode>();
+    }
 }
