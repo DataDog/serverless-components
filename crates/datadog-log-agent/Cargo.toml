@@ -1,0 +1,26 @@
+# Copyright 2025-Present Datadog, Inc. https://www.datadoghq.com/
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "datadog-log-agent"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+datadog-fips = { path = "../datadog-fips" }
+reqwest = { version = "0.12.4", features = ["json", "http2"], default-features = false }
+serde = { version = "1.0.197", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0.116", default-features = false, features = ["alloc"] }
+thiserror = { version = "1.0.58", default-features = false }
+tokio = { version = "1.37.0", default-features = false, features = ["sync"] }
+tracing = { version = "0.1.40", default-features = false }
+zstd = { version = "0.13.3", default-features = false }
+
+[dev-dependencies]
+http = "1"
+mockito = { version = "1.5.0", default-features = false }
+tokio = { version = "1.37.0", default-features = false, features = ["macros", "rt-multi-thread"] }
