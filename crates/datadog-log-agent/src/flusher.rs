@@ -43,6 +43,8 @@ impl LogFlusher {
     ///
     /// Returns `true` if all batches were shipped successfully (or if there was
     /// nothing to ship). Returns `false` if any batch failed after all retries.
+    ///
+    /// Failures on additional endpoints are logged but do not affect the returned value.
     pub async fn flush(&self) -> bool {
         let batches = match self.aggregator_handle.get_batches().await {
             Ok(b) => b,
@@ -137,7 +139,7 @@ impl LogFlusher {
                 Ok(resp) => {
                     let status = resp.status();
 
-                    if status.is_success() || status.as_u16() == 202 {
+                    if status.is_success() {
                         debug!("log batch accepted: {status}");
                         return Ok(());
                     }
@@ -181,11 +183,14 @@ fn compress_zstd(data: &[u8], level: i32) -> Result<Vec<u8>, FlushError> {
 }
 
 #[cfg(test)]
+// Tests use plain reqwest client to connect to local mock server
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::aggregator::AggregatorService;
     use crate::config::{FlusherMode, LogFlusherConfig};
     use crate::log_entry::LogEntry;
+    use mockito::Matcher;
     use std::time::Duration;
 
     fn make_entry(msg: &str) -> LogEntry {
@@ -210,7 +215,7 @@ mod tests {
     #[tokio::test]
     async fn test_flush_empty_aggregator_does_not_call_api() {
         let (service, handle) = AggregatorService::new();
-        tokio::spawn(service.run());
+        let _task = tokio::spawn(service.run());
 
         // Server with no routes — any request would cause test failure
         let mock_server = mockito::Server::new_async().await;
@@ -229,7 +234,7 @@ mod tests {
         // resolve_endpoint (which builds an HTTPS URL incompatible with the
         // HTTP mock server).
         let (service, handle) = AggregatorService::new();
-        tokio::spawn(service.run());
+        let _task = tokio::spawn(service.run());
 
         let mut mock_server = mockito::Server::new_async().await;
         let mock = mock_server
@@ -268,7 +273,7 @@ mod tests {
     #[tokio::test]
     async fn test_flush_opw_mode_omits_dd_protocol_header() {
         let (service, handle) = AggregatorService::new();
-        tokio::spawn(service.run());
+        let _task = tokio::spawn(service.run());
 
         let mut mock_server = mockito::Server::new_async().await;
         let opw_url = format!("{}/logs", mock_server.url());
@@ -277,6 +282,7 @@ mod tests {
         let mock = mock_server
             .mock("POST", "/logs")
             .match_header("DD-API-KEY", "test-api-key")
+            .match_header("DD-PROTOCOL", Matcher::Missing)
             .with_status(200)
             .expect(1)
             .create_async()
@@ -298,14 +304,15 @@ mod tests {
         handle
             .insert_batch(vec![make_entry("opw log")])
             .expect("insert");
-        flusher.flush().await;
+        let result = flusher.flush().await;
+        assert!(result, "OPW flush should return true on 200");
         mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_flush_does_not_retry_on_403() {
         let (service, handle) = AggregatorService::new();
-        tokio::spawn(service.run());
+        let _task = tokio::spawn(service.run());
 
         let mut mock_server = mockito::Server::new_async().await;
         // expect(1) means exactly one call — if retried, the test will fail
@@ -323,14 +330,15 @@ mod tests {
         handle
             .insert_batch(vec![make_entry("log")])
             .expect("insert");
-        flusher.flush().await;
+        let result = flusher.flush().await;
+        assert!(!result, "403 should cause flush() to return false");
         mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_flush_retries_on_5xx_then_succeeds() {
         let (service, handle) = AggregatorService::new();
-        tokio::spawn(service.run());
+        let _task = tokio::spawn(service.run());
 
         let mut mock_server = mockito::Server::new_async().await;
         // First call → 500, second call → 202
