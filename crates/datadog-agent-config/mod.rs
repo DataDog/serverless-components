@@ -22,7 +22,7 @@ use std::time::Duration;
 use std::{collections::HashMap, fmt};
 use tracing::{debug, error};
 
-use crate::config::{
+use crate::{
     apm_replace_rule::deserialize_apm_replace_rules,
     env::EnvConfigSource,
     flush_strategy::FlushStrategy,
@@ -815,7 +815,7 @@ pub mod tests {
 
     use super::*;
 
-    use crate::config::{
+    use crate::{
         flush_strategy::{FlushStrategy, PeriodicStrategy},
         log_level::LogLevel,
         processing_rule::ProcessingRule,

@@ -2,22 +2,19 @@ use std::time::Duration;
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::{
-    config::{
-        Config, ConfigError, ConfigSource, ProcessingRule,
-        additional_endpoints::deserialize_additional_endpoints,
-        deserialize_apm_replace_rules, deserialize_key_value_pair_array_to_hashmap,
-        deserialize_option_lossless, deserialize_optional_bool_from_anything,
-        deserialize_optional_duration_from_microseconds,
-        deserialize_optional_duration_from_seconds,
-        deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
-        deserialize_processing_rules, deserialize_string_or_int,
-        flush_strategy::FlushStrategy,
-        log_level::LogLevel,
-        logs_additional_endpoints::LogsAdditionalEndpoint,
-        service_mapping::deserialize_service_mapping,
-        trace_propagation_style::{TracePropagationStyle, deserialize_trace_propagation_style},
-    },
+    Config, ConfigError, ConfigSource, ProcessingRule,
+    additional_endpoints::deserialize_additional_endpoints,
+    deserialize_apm_replace_rules, deserialize_key_value_pair_array_to_hashmap,
+    deserialize_option_lossless, deserialize_optional_bool_from_anything,
+    deserialize_optional_duration_from_microseconds, deserialize_optional_duration_from_seconds,
+    deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
+    deserialize_processing_rules, deserialize_string_or_int,
+    flush_strategy::FlushStrategy,
+    log_level::LogLevel,
+    logs_additional_endpoints::LogsAdditionalEndpoint,
     merge_hashmap, merge_option, merge_option_to_value, merge_string, merge_vec,
+    service_mapping::deserialize_service_mapping,
+    trace_propagation_style::{TracePropagationStyle, deserialize_trace_propagation_style},
 };
 use figment::{
     Figment,
@@ -745,7 +742,7 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use crate::config::{flush_strategy::PeriodicStrategy, processing_rule::Kind};
+    use crate::{flush_strategy::PeriodicStrategy, processing_rule::Kind};
 
     use super::*;
 

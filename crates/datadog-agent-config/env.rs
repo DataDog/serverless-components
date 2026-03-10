@@ -7,26 +7,22 @@ use dogstatsd::util::parse_metric_namespace;
 use libdd_trace_obfuscation::replacer::ReplaceRule;
 
 use crate::{
-    config::{
-        Config, ConfigError, ConfigSource,
-        additional_endpoints::deserialize_additional_endpoints,
-        apm_replace_rule::deserialize_apm_replace_rules,
-        deserialize_apm_filter_tags, deserialize_array_from_comma_separated_string,
-        deserialize_key_value_pairs, deserialize_option_lossless,
-        deserialize_optional_bool_from_anything, deserialize_optional_duration_from_microseconds,
-        deserialize_optional_duration_from_seconds,
-        deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
-        deserialize_string_or_int,
-        flush_strategy::FlushStrategy,
-        log_level::LogLevel,
-        logs_additional_endpoints::{
-            LogsAdditionalEndpoint, deserialize_logs_additional_endpoints,
-        },
-        processing_rule::{ProcessingRule, deserialize_processing_rules},
-        service_mapping::deserialize_service_mapping,
-        trace_propagation_style::{TracePropagationStyle, deserialize_trace_propagation_style},
-    },
+    Config, ConfigError, ConfigSource,
+    additional_endpoints::deserialize_additional_endpoints,
+    apm_replace_rule::deserialize_apm_replace_rules,
+    deserialize_apm_filter_tags, deserialize_array_from_comma_separated_string,
+    deserialize_key_value_pairs, deserialize_option_lossless,
+    deserialize_optional_bool_from_anything, deserialize_optional_duration_from_microseconds,
+    deserialize_optional_duration_from_seconds,
+    deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
+    deserialize_string_or_int,
+    flush_strategy::FlushStrategy,
+    log_level::LogLevel,
+    logs_additional_endpoints::{LogsAdditionalEndpoint, deserialize_logs_additional_endpoints},
     merge_hashmap, merge_option, merge_option_to_value, merge_string, merge_vec,
+    processing_rule::{ProcessingRule, deserialize_processing_rules},
+    service_mapping::deserialize_service_mapping,
+    trace_propagation_style::{TracePropagationStyle, deserialize_trace_propagation_style},
 };
 
 #[derive(Debug, PartialEq, Deserialize, Clone, Default)]
@@ -714,7 +710,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::config::{
+    use crate::{
         Config,
         flush_strategy::{FlushStrategy, PeriodicStrategy},
         log_level::LogLevel,
