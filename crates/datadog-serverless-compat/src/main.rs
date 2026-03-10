@@ -236,7 +236,12 @@ pub async fn main() {
 
         if let Some(log_flusher) = log_flusher.as_ref() {
             debug!("Flushing log agent");
-            log_flusher.flush().await;
+            // TODO: surface flush failures into health/metrics telemetry so
+            // operators have a durable signal beyond log lines when logs are
+            // being dropped (e.g. increment a statsd counter or set a gauge).
+            if !log_flusher.flush().await {
+                warn!("log agent flush failed; logs may have been dropped");
+            }
         }
     }
 }
