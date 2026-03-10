@@ -322,4 +322,121 @@ mod tests {
         let batches = handle.get_batches().await.expect("get_batches");
         assert!(batches.is_empty(), "empty POST should insert nothing");
     }
+
+    /// A request whose Content-Length header exceeds MAX_BODY_BYTES must be
+    /// rejected with 413 before any body bytes are read.
+    #[tokio::test]
+    async fn test_oversized_content_length_returns_413() {
+        let (service, handle) = AggregatorService::new();
+        tokio::spawn(service.run());
+
+        let base_url = start_test_server(handle).await;
+        let client = reqwest::Client::new();
+
+        // Real body is tiny; Content-Length is lying about the size.
+        // hyper populates size_hint().upper() from Content-Length, so the
+        // server hits the early-rejection check without buffering 4 MiB.
+        let fake_large_size = MAX_BODY_BYTES + 1;
+        let resp = client
+            .post(format!("{base_url}/v1/input"))
+            .header("Content-Type", "application/json")
+            .header("Content-Length", fake_large_size.to_string())
+            .body("[]")
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(resp.status(), 413);
+    }
+
+    /// All optional LogEntry fields (hostname, service, ddsource, ddtags,
+    /// status) and arbitrary attributes must survive the HTTP round-trip
+    /// through the server and appear intact in the aggregated batch.
+    #[tokio::test]
+    async fn test_full_log_entry_fields_preserved_through_http() {
+        let (service, handle) = AggregatorService::new();
+        tokio::spawn(service.run());
+
+        let base_url = start_test_server(handle.clone()).await;
+        let client = reqwest::Client::new();
+
+        let payload = serde_json::json!([{
+            "message":   "lambda invoked",
+            "timestamp": 1_700_000_002_000_i64,
+            "hostname":  "arn:aws:lambda:us-east-1:123:function:my-fn",
+            "service":   "my-fn",
+            "ddsource":  "lambda",
+            "ddtags":    "env:prod,version:1.0",
+            "status":    "info",
+            "lambda": {
+                "arn":        "arn:aws:lambda:us-east-1:123:function:my-fn",
+                "request_id": "req-abc-123"
+            }
+        }]);
+
+        let resp = client
+            .post(format!("{base_url}/v1/input"))
+            .json(&payload)
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(resp.status(), 200);
+
+        let batches = handle.get_batches().await.expect("get_batches");
+        assert_eq!(batches.len(), 1);
+        let arr: serde_json::Value = serde_json::from_slice(&batches[0]).unwrap();
+        let entry = &arr[0];
+
+        assert_eq!(entry["message"], "lambda invoked");
+        assert_eq!(
+            entry["hostname"],
+            "arn:aws:lambda:us-east-1:123:function:my-fn"
+        );
+        assert_eq!(entry["service"], "my-fn");
+        assert_eq!(entry["ddsource"], "lambda");
+        assert_eq!(entry["ddtags"], "env:prod,version:1.0");
+        assert_eq!(entry["status"], "info");
+        // Flattened attributes must appear at the top level
+        assert_eq!(entry["lambda"]["request_id"], "req-abc-123");
+    }
+
+    /// Two sequential POST requests must both accumulate in the aggregator
+    /// before `get_batches` drains them.
+    #[tokio::test]
+    async fn test_sequential_posts_accumulate_in_aggregator() {
+        let (service, handle) = AggregatorService::new();
+        tokio::spawn(service.run());
+
+        let base_url = start_test_server(handle.clone()).await;
+        let client = reqwest::Client::new();
+
+        // First request
+        client
+            .post(format!("{base_url}/v1/input"))
+            .json(&serde_json::json!([{"message": "first", "timestamp": 1_i64}]))
+            .send()
+            .await
+            .expect("first request failed");
+
+        // Second request
+        client
+            .post(format!("{base_url}/v1/input"))
+            .json(&serde_json::json!([{"message": "second", "timestamp": 2_i64}]))
+            .send()
+            .await
+            .expect("second request failed");
+
+        let batches = handle.get_batches().await.expect("get_batches");
+        // Both entries land in the same aggregator; batch count depends on
+        // the aggregator's internal sizing, but total entries must be 2.
+        let total_entries: usize = batches
+            .iter()
+            .map(|b| {
+                let arr: serde_json::Value = serde_json::from_slice(b).unwrap();
+                arr.as_array().unwrap().len()
+            })
+            .sum();
+        assert_eq!(total_entries, 2, "both entries should be in the aggregator");
+    }
 }

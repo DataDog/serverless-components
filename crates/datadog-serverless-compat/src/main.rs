@@ -414,7 +414,8 @@ fn start_log_agent(
 #[cfg(test)]
 mod log_agent_integration_tests {
     use datadog_log_agent::{
-        AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig,
+        AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig, LogServer,
+        LogServerConfig,
     };
 
     #[tokio::test]
@@ -472,5 +473,56 @@ mod log_agent_integration_tests {
         let _ = std::mem::size_of::<LogFlusher>();
         let _ = std::mem::size_of::<LogFlusherConfig>();
         let _ = std::mem::size_of::<FlusherMode>();
+    }
+
+    /// Full network intake path: entries posted over HTTP to LogServer must
+    /// reach the AggregatorService and be retrievable via get_batches.
+    /// This mirrors what serverless-compat does when DD_LOGS_ENABLED=true.
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::expect_used)]
+    async fn test_log_server_network_intake_end_to_end() {
+        use tokio::time::{sleep, Duration};
+
+        let (service, handle) = AggregatorService::new();
+        tokio::spawn(service.run());
+
+        // Bind :0 to discover a free port, then hand it to LogServer
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let server = LogServer::new(
+            LogServerConfig {
+                host: "127.0.0.1".into(),
+                port,
+            },
+            handle.clone(),
+        );
+        tokio::spawn(server.serve());
+        sleep(Duration::from_millis(50)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/v1/input"))
+            .json(&serde_json::json!([{
+                "message":  "lambda function invoked",
+                "timestamp": 1_700_000_000_000_i64,
+                "ddsource": "lambda",
+                "service":  "my-fn"
+            }]))
+            .send()
+            .await
+            .expect("POST to log server failed");
+
+        assert_eq!(resp.status(), 200, "server must accept the payload");
+
+        let batches = handle.get_batches().await.expect("get_batches");
+        assert_eq!(batches.len(), 1, "one batch expected");
+        let arr: serde_json::Value = serde_json::from_slice(&batches[0]).expect("json");
+        assert_eq!(arr[0]["message"], "lambda function invoked");
+        assert_eq!(arr[0]["ddsource"], "lambda");
+        assert_eq!(arr[0]["service"], "my-fn");
+
+        handle.shutdown().expect("shutdown");
     }
 }
