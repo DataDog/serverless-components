@@ -12,9 +12,7 @@
 
 #![allow(clippy::disallowed_methods)] // plain reqwest::Client is fine against local mock server
 
-use datadog_log_agent::{
-    AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig,
-};
+use datadog_log_agent::{AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig};
 use mockito::{Matcher, Server};
 use std::time::Duration;
 
@@ -254,7 +252,11 @@ async fn test_max_entries_fits_in_one_batch() {
     handle.insert_batch(entries).expect("insert");
 
     let batches = handle.get_batches().await.expect("get_batches");
-    assert_eq!(batches.len(), 1, "exactly MAX_BATCH_ENTRIES fits in one batch");
+    assert_eq!(
+        batches.len(),
+        1,
+        "exactly MAX_BATCH_ENTRIES fits in one batch"
+    );
 
     let arr: serde_json::Value = serde_json::from_slice(&batches[0]).expect("valid JSON");
     assert_eq!(arr.as_array().unwrap().len(), MAX);
@@ -442,7 +444,9 @@ async fn test_opw_mode_disables_compression_regardless_of_config() {
 
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
-    handle.insert_batch(vec![entry("not compressed in OPW")]).expect("insert");
+    handle
+        .insert_batch(vec![entry("not compressed in OPW")])
+        .expect("insert");
 
     // use_compression: true — but OPW mode overrides this to false
     let config = LogFlusherConfig {
@@ -457,7 +461,9 @@ async fn test_opw_mode_disables_compression_regardless_of_config() {
         flush_timeout: Duration::from_secs(5),
     };
 
-    let result = LogFlusher::new(config, build_client(), handle).flush().await;
+    let result = LogFlusher::new(config, build_client(), handle)
+        .flush()
+        .await;
 
     assert!(result);
     mock.assert_async().await;
@@ -485,7 +491,9 @@ async fn test_retry_on_500_succeeds_on_second_attempt() {
 
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
-    handle.insert_batch(vec![entry("retry me")]).expect("insert");
+    handle
+        .insert_batch(vec![entry("retry me")])
+        .expect("insert");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
         .flush()
@@ -507,7 +515,9 @@ async fn test_permanent_error_on_403_no_retry() {
 
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
-    handle.insert_batch(vec![entry("forbidden")]).expect("insert");
+    handle
+        .insert_batch(vec![entry("forbidden")])
+        .expect("insert");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
         .flush()
@@ -530,7 +540,9 @@ async fn test_exhausted_retries_returns_false() {
 
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
-    handle.insert_batch(vec![entry("keep failing")]).expect("insert");
+    handle
+        .insert_batch(vec![entry("keep failing")])
+        .expect("insert");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
         .flush()
@@ -564,7 +576,9 @@ async fn test_additional_endpoints_receive_same_batch() {
 
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
-    handle.insert_batch(vec![entry("multi-endpoint")]).expect("insert");
+    handle
+        .insert_batch(vec![entry("multi-endpoint")])
+        .expect("insert");
 
     let config = LogFlusherConfig {
         api_key: "test-api-key".to_string(),
@@ -578,7 +592,9 @@ async fn test_additional_endpoints_receive_same_batch() {
         flush_timeout: Duration::from_secs(5),
     };
 
-    let result = LogFlusher::new(config, build_client(), handle).flush().await;
+    let result = LogFlusher::new(config, build_client(), handle)
+        .flush()
+        .await;
 
     assert!(result);
     primary_mock.assert_async().await;
@@ -620,7 +636,9 @@ async fn test_additional_endpoint_failure_does_not_affect_return_value() {
         flush_timeout: Duration::from_secs(5),
     };
 
-    let result = LogFlusher::new(config, build_client(), handle).flush().await;
+    let result = LogFlusher::new(config, build_client(), handle)
+        .flush()
+        .await;
 
     assert!(
         result,

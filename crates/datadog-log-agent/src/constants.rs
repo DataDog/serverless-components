@@ -16,6 +16,5 @@ pub const DEFAULT_SITE: &str = "datadoghq.com";
 /// Default flush timeout in seconds.
 pub const DEFAULT_FLUSH_TIMEOUT_SECS: u64 = 5;
 
-/// Default zstd compression level. Valid range: 1 (fastest) to 21 (best ratio).
 /// Negative values enable ultra-fast modes. Level 3 is the zstd library default.
 pub const DEFAULT_COMPRESSION_LEVEL: i32 = 3;
