@@ -9,3 +9,6 @@ description = "Collector to read, compute, and submit enhanced metrics in Server
 dogstatsd = { path = "../dogstatsd", default-features = true }
 num_cpus = "1.16"
 tracing = { version = "0.1", default-features = false }
+
+[features]
+windows-enhanced-metrics = []
