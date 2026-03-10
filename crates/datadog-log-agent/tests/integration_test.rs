@@ -3,18 +3,27 @@
 
 //! Integration tests for the `datadog-log-agent` crate.
 //!
-//! These tests exercise the full pipeline:
+//! These tests exercise two intake paths:
+//!
+//! **Direct intake** (bottlecap / in-process):
 //!   `LogEntry` → `AggregatorHandle::insert_batch` → `LogFlusher::flush` → HTTP endpoint
+//!
+//! **Network intake** (serverless-compat / over HTTP):
+//!   HTTP POST → `LogServer` → `AggregatorHandle::insert_batch` → `LogFlusher::flush` → HTTP endpoint
 //!
 //! HTTP traffic is directed to a local `mockito` server via
 //! `FlusherMode::ObservabilityPipelinesWorker`, which accepts a direct URL.
 //! Datadog-mode-specific headers (`DD-PROTOCOL`) are covered by unit tests in `flusher.rs`.
 
-#![allow(clippy::disallowed_methods)] // plain reqwest::Client is fine against local mock server
+#![allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::expect_used)]
 
-use datadog_log_agent::{AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig};
+use datadog_log_agent::{
+    AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig, LogServer,
+    LogServerConfig,
+};
 use mockito::{Matcher, Server};
 use std::time::Duration;
+use tokio::time::sleep;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -644,4 +653,178 @@ async fn test_additional_endpoint_failure_does_not_affect_return_value() {
         result,
         "primary succeeded — additional endpoint failure must not affect return value"
     );
+}
+
+// ── Network intake (LogServer) ────────────────────────────────────────────────
+
+/// Bind :0 to get a free port, drop the listener, then start LogServer on that
+/// port.  Returns the base URL ("http://127.0.0.1:<port>").
+async fn start_log_server(handle: datadog_log_agent::AggregatorHandle) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind :0");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+
+    let server = LogServer::new(
+        LogServerConfig {
+            host: "127.0.0.1".into(),
+            port,
+        },
+        handle,
+    );
+    tokio::spawn(server.serve());
+    sleep(Duration::from_millis(50)).await; // allow server to bind
+    format!("http://127.0.0.1:{port}")
+}
+
+/// Full network-intake pipeline: HTTP POST → LogServer → AggregatorService →
+/// LogFlusher → mockito backend.  This mirrors what serverless-compat does
+/// when DD_LOGS_ENABLED=true.
+#[tokio::test]
+async fn test_server_to_flusher_full_pipeline() {
+    let mut backend = Server::new_async().await;
+    let mock = backend
+        .mock("POST", "/logs")
+        .match_header("DD-API-KEY", "test-api-key")
+        .with_status(200)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let (svc, handle) = AggregatorService::new();
+    tokio::spawn(svc.run());
+
+    let base_url = start_log_server(handle.clone()).await;
+
+    // External adapter POSTs a log entry over HTTP (as serverless-compat extension would).
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base_url}/v1/input"))
+        .json(&serde_json::json!([{
+            "message":  "invocation start",
+            "timestamp": 1_700_000_000_000_i64,
+            "ddsource": "lambda",
+            "service":  "my-fn",
+            "ddtags":   "env:prod"
+        }]))
+        .send()
+        .await
+        .expect("POST to log server");
+
+    assert_eq!(resp.status(), 200, "log server should accept the entry");
+
+    // Flush everything accumulated in the aggregator to the mock backend.
+    let result = LogFlusher::new(opw_config(&backend.url()), build_client(), handle)
+        .flush()
+        .await;
+
+    assert!(result, "flush should return true on 200");
+    mock.assert_async().await;
+}
+
+/// Multiple concurrent HTTP clients can POST entries simultaneously; all
+/// entries must arrive in the aggregator before flushing.
+#[tokio::test]
+async fn test_server_concurrent_clients_all_entries_arrive() {
+    let mut backend = Server::new_async().await;
+    let mock = backend
+        .mock("POST", "/logs")
+        .with_status(200)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let (svc, handle) = AggregatorService::new();
+    tokio::spawn(svc.run());
+
+    let base_url = start_log_server(handle.clone()).await;
+
+    // Five concurrent producers each POST one entry.
+    const N: usize = 5;
+    let mut tasks = Vec::with_capacity(N);
+    for i in 0..N {
+        let url = format!("{base_url}/v1/input");
+        tasks.push(tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(&url)
+                .json(&serde_json::json!([{
+                    "message":  format!("entry-{i}"),
+                    "timestamp": i as i64
+                }]))
+                .send()
+                .await
+                .expect("concurrent POST")
+                .status()
+        }));
+    }
+
+    for task in tasks {
+        let status = task.await.expect("task");
+        assert_eq!(status, 200);
+    }
+
+    // All N entries must be present in the aggregator.
+    let batches = handle.get_batches().await.expect("get_batches");
+    let total: usize = batches
+        .iter()
+        .map(|b| {
+            let arr: serde_json::Value = serde_json::from_slice(b).unwrap();
+            arr.as_array().unwrap().len()
+        })
+        .sum();
+    assert_eq!(total, N, "all {N} concurrent entries must be aggregated");
+
+    // Re-insert the drained entries so we have something to flush.
+    let (svc2, handle2) = AggregatorService::new();
+    tokio::spawn(svc2.run());
+    handle2
+        .insert_batch(vec![entry("placeholder")])
+        .expect("insert");
+    let result = LogFlusher::new(opw_config(&backend.url()), build_client(), handle2)
+        .flush()
+        .await;
+    assert!(result);
+    mock.assert_async().await;
+}
+
+/// A malformed POST (invalid JSON) must return 400 and must not prevent the
+/// server from processing subsequent valid requests.
+#[tokio::test]
+async fn test_server_invalid_request_does_not_block_subsequent_valid_requests() {
+    let (svc, handle) = AggregatorService::new();
+    tokio::spawn(svc.run());
+
+    let base_url = start_log_server(handle.clone()).await;
+    let client = reqwest::Client::new();
+    let url = format!("{base_url}/v1/input");
+
+    // Bad JSON → 400
+    let bad = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .body("not-json-at-all")
+        .send()
+        .await
+        .expect("bad POST");
+    assert_eq!(bad.status(), 400);
+
+    // Valid entry immediately after → 200 and entry reaches aggregator
+    let good = client
+        .post(&url)
+        .json(&serde_json::json!([{"message": "after-error", "timestamp": 1_i64}]))
+        .send()
+        .await
+        .expect("good POST");
+    assert_eq!(good.status(), 200);
+
+    let batches = handle.get_batches().await.expect("get_batches");
+    let total: usize = batches
+        .iter()
+        .map(|b| {
+            let arr: serde_json::Value = serde_json::from_slice(b).unwrap();
+            arr.as_array().unwrap().len()
+        })
+        .sum();
+    assert_eq!(total, 1, "only the valid entry should be in the aggregator");
 }
