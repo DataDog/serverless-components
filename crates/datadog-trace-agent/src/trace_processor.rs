@@ -128,14 +128,14 @@ impl TraceProcessor for ServerlessTraceProcessor {
         };
 
         // Add function_tags to payload if we can
-        if let Some(function_tags) = config.tags.function_tags() {
-            if let TracerPayloadCollection::V07(ref mut tracer_payloads) = payload {
-                for tracer_payload in tracer_payloads {
-                    tracer_payload.tags.insert(
-                        TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY.to_string(),
-                        function_tags.to_string(),
-                    );
-                }
+        if let Some(function_tags) = config.tags.function_tags()
+            && let TracerPayloadCollection::V07(ref mut tracer_payloads) = payload
+        {
+            for tracer_payload in tracer_payloads {
+                tracer_payload.tags.insert(
+                    TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY.to_string(),
+                    function_tags.to_string(),
+                );
             }
         }
 

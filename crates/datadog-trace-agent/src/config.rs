@@ -260,54 +260,57 @@ mod tests {
     use duplicate::duplicate_item;
     use serial_test::serial;
     use std::collections::HashMap;
-    use std::env;
 
     use crate::config;
 
     #[test]
     #[serial]
     fn test_error_if_unable_to_identify_env() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-
-        let config = config::Config::new();
-        assert!(config.is_err());
-        assert_eq!(
-            config.unwrap_err().to_string(),
-            "Unable to identify environment. Shutting down Mini Agent."
-        );
-        env::remove_var("DD_API_KEY");
+        temp_env::with_vars([("DD_API_KEY", Some("_not_a_real_key_"))], || {
+            let config = config::Config::new();
+            assert!(config.is_err());
+            assert_eq!(
+                config.unwrap_err().to_string(),
+                "Unable to identify environment. Shutting down Mini Agent."
+            );
+        });
     }
 
     #[test]
     #[serial]
     fn test_error_if_no_api_key_env_var() {
-        env::remove_var("DD_API_KEY");
-        let config = config::Config::new();
-        assert!(config.is_err());
-        assert_eq!(
-            config.unwrap_err().to_string(),
-            "DD_API_KEY environment variable is not set"
-        );
+        temp_env::with_vars([("DD_API_KEY", None::<&str>)], || {
+            let config = config::Config::new();
+            assert!(config.is_err());
+            assert_eq!(
+                config.unwrap_err().to_string(),
+                "DD_API_KEY environment variable is not set"
+            );
+        });
     }
 
     #[test]
     #[serial]
     fn test_default_trace_and_trace_stats_urls() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("K_SERVICE", "function_name");
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(
-            config.trace_intake.url,
-            "https://trace.agent.datadoghq.com/api/v0.2/traces"
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("K_SERVICE", Some("function_name")),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(
+                    config.trace_intake.url,
+                    "https://trace.agent.datadoghq.com/api/v0.2/traces"
+                );
+                assert_eq!(
+                    config.trace_stats_intake.url,
+                    "https://trace.agent.datadoghq.com/api/v0.2/stats"
+                );
+            },
         );
-        assert_eq!(
-            config.trace_stats_intake.url,
-            "https://trace.agent.datadoghq.com/api/v0.2/stats"
-        );
-        env::remove_var("DD_API_KEY");
-        env::remove_var("K_SERVICE");
     }
 
     #[duplicate_item(
@@ -322,16 +325,19 @@ mod tests {
     #[test]
     #[serial]
     fn test_name() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("K_SERVICE", "function_name");
-        env::set_var("DD_SITE", dd_site);
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(config.trace_intake.url, expected_url);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("DD_SITE");
-        env::remove_var("K_SERVICE");
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("K_SERVICE", Some("function_name")),
+                ("DD_SITE", Some(dd_site)),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(config.trace_intake.url, expected_url);
+            },
+        );
     }
 
     #[duplicate_item(
@@ -346,193 +352,240 @@ mod tests {
     #[test]
     #[serial]
     fn test_name() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("K_SERVICE", "function_name");
-        env::set_var("DD_SITE", dd_site);
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(config.trace_stats_intake.url, expected_url);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("DD_SITE");
-        env::remove_var("K_SERVICE");
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("K_SERVICE", Some("function_name")),
+                ("DD_SITE", Some(dd_site)),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(config.trace_stats_intake.url, expected_url);
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn test_set_custom_trace_and_trace_stats_intake_url() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("K_SERVICE", "function_name");
-        env::set_var("DD_APM_DD_URL", "http://127.0.0.1:3333");
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(
-            config.trace_intake.url,
-            "http://127.0.0.1:3333/api/v0.2/traces"
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("K_SERVICE", Some("function_name")),
+                ("DD_APM_DD_URL", Some("http://127.0.0.1:3333")),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(
+                    config.trace_intake.url,
+                    "http://127.0.0.1:3333/api/v0.2/traces"
+                );
+                assert_eq!(
+                    config.trace_stats_intake.url,
+                    "http://127.0.0.1:3333/api/v0.2/stats"
+                );
+            },
         );
-        assert_eq!(
-            config.trace_stats_intake.url,
-            "http://127.0.0.1:3333/api/v0.2/stats"
-        );
-        env::remove_var("DD_API_KEY");
-        env::remove_var("DD_APM_DD_URL");
-        env::remove_var("K_SERVICE");
     }
 
     #[test]
     #[serial]
     #[cfg(any(all(windows, feature = "windows-pipes"), test))]
     fn test_apm_windows_pipe_name() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_APM_WINDOWS_PIPE_NAME", r"test_pipe");
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(
-            config.dd_apm_windows_pipe_name,
-            Some(r"\\.\pipe\test_pipe".to_string())
-        );
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_APM_WINDOWS_PIPE_NAME", Some(r"test_pipe")),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(
+                    config.dd_apm_windows_pipe_name,
+                    Some(r"\\.\pipe\test_pipe".to_string())
+                );
 
-        // Port should be overridden to 0 when pipe is set
-        assert_eq!(config.dd_apm_receiver_port, 0);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
-        env::remove_var("DD_APM_WINDOWS_PIPE_NAME");
+                // Port should be overridden to 0 when pipe is set
+                assert_eq!(config.dd_apm_receiver_port, 0);
+            },
+        );
     }
 
     #[test]
     #[serial]
     #[cfg(any(all(windows, feature = "windows-pipes"), test))]
     fn test_dogstatsd_windows_pipe_name() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_DOGSTATSD_WINDOWS_PIPE_NAME", r"test_pipe");
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(
-            config.dd_dogstatsd_windows_pipe_name,
-            Some(r"\\.\pipe\test_pipe".to_string())
-        );
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_DOGSTATSD_WINDOWS_PIPE_NAME", Some(r"test_pipe")),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(
+                    config.dd_dogstatsd_windows_pipe_name,
+                    Some(r"\\.\pipe\test_pipe".to_string())
+                );
 
-        // Port should be overridden to 0 when pipe is set
-        assert_eq!(config.dd_dogstatsd_port, 0);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
-        env::remove_var("DD_DOGSTATSD_WINDOWS_PIPE_NAME");
+                // Port should be overridden to 0 when pipe is set
+                assert_eq!(config.dd_dogstatsd_port, 0);
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn test_default_dogstatsd_port() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(config.dd_dogstatsd_port, 8125);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(config.dd_dogstatsd_port, 8125);
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn test_custom_dogstatsd_port() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_DOGSTATSD_PORT", "18125");
-        let config_res = config::Config::new();
-        println!("{:?}", config_res);
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(config.dd_dogstatsd_port, 18125);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
-        env::remove_var("DD_DOGSTATSD_PORT");
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_DOGSTATSD_PORT", Some("18125")),
+            ],
+            || {
+                let config_res = config::Config::new();
+                println!("{:?}", config_res);
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(config.dd_dogstatsd_port, 18125);
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn test_default_apm_receiver_port() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(config.dd_apm_receiver_port, 8126);
-        #[cfg(any(all(windows, feature = "windows-pipes"), test))]
-        assert_eq!(config.dd_apm_windows_pipe_name, None);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(config.dd_apm_receiver_port, 8126);
+                #[cfg(any(all(windows, feature = "windows-pipes"), test))]
+                assert_eq!(config.dd_apm_windows_pipe_name, None);
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn test_custom_apm_receiver_port() {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_APM_RECEIVER_PORT", "18126");
-        let config_res = config::Config::new();
-        assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        assert_eq!(config.dd_apm_receiver_port, 18126);
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
-        env::remove_var("DD_APM_RECEIVER_PORT");
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_APM_RECEIVER_PORT", Some("18126")),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(config.dd_apm_receiver_port, 18126);
+            },
+        );
     }
 
-    fn test_config_with_dd_tags(dd_tags: &str) -> config::Config {
-        env::set_var("DD_API_KEY", "_not_a_real_key_");
-        env::set_var("ASCSVCRT_SPRING__APPLICATION__NAME", "test-spring-app");
-        env::set_var("DD_TAGS", dd_tags);
+    /// Call from within temp_env::with_vars that set DD_API_KEY, ASCSVCRT_SPRING__APPLICATION__NAME, and DD_TAGS.
+    fn test_config_with_dd_tags() -> config::Config {
         let config_res = config::Config::new();
         assert!(config_res.is_ok());
-        let config = config_res.unwrap();
-        env::remove_var("DD_API_KEY");
-        env::remove_var("ASCSVCRT_SPRING__APPLICATION__NAME");
-        env::remove_var("DD_TAGS");
-        config
+        config_res.unwrap()
     }
 
     #[test]
     #[serial]
     fn test_dd_tags_comma_separated() {
-        let config = test_config_with_dd_tags("some:tag,another:thing,invalid:thing:here");
-        let expected_tags = HashMap::from([
-            ("some".to_string(), "tag".to_string()),
-            ("another".to_string(), "thing".to_string()),
-        ]);
-        assert_eq!(config.tags.tags(), &expected_tags);
-        assert_eq!(config.tags.function_tags(), Some("another:thing,some:tag"));
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_TAGS", Some("some:tag,another:thing,invalid:thing:here")),
+            ],
+            || {
+                let config = test_config_with_dd_tags();
+                let expected_tags = HashMap::from([
+                    ("some".to_string(), "tag".to_string()),
+                    ("another".to_string(), "thing".to_string()),
+                ]);
+                assert_eq!(config.tags.tags(), &expected_tags);
+                assert_eq!(config.tags.function_tags(), Some("another:thing,some:tag"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn test_dd_tags_space_separated() {
-        let config = test_config_with_dd_tags("some:tag another:thing invalid:thing:here");
-        let expected_tags = HashMap::from([
-            ("some".to_string(), "tag".to_string()),
-            ("another".to_string(), "thing".to_string()),
-        ]);
-        assert_eq!(config.tags.tags(), &expected_tags);
-        assert_eq!(config.tags.function_tags(), Some("another:thing,some:tag"));
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_TAGS", Some("some:tag another:thing invalid:thing:here")),
+            ],
+            || {
+                let config = test_config_with_dd_tags();
+                let expected_tags = HashMap::from([
+                    ("some".to_string(), "tag".to_string()),
+                    ("another".to_string(), "thing".to_string()),
+                ]);
+                assert_eq!(config.tags.tags(), &expected_tags);
+                assert_eq!(config.tags.function_tags(), Some("another:thing,some:tag"));
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn test_dd_tags_mixed_separators() {
-        let config = test_config_with_dd_tags("some:tag,another:thing extra:value");
-        let expected_tags = HashMap::from([
-            ("some".to_string(), "tag".to_string()),
-            ("another".to_string(), "thing".to_string()),
-            ("extra".to_string(), "value".to_string()),
-        ]);
-        assert_eq!(config.tags.tags(), &expected_tags);
-        assert_eq!(
-            config.tags.function_tags(),
-            Some("another:thing,extra:value,some:tag")
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_TAGS", Some("some:tag,another:thing extra:value")),
+            ],
+            || {
+                let config = test_config_with_dd_tags();
+                let expected_tags = HashMap::from([
+                    ("some".to_string(), "tag".to_string()),
+                    ("another".to_string(), "thing".to_string()),
+                    ("extra".to_string(), "value".to_string()),
+                ]);
+                assert_eq!(config.tags.tags(), &expected_tags);
+                assert_eq!(
+                    config.tags.function_tags(),
+                    Some("another:thing,extra:value,some:tag")
+                );
+            },
         );
     }
 
@@ -540,24 +593,60 @@ mod tests {
     #[serial]
     fn test_dd_tags_no_valid_tags() {
         // Test with only invalid tags
-        let config = test_config_with_dd_tags("invalid:thing:here,also-bad");
-        assert_eq!(config.tags.tags(), &HashMap::new());
-        assert_eq!(config.tags.function_tags(), None);
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_TAGS", Some("invalid:thing:here,also-bad")),
+            ],
+            || {
+                let config = test_config_with_dd_tags();
+                assert_eq!(config.tags.tags(), &HashMap::new());
+                assert_eq!(config.tags.function_tags(), None);
+            },
+        );
 
         // Test with empty string
-        let config = test_config_with_dd_tags("");
-        assert_eq!(config.tags.tags(), &HashMap::new());
-        assert_eq!(config.tags.function_tags(), None);
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_TAGS", Some("")),
+            ],
+            || {
+                let config = test_config_with_dd_tags();
+                assert_eq!(config.tags.tags(), &HashMap::new());
+                assert_eq!(config.tags.function_tags(), None);
+            },
+        );
 
         // Test with just whitespace
-        let config = test_config_with_dd_tags("   ");
-        assert_eq!(config.tags.tags(), &HashMap::new());
-        assert_eq!(config.tags.function_tags(), None);
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_TAGS", Some("   ")),
+            ],
+            || {
+                let config = test_config_with_dd_tags();
+                assert_eq!(config.tags.tags(), &HashMap::new());
+                assert_eq!(config.tags.function_tags(), None);
+            },
+        );
 
         // Test with just commas and spaces
-        let config = test_config_with_dd_tags(" , , ");
-        assert_eq!(config.tags.tags(), &HashMap::new());
-        assert_eq!(config.tags.function_tags(), None);
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                ("DD_TAGS", Some(" , , ")),
+            ],
+            || {
+                let config = test_config_with_dd_tags();
+                assert_eq!(config.tags.tags(), &HashMap::new());
+                assert_eq!(config.tags.function_tags(), None);
+            },
+        );
     }
 }
 

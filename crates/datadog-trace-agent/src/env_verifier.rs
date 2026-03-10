@@ -359,7 +359,7 @@ mod tests {
     use libdd_trace_utils::trace_utils;
     use serde_json::json;
     use serial_test::serial;
-    use std::{env, fs, path::Path, time::Duration};
+    use std::{fs, path::Path, time::Duration};
 
     use crate::env_verifier::{
         ensure_azure_function_environment, ensure_gcp_function_environment,
@@ -642,28 +642,36 @@ mod tests {
     #[test]
     #[serial]
     fn test_is_azure_flex_without_resource_group_true() {
-        env::remove_var(DD_AZURE_RESOURCE_GROUP);
-        env::set_var(WEBSITE_SKU, "FlexConsumption");
-        assert!(is_azure_flex_without_resource_group());
-        env::remove_var(WEBSITE_SKU);
+        temp_env::with_vars(
+            [
+                (DD_AZURE_RESOURCE_GROUP, None::<&str>),
+                (WEBSITE_SKU, Some("FlexConsumption")),
+            ],
+            || assert!(is_azure_flex_without_resource_group()),
+        );
     }
 
     #[test]
     #[serial]
     fn test_is_azure_flex_without_resource_group_false_resource_group_set() {
-        env::set_var(DD_AZURE_RESOURCE_GROUP, "test-resource-group");
-        env::set_var(WEBSITE_SKU, "FlexConsumption");
-        assert!(!is_azure_flex_without_resource_group());
-        env::remove_var(DD_AZURE_RESOURCE_GROUP);
-        env::remove_var(WEBSITE_SKU);
+        temp_env::with_vars(
+            [
+                (DD_AZURE_RESOURCE_GROUP, Some("test-resource-group")),
+                (WEBSITE_SKU, Some("FlexConsumption")),
+            ],
+            || assert!(!is_azure_flex_without_resource_group()),
+        );
     }
 
     #[test]
     #[serial]
     fn test_is_azure_flex_without_resource_group_false_not_flex() {
-        env::remove_var(DD_AZURE_RESOURCE_GROUP);
-        env::set_var(WEBSITE_SKU, "ElasticPremium");
-        assert!(!is_azure_flex_without_resource_group());
-        env::remove_var(WEBSITE_SKU);
+        temp_env::with_vars(
+            [
+                (DD_AZURE_RESOURCE_GROUP, None::<&str>),
+                (WEBSITE_SKU, Some("ElasticPremium")),
+            ],
+            || assert!(!is_azure_flex_without_resource_group()),
+        );
     }
 }
