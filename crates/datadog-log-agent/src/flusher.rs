@@ -145,8 +145,20 @@ impl LogFlusher {
                         return Ok(());
                     }
 
+                    // Retryable 4xx: treat like transient server errors and
+                    // fall through to the retry loop below.
+                    // 408 = Request Timeout (transient network condition)
+                    // 425 = Too Early (TLS 0-RTT replay rejection)
+                    // 429 = Too Many Requests (intake rate-limiting)
+                    //
+                    // TODO: for 429, parse the `Retry-After` response header
+                    // and sleep for the indicated duration before retrying
+                    // instead of retrying immediately, to avoid hammering the
+                    // intake endpoint while it is still rate-limiting us.
+                    let retryable_4xx = matches!(status.as_u16(), 408 | 425 | 429);
+
                     // Permanent client errors — stop immediately, do not retry
-                    if status.as_u16() >= 400 && status.as_u16() < 500 {
+                    if status.as_u16() >= 400 && status.as_u16() < 500 && !retryable_4xx {
                         warn!("permanent error from logs intake: {status}");
                         return Err(FlushError::PermanentError {
                             status: status.as_u16(),
@@ -334,6 +346,39 @@ mod tests {
         let result = flusher.flush().await;
         assert!(!result, "403 should cause flush() to return false");
         mock.assert_async().await;
+    }
+
+    /// 429 (Too Many Requests) is a retryable 4xx — the retry loop must
+    /// continue rather than short-circuiting with a permanent failure.
+    #[tokio::test]
+    async fn test_flush_retries_on_429_then_succeeds() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+
+        let mut mock_server = mockito::Server::new_async().await;
+        // First call → 429, second call → 200
+        let _throttled = mock_server
+            .mock("POST", "/api/v2/logs")
+            .with_status(429)
+            .expect(1)
+            .create_async()
+            .await;
+        let _ok = mock_server
+            .mock("POST", "/api/v2/logs")
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let config = config_for_mock(&mock_server.url());
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+
+        handle
+            .insert_batch(vec![make_entry("throttled log")])
+            .expect("insert");
+        let result = flusher.flush().await;
+        assert!(result, "should succeed after 429 retry");
     }
 
     #[tokio::test]
