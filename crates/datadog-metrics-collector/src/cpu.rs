@@ -17,7 +17,7 @@ const CPU_LIMIT_METRIC: &str = "azure.functions.enhanced.cpu.limit";
 
 /// Computed CPU total and limit metrics
 pub struct CpuStats {
-    pub total: f64,            // Cumulative CPU usage in nanoseconds
+    pub total: u64,            // Cumulative CPU usage in nanoseconds
     pub limit: Option<f64>,    // CPU limit in nanocores
     pub defaulted_limit: bool, // Whether CPU limit was defaulted to host CPU count
 }
@@ -30,7 +30,7 @@ pub struct CpuMetricsCollector {
     reader: Box<dyn CpuStatsReader>,
     aggregator: AggregatorHandle,
     tags: Option<SortedTags>,
-    last_usage_ns: f64,
+    last_usage_ns: Option<u64>,
     last_collection_time: std::time::Instant,
 }
 
@@ -50,7 +50,7 @@ impl CpuMetricsCollector {
             reader,
             aggregator,
             tags,
-            last_usage_ns: -1.0,
+            last_usage_ns: None,
             last_collection_time: std::time::Instant::now(),
         }
     }
@@ -63,15 +63,21 @@ impl CpuMetricsCollector {
             let now_instant = std::time::Instant::now();
 
             // Skip first collection
-            if self.last_usage_ns == -1.0 {
-                debug!("First CPU collection, skipping rate computation");
-                self.last_usage_ns = current_usage_ns;
+            let Some(last_usage_ns) = self.last_usage_ns else {
+                debug!("First CPU collection, skipping interval");
+                self.last_usage_ns = Some(current_usage_ns);
+                self.last_collection_time = now_instant;
+                return;
+            };
+
+            if current_usage_ns < last_usage_ns {
+                debug!("Current CPU usage is less than last usage, skipping interval");
+                self.last_usage_ns = Some(current_usage_ns);
                 self.last_collection_time = now_instant;
                 return;
             }
-
-            let delta_ns = current_usage_ns - self.last_usage_ns;
-            self.last_usage_ns = current_usage_ns;
+            let delta_ns = (current_usage_ns - last_usage_ns) as f64;
+            self.last_usage_ns = Some(current_usage_ns);
             let elapsed_secs = now_instant
                 .duration_since(self.last_collection_time)
                 .as_secs_f64();
