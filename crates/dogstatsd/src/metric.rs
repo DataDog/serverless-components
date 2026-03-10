@@ -406,7 +406,7 @@ mod tests {
     use proptest::{collection, option, strategy::Strategy, string::string_regex};
     use ustr::Ustr;
 
-    use crate::metric::{id, parse, timestamp_to_bucket, MetricValue, SortedTags};
+    use crate::metric::{MetricValue, SortedTags, id, parse, timestamp_to_bucket};
 
     use super::ParseError;
 
@@ -629,15 +629,19 @@ mod tests {
 
     #[test]
     fn parse_tag_no_value() {
-        let result = parse("datadog.tracer.flush_triggered:1|c|#lang:go,lang_version:go1.22.10,_dd.origin:lambda,runtime-id:d66f501c-d09b-4d0d-970f-515235c4eb56,v1.65.1,service:aws.lambda,reason:scheduled");
+        let result = parse(
+            "datadog.tracer.flush_triggered:1|c|#lang:go,lang_version:go1.22.10,_dd.origin:lambda,runtime-id:d66f501c-d09b-4d0d-970f-515235c4eb56,v1.65.1,service:aws.lambda,reason:scheduled",
+        );
         assert!(result.is_ok());
-        assert!(result
-            .unwrap()
-            .tags
-            .unwrap()
-            .values
-            .iter()
-            .any(|(k, v)| k == "v1.65.1" && v.is_empty()));
+        assert!(
+            result
+                .unwrap()
+                .tags
+                .unwrap()
+                .values
+                .iter()
+                .any(|(k, v)| k == "v1.65.1" && v.is_empty())
+        );
     }
 
     #[test]

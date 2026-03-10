@@ -399,7 +399,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_APM_WINDOWS_PIPE_NAME", Some(r"test_pipe")),
             ],
             || {
@@ -424,7 +427,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_DOGSTATSD_WINDOWS_PIPE_NAME", Some(r"test_pipe")),
             ],
             || {
@@ -448,7 +454,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
             ],
             || {
                 let config_res = config::Config::new();
@@ -465,7 +474,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_DOGSTATSD_PORT", Some("18125")),
             ],
             || {
@@ -484,7 +496,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
             ],
             || {
                 let config_res = config::Config::new();
@@ -503,7 +518,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_APM_RECEIVER_PORT", Some("18126")),
             ],
             || {
@@ -528,7 +546,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_TAGS", Some("some:tag,another:thing,invalid:thing:here")),
             ],
             || {
@@ -549,7 +570,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_TAGS", Some("some:tag another:thing invalid:thing:here")),
             ],
             || {
@@ -570,7 +594,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_TAGS", Some("some:tag,another:thing extra:value")),
             ],
             || {
@@ -596,7 +623,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_TAGS", Some("invalid:thing:here,also-bad")),
             ],
             || {
@@ -610,7 +640,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_TAGS", Some("")),
             ],
             || {
@@ -624,7 +657,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_TAGS", Some("   ")),
             ],
             || {
@@ -638,7 +674,10 @@ mod tests {
         temp_env::with_vars(
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
-                ("ASCSVCRT_SPRING__APPLICATION__NAME", Some("test-spring-app")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
                 ("DD_TAGS", Some(" , , ")),
             ],
             || {

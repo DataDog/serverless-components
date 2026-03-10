@@ -4,9 +4,8 @@
 use core::time::Duration;
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use hyper::{
-    header,
+    Response, StatusCode, header,
     http::{self, HeaderMap},
-    Response, StatusCode,
 };
 use libdd_common::hyper_migration;
 use serde_json::json;
@@ -130,9 +129,9 @@ pub fn build_client(
 #[cfg(test)]
 mod tests {
     use http_body_util::BodyExt;
-    use hyper::header;
     use hyper::HeaderMap;
     use hyper::StatusCode;
+    use hyper::header;
     use libdd_common::hyper_migration;
 
     use super::verify_request_content_length;

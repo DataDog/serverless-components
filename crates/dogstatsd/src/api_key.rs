@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 use std::{future::Future, pin::Pin};

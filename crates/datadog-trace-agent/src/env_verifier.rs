@@ -110,12 +110,16 @@ impl ServerlessEnvVerifier {
                     metadata
                 }
                 Err(err) => {
-                    error!("The Mini Agent can only be run in Google Cloud Functions & Azure Functions. Verification has failed, shutting down now. Error: {err}");
+                    error!(
+                        "The Mini Agent can only be run in Google Cloud Functions & Azure Functions. Verification has failed, shutting down now. Error: {err}"
+                    );
                     process::exit(1);
                 }
             },
             Err(_) => {
-                error!("Google Metadata request timeout of {verify_env_timeout} ms exceeded. Using default values.");
+                error!(
+                    "Google Metadata request timeout of {verify_env_timeout} ms exceeded. Using default values."
+                );
                 GCPMetadata::default()
             }
         };
@@ -262,7 +266,9 @@ async fn verify_azure_environment_or_exit(os: &str) {
             debug!("Successfully verified Azure Function Environment.");
         }
         Err(e) => {
-            error!("The Mini Agent can only be run in Google Cloud Functions & Azure Functions. Verification has failed, shutting down now. Error: {e}");
+            error!(
+                "The Mini Agent can only be run in Google Cloud Functions & Azure Functions. Verification has failed, shutting down now. Error: {e}"
+            );
             process::exit(1);
         }
     }
@@ -354,7 +360,7 @@ async fn ensure_azure_function_environment(
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use hyper::{body::Bytes, Response, StatusCode};
+    use hyper::{Response, StatusCode, body::Bytes};
     use libdd_common::hyper_migration;
     use libdd_trace_utils::trace_utils;
     use serde_json::json;
@@ -362,11 +368,11 @@ mod tests {
     use std::{fs, path::Path, time::Duration};
 
     use crate::env_verifier::{
-        ensure_azure_function_environment, ensure_gcp_function_environment,
-        get_region_from_gcp_region_string, is_azure_flex_without_resource_group,
-        AzureVerificationClient, AzureVerificationClientWrapper, GCPInstance, GCPMetadata,
-        GCPProject, GoogleMetadataClient, AZURE_FUNCTION_JSON_NAME, AZURE_HOST_JSON_NAME,
-        DD_AZURE_RESOURCE_GROUP, WEBSITE_SKU,
+        AZURE_FUNCTION_JSON_NAME, AZURE_HOST_JSON_NAME, AzureVerificationClient,
+        AzureVerificationClientWrapper, DD_AZURE_RESOURCE_GROUP, GCPInstance, GCPMetadata,
+        GCPProject, GoogleMetadataClient, WEBSITE_SKU, ensure_azure_function_environment,
+        ensure_gcp_function_environment, get_region_from_gcp_region_string,
+        is_azure_flex_without_resource_group,
     };
 
     use super::{EnvVerifier, ServerlessEnvVerifier};
