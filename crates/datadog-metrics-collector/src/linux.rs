@@ -42,7 +42,7 @@ fn build_cpu_stats(cgroup_stats: &CgroupStats) -> Option<CpuStats> {
     let (limit_nc, defaulted) = compute_cpu_limit_nc(cgroup_stats);
 
     Some(CpuStats {
-        total: total as f64,
+        total: total,
         limit: Some(limit_nc),
         defaulted_limit: defaulted,
     })
