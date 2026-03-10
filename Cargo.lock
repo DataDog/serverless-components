@@ -500,6 +500,9 @@ version = "0.1.0"
 dependencies = [
  "datadog-fips",
  "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "mockito",
  "reqwest",
  "serde",
