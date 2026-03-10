@@ -49,7 +49,7 @@ use datadog_metrics_collector::azure_instance::InstanceMetricsCollector;
 use dogstatsd::metric::{EMPTY_TAGS, SortedTags};
 use tokio_util::sync::CancellationToken;
 
-const CPU_METRICS_COLLECTION_INTERVAL: u64 = 3;
+const CPU_METRICS_COLLECTION_INTERVAL_SECS: u64 = 3;
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const INSTANCE_METRICS_COLLECTION_INTERVAL_SECS: u64 = 3;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
@@ -321,7 +321,7 @@ pub async fn main() {
         INSTANCE_METRICS_COLLECTION_INTERVAL_SECS,
     ));
     let mut cpu_collection_interval =
-        interval(Duration::from_secs(CPU_METRICS_COLLECTION_INTERVAL));
+        interval(Duration::from_secs(CPU_METRICS_COLLECTION_INTERVAL_SECS));
     flush_interval.tick().await; // discard first tick, which is instantaneous
     instance_metrics_collection_interval.tick().await;
     cpu_collection_interval.tick().await;
