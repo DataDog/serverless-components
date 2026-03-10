@@ -42,7 +42,7 @@ use dogstatsd::{
 use dogstatsd::metric::{SortedTags, EMPTY_TAGS};
 use tokio_util::sync::CancellationToken;
 
-const CPU_METRICS_COLLECTION_INTERVAL: u64 = 3;
+const CPU_METRICS_COLLECTION_INTERVAL_SECS: u64 = 3;
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
@@ -228,7 +228,7 @@ pub async fn main() {
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     let mut cpu_collection_interval =
-        interval(Duration::from_secs(CPU_METRICS_COLLECTION_INTERVAL));
+        interval(Duration::from_secs(CPU_METRICS_COLLECTION_INTERVAL_SECS));
     flush_interval.tick().await; // discard first tick, which is instantaneous
     cpu_collection_interval.tick().await;
 
