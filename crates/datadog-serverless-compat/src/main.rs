@@ -211,9 +211,6 @@ pub async fn main() {
             match start_log_agent(dd_api_key, https_proxy, dd_logs_port) {
                 Some((flusher, handle)) => {
                     info!("log agent started");
-                    // TODO(SVLS-xxxx): wire `handle` to a log-ingestion endpoint (HTTP server or
-                    // equivalent) so Lambda/Azure adapters can call `handle.insert_batch`.
-                    // Until a producer is wired here, every flush will be a no-op.
                     (Some(flusher), Some(handle))
                 }
                 None => {
