@@ -10,5 +10,5 @@ dogstatsd = { path = "../dogstatsd", default-features = true }
 tracing = { version = "0.1", default-features = false }
 libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "0a70516d66314efdd7115644b0da4b3b3e0958e0", default-features = false }
 num_cpus = "1.16"
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp"] }
+[features]
+windows-enhanced-metrics = []
