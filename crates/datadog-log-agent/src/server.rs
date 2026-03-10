@@ -30,7 +30,7 @@
 //! ```
 
 use http_body_util::BodyExt as _;
-use hyper::body::{Body as _, Incoming};
+use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -133,14 +133,23 @@ async fn handle_request(
             .unwrap_or_default());
     }
 
-    // Collect body with size guard
-    let upper = req.body().size_hint().upper().unwrap_or(u64::MAX) as usize;
-    if upper > MAX_BODY_BYTES {
-        return Ok(Response::builder()
-            .status(StatusCode::PAYLOAD_TOO_LARGE)
-            .body("payload too large".to_string())
-            .unwrap_or_default());
+    // Reject early if Content-Length is declared and already exceeds the limit.
+    // Skip this check when Content-Length is absent (chunked transfer) — actual
+    // size is enforced after reading below.
+    if let Some(content_length) = req
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        if content_length > MAX_BODY_BYTES {
+            return Ok(Response::builder()
+                .status(StatusCode::PAYLOAD_TOO_LARGE)
+                .body("payload too large".to_string())
+                .unwrap_or_default());
+        }
     }
+
     let bytes = match req.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
@@ -333,9 +342,8 @@ mod tests {
         let base_url = start_test_server(handle).await;
         let client = reqwest::Client::new();
 
-        // Real body is tiny; Content-Length is lying about the size.
-        // hyper populates size_hint().upper() from Content-Length, so the
-        // server hits the early-rejection check without buffering 4 MiB.
+        // The server checks the Content-Length header directly and rejects
+        // before reading the body when the declared size exceeds the limit.
         let fake_large_size = MAX_BODY_BYTES + 1;
         let resp = client
             .post(format!("{base_url}/v1/input"))
@@ -347,6 +355,67 @@ mod tests {
             .expect("request failed");
 
         assert_eq!(resp.status(), 413);
+    }
+
+    /// A POST with Transfer-Encoding: chunked (no Content-Length header) must
+    /// not be rejected with 413. This is the regression test for the original
+    /// bug where `size_hint().upper()` returning `None` was coerced to `u64::MAX`
+    /// and treated as exceeding the body-size limit.
+    #[tokio::test]
+    async fn test_chunked_transfer_encoding_accepted() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::TcpStream;
+
+        let (service, handle) = AggregatorService::new();
+        tokio::spawn(service.run());
+
+        let base_url = start_test_server(handle.clone()).await;
+        let port: u16 = base_url
+            .trim_start_matches("http://127.0.0.1:")
+            .parse()
+            .expect("port");
+
+        let body = r#"[{"message":"chunked","timestamp":1700000000000}]"#;
+        let request = format!(
+            "POST /v1/input HTTP/1.1\r\n\
+             Host: 127.0.0.1:{port}\r\n\
+             Content-Type: application/json\r\n\
+             Transfer-Encoding: chunked\r\n\
+             \r\n\
+             {:x}\r\n\
+             {body}\r\n\
+             0\r\n\
+             \r\n",
+            body.len(),
+        );
+
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .expect("connect");
+        stream.write_all(request.as_bytes()).await.expect("write");
+        stream.flush().await.expect("flush");
+
+        let mut response = String::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut buf).await.expect("read");
+            if n == 0 {
+                break;
+            }
+            response.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if response.contains("\r\n\r\n") {
+                break;
+            }
+        }
+
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "expected 200, got: {response}"
+        );
+        let batches = handle.get_batches().await.expect("get_batches");
+        assert_eq!(batches.len(), 1, "entry should have been inserted");
+        let arr: serde_json::Value = serde_json::from_slice(&batches[0]).unwrap();
+        assert_eq!(arr[0]["message"], "chunked");
     }
 
     /// All optional LogEntry fields (hostname, service, ddsource, ddtags,
