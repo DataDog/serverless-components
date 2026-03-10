@@ -28,7 +28,7 @@ use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentTy
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_log_agent::{
     AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
-    FlusherMode as LogFlusherMode, LogFlusher, LogFlusherConfig,
+    FlusherMode as LogFlusherMode, LogFlusher, LogFlusherConfig, LogServer, LogServerConfig,
 };
 use dogstatsd::{
     aggregator::{AggregatorHandle, AggregatorService},
@@ -114,6 +114,10 @@ pub async fn main() {
     let dd_logs_enabled = env::var("DD_LOGS_ENABLED")
         .map(|val| val.to_lowercase() == "true")
         .unwrap_or(false);
+    let dd_logs_port: u16 = env::var("DD_LOGS_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8080);
     debug!("Starting serverless trace mini agent");
 
     let env_filter = format!("h2=off,hyper=off,rustls=off,{}", log_level);
@@ -201,19 +205,26 @@ pub async fn main() {
         (None, None)
     };
 
-    let log_flusher: Option<LogFlusher> = if dd_logs_enabled {
-        debug!("Starting log agent");
-        let log_flusher = start_log_agent(dd_api_key, https_proxy);
-        if log_flusher.is_some() {
-            info!("log agent started");
+    let (log_flusher, _log_aggregator_handle): (Option<LogFlusher>, Option<LogAggregatorHandle>) =
+        if dd_logs_enabled {
+            debug!("Starting log agent");
+            match start_log_agent(dd_api_key, https_proxy, dd_logs_port) {
+                Some((flusher, handle)) => {
+                    info!("log agent started");
+                    // TODO(SVLS-xxxx): wire `handle` to a log-ingestion endpoint (HTTP server or
+                    // equivalent) so Lambda/Azure adapters can call `handle.insert_batch`.
+                    // Until a producer is wired here, every flush will be a no-op.
+                    (Some(flusher), Some(handle))
+                }
+                None => {
+                    warn!("log agent failed to start, log flushing disabled");
+                    (None, None)
+                }
+            }
         } else {
-            warn!("log agent failed to start, log flushing disabled");
-        }
-        log_flusher
-    } else {
-        info!("log agent disabled");
-        None
-    };
+            info!("log agent disabled");
+            (None, None)
+        };
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     flush_interval.tick().await; // discard first tick, which is instantaneous
@@ -339,7 +350,11 @@ fn build_metrics_client(
     Ok(builder.build()?)
 }
 
-fn start_log_agent(dd_api_key: Option<String>, https_proxy: Option<String>) -> Option<LogFlusher> {
+fn start_log_agent(
+    dd_api_key: Option<String>,
+    https_proxy: Option<String>,
+    logs_port: u16,
+) -> Option<(LogFlusher, LogAggregatorHandle)> {
     let Some(api_key) = dd_api_key else {
         error!("DD_API_KEY not set, log agent disabled");
         return None;
@@ -384,7 +399,19 @@ fn start_log_agent(dd_api_key: Option<String>, https_proxy: Option<String>) -> O
         }
     }
 
-    Some(LogFlusher::new(config, client, handle))
+    // Start the HTTP intake server so external adapters can POST log entries.
+    let server = LogServer::new(
+        LogServerConfig {
+            host: AGENT_HOST.to_string(),
+            port: logs_port,
+        },
+        handle.clone(),
+    );
+    tokio::spawn(server.serve());
+    info!("log server listening on {AGENT_HOST}:{logs_port}");
+
+    let flusher = LogFlusher::new(config, client, handle.clone());
+    Some((flusher, handle))
 }
 
 #[cfg(test)]
