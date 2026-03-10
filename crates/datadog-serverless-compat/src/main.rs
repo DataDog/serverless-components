@@ -46,6 +46,7 @@ use tokio_util::sync::CancellationToken;
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
+const DEFAULT_LOG_INTAKE_PORT: u16 = 10517;
 const AGENT_HOST: &str = "0.0.0.0";
 
 #[tokio::main]
@@ -117,7 +118,7 @@ pub async fn main() {
     let dd_logs_port: u16 = env::var("DD_LOGS_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(8080);
+        .unwrap_or(DEFAULT_LOG_INTAKE_PORT);
     debug!("Starting serverless trace mini agent");
 
     let env_filter = format!("h2=off,hyper=off,rustls=off,{}", log_level);
@@ -409,6 +410,14 @@ fn start_log_agent(
         },
         handle.clone(),
     );
+    // TODO: `LogServer::serve` binds the port inside the spawned task, so any
+    // bind failure (e.g. port already in use) is only logged as an error and
+    // silently swallowed — this function still returns `Some(...)` and the
+    // caller logs "log agent started" even though the server never came up.
+    // Fix: split `serve` into a synchronous `bind` step (returning
+    // `Result<BoundLogServer, io::Error>`) and a separate accept-loop step, so
+    // the bind result can be checked here and propagated as a fatal error before
+    // the feature is considered enabled.
     tokio::spawn(server.serve());
     info!("log server listening on {AGENT_HOST}:{logs_port}");
 
