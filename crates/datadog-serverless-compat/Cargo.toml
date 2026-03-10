@@ -29,8 +29,9 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 zstd = { version = "0.13.3", default-features = false }
 
 [dev-dependencies]
+reqwest = { version = "0.12.4", features = ["json"], default-features = false }
 serde_json = { version = "1.0.116", default-features = false, features = ["alloc"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [[bin]]
 name = "datadog-serverless-compat"
