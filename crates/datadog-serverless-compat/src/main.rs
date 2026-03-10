@@ -27,8 +27,8 @@ use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentTy
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_log_agent::{
-    AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService, LogFlusher,
-    LogFlusherConfig,
+    AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
+    FlusherMode as LogFlusherMode, LogFlusher, LogFlusherConfig,
 };
 use dogstatsd::{
     aggregator::{AggregatorHandle, AggregatorService},
@@ -112,8 +112,8 @@ pub async fn main() {
         .or_else(|_| env::var("HTTPS_PROXY"))
         .ok();
     let dd_logs_enabled = env::var("DD_LOGS_ENABLED")
-        .map(|val| val.to_lowercase() != "false")
-        .unwrap_or(true);
+        .map(|val| val.to_lowercase() == "true")
+        .unwrap_or(false);
     debug!("Starting serverless trace mini agent");
 
     let env_filter = format!("h2=off,hyper=off,rustls=off,{}", log_level);
@@ -360,21 +360,30 @@ fn start_log_agent(dd_api_key: Option<String>, https_proxy: Option<String>) -> O
                     Err(e) => error!("invalid HTTPS proxy for log agent: {e}"),
                 }
             }
-            builder.build().ok()
+            match builder.build() {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    error!("failed to build HTTP client for log agent: {e}");
+                    None
+                }
+            }
         });
 
-    let client = match client {
-        Some(c) => c,
-        None => {
-            error!("failed to build HTTP client for log agent, log flushing disabled");
-            return None;
-        }
-    };
+    let client = client?; // error already logged above
 
     let config = LogFlusherConfig {
         api_key,
         ..LogFlusherConfig::from_env()
     };
+
+    // Fail fast: OPW mode with an empty URL will always produce a network error at flush time.
+    if let LogFlusherMode::ObservabilityPipelinesWorker { url } = &config.mode {
+        if url.is_empty() {
+            error!("OPW mode enabled but DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL is empty — log agent disabled");
+            return None;
+        }
+    }
+
     Some(LogFlusher::new(config, client, handle))
 }
 
@@ -410,6 +419,27 @@ mod log_agent_integration_tests {
         assert_eq!(arr[0]["service"], "payments");
 
         handle.shutdown().expect("shutdown");
+    }
+
+    /// start_log_agent must reject OPW mode with an empty URL.
+    #[test]
+    fn test_opw_empty_url_is_detected() {
+        let config = LogFlusherConfig {
+            api_key: "key".to_string(),
+            site: "datadoghq.com".to_string(),
+            mode: FlusherMode::ObservabilityPipelinesWorker { url: String::new() },
+            additional_endpoints: Vec::new(),
+            use_compression: false,
+            compression_level: 3,
+            flush_timeout: std::time::Duration::from_secs(5),
+        };
+        assert!(
+            matches!(
+                &config.mode,
+                FlusherMode::ObservabilityPipelinesWorker { url } if url.is_empty()
+            ),
+            "should detect empty OPW URL"
+        );
     }
 
     /// Verify the LogFlusher struct is constructible from within this crate — compile-time test.
