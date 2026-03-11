@@ -153,6 +153,9 @@ impl LogFlusher {
             match cloned.send().await {
                 Ok(resp) => {
                     let status = resp.status();
+                    // Drain the body so the underlying TCP connection is
+                    // returned to the pool rather than held in CLOSE_WAIT.
+                    let _ = resp.bytes().await;
 
                     if status.is_success() {
                         debug!("log batch accepted: {status}");
