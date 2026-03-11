@@ -16,6 +16,7 @@ serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde-aux = { version = "4.7", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 tracing = { version = "0.1", default-features = false }
+datadog-opentelemetry = { git = "https://github.com/DataDog/dd-trace-rs", rev = "f51cefc4ad24bec81b38fb2f36b1ed93f21ae913", default-features = false }
 dogstatsd = { path = "../dogstatsd" }
 tokio = { version = "1.47", default-features = false, features = ["time"] }
 

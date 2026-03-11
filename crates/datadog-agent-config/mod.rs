@@ -6,8 +6,9 @@ pub mod log_level;
 pub mod logs_additional_endpoints;
 pub mod processing_rule;
 pub mod service_mapping;
-pub mod trace_propagation_style;
 pub mod yaml;
+
+pub use datadog_opentelemetry::configuration::TracePropagationStyle;
 
 use libdd_trace_obfuscation::replacer::ReplaceRule;
 use libdd_trace_utils::config_utils::{trace_intake_url, trace_intake_url_prefixed};
@@ -28,7 +29,6 @@ use crate::{
     log_level::LogLevel,
     logs_additional_endpoints::LogsAdditionalEndpoint,
     processing_rule::{ProcessingRule, deserialize_processing_rules},
-    trace_propagation_style::TracePropagationStyle,
     yaml::YamlConfigSource,
 };
 
@@ -807,6 +807,28 @@ pub fn deserialize_optional_duration_from_seconds_ignore_zero<'de, D: Deserializ
     Ok(duration)
 }
 
+pub fn deserialize_trace_propagation_style<'de, D>(
+    deserializer: D,
+) -> Result<Vec<TracePropagationStyle>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use std::str::FromStr;
+    let s: String = String::deserialize(deserializer)?;
+
+    Ok(s.split(',')
+        .filter_map(
+            |style| match TracePropagationStyle::from_str(style.trim()) {
+                Ok(parsed_style) => Some(parsed_style),
+                Err(e) => {
+                    error!("Failed to parse trace propagation style: {e}, ignoring");
+                    None
+                }
+            },
+        )
+        .collect())
+}
+
 #[cfg_attr(coverage_nightly, coverage(off))] // Test modules skew coverage metrics
 #[cfg(test)]
 pub mod tests {
@@ -815,10 +837,10 @@ pub mod tests {
     use super::*;
 
     use crate::{
+        TracePropagationStyle,
         flush_strategy::{FlushStrategy, PeriodicStrategy},
         log_level::LogLevel,
         processing_rule::ProcessingRule,
-        trace_propagation_style::TracePropagationStyle,
     };
 
     #[test]
@@ -1298,17 +1320,12 @@ pub mod tests {
     fn test_parse_trace_propagation_style() {
         figment::Jail::expect_with(|jail| {
             jail.clear_env();
-            jail.set_env(
-                "DD_TRACE_PROPAGATION_STYLE",
-                "datadog,tracecontext,b3,b3multi",
-            );
+            jail.set_env("DD_TRACE_PROPAGATION_STYLE", "datadog,tracecontext");
             let config = get_config(Path::new(""));
 
             let expected_styles = vec![
                 TracePropagationStyle::Datadog,
                 TracePropagationStyle::TraceContext,
-                TracePropagationStyle::B3,
-                TracePropagationStyle::B3Multi,
             ];
             assert_eq!(config.trace_propagation_style, expected_styles);
             assert_eq!(config.trace_propagation_style_extract, expected_styles);

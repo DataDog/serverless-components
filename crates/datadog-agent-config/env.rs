@@ -7,7 +7,7 @@ use dogstatsd::util::parse_metric_namespace;
 use libdd_trace_obfuscation::replacer::ReplaceRule;
 
 use crate::{
-    Config, ConfigError, ConfigSource,
+    Config, ConfigError, ConfigSource, TracePropagationStyle,
     additional_endpoints::deserialize_additional_endpoints,
     apm_replace_rule::deserialize_apm_replace_rules,
     deserialize_apm_filter_tags, deserialize_array_from_comma_separated_string,
@@ -15,14 +15,13 @@ use crate::{
     deserialize_optional_bool_from_anything, deserialize_optional_duration_from_microseconds,
     deserialize_optional_duration_from_seconds,
     deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
-    deserialize_string_or_int,
+    deserialize_string_or_int, deserialize_trace_propagation_style,
     flush_strategy::FlushStrategy,
     log_level::LogLevel,
     logs_additional_endpoints::{LogsAdditionalEndpoint, deserialize_logs_additional_endpoints},
     merge_hashmap, merge_option, merge_option_to_value, merge_string, merge_vec,
     processing_rule::{ProcessingRule, deserialize_processing_rules},
     service_mapping::deserialize_service_mapping,
-    trace_propagation_style::{TracePropagationStyle, deserialize_trace_propagation_style},
 };
 
 #[derive(Debug, PartialEq, Deserialize, Clone, Default)]
@@ -711,11 +710,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        Config,
+        Config, TracePropagationStyle,
         flush_strategy::{FlushStrategy, PeriodicStrategy},
         log_level::LogLevel,
         processing_rule::{Kind, ProcessingRule},
-        trace_propagation_style::TracePropagationStyle,
     };
 
     #[test]
@@ -798,7 +796,7 @@ mod tests {
             jail.set_env("DD_METRICS_CONFIG_COMPRESSION_LEVEL", "3");
             // Trace Propagation
             jail.set_env("DD_TRACE_PROPAGATION_STYLE", "datadog");
-            jail.set_env("DD_TRACE_PROPAGATION_STYLE_EXTRACT", "b3");
+            jail.set_env("DD_TRACE_PROPAGATION_STYLE_EXTRACT", "tracecontext");
             jail.set_env("DD_TRACE_PROPAGATION_EXTRACT_FIRST", "true");
             jail.set_env("DD_TRACE_PROPAGATION_HTTP_BAGGAGE_ENABLED", "true");
             jail.set_env("DD_TRACE_AWS_SERVICE_REPRESENTATION_ENABLED", "true");
@@ -980,7 +978,7 @@ mod tests {
                     "debug:^true$".to_string(),
                 ]),
                 trace_propagation_style: vec![TracePropagationStyle::Datadog],
-                trace_propagation_style_extract: vec![TracePropagationStyle::B3],
+                trace_propagation_style_extract: vec![TracePropagationStyle::TraceContext],
                 trace_propagation_extract_first: true,
                 trace_propagation_http_baggage_enabled: true,
                 trace_aws_service_representation_enabled: true,
