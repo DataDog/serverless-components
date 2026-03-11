@@ -82,9 +82,6 @@ fn read_cgroup_stats() -> CgroupStats {
                 }
             })
         });
-    if scheduler_quota.is_none() {
-        debug!("Could not read scheduler quota from {CGROUP_CPU_QUOTA_PATH}");
-    }
 
     CgroupStats {
         total,
@@ -133,8 +130,6 @@ fn read_cpu_count_from_file(path: &str) -> Result<u64, io::Error> {
             cpu_count += 1;
         }
     }
-
-    debug!("Total CPU count: {cpu_count}");
     Ok(cpu_count)
 }
 
@@ -144,10 +139,6 @@ fn compute_cpu_limit_nc(cgroup_stats: &CgroupStats) -> (f64, bool) {
         Some(limit) => (limit, false),
         None => {
             let host_cpu_count = num_cpus::get() as f64;
-            debug!(
-                "No CPU limit found, defaulting to host CPU count: {} CPUs",
-                host_cpu_count
-            );
             (host_cpu_count * 1000000000.0, true) // Convert to nanocores
         }
     }
