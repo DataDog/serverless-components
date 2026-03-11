@@ -182,6 +182,9 @@ pub async fn main() {
 
     let needs_aggregator = dd_use_dogstatsd || dd_enhanced_metrics;
 
+    // The aggregator is shared between dogstatsd and enhanced metrics.
+    // It is started independently so that either can be enabled without the other.
+    // Only dogstatsd needs the dogstatsd listener
     let (metrics_flusher, aggregator_handle) = if needs_aggregator {
         debug!("Creating metrics flusher and aggregator");
 
