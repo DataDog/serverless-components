@@ -395,6 +395,7 @@ name = "datadog-metrics-collector"
 version = "0.1.0"
 dependencies = [
  "dogstatsd",
+ "libdd-common",
  "num_cpus",
  "tracing",
 ]
@@ -421,7 +422,6 @@ dependencies = [
  "datadog-metrics-collector",
  "datadog-trace-agent",
  "dogstatsd",
- "libdd-common",
  "libdd-trace-utils",
  "reqwest",
  "tokio",

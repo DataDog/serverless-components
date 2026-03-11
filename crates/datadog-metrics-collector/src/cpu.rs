@@ -10,6 +10,8 @@
 
 use dogstatsd::aggregator::AggregatorHandle;
 use dogstatsd::metric::{Metric, MetricValue, SortedTags};
+use libdd_common::azure_app_services;
+use std::env;
 use tracing::{debug, error};
 
 const CPU_USAGE_METRIC: &str = "azure.functions.enhanced.cpu.usage";
@@ -121,4 +123,43 @@ impl CpuMetricsCollector {
             debug!("Skipping CPU metrics collection - could not find data to generate CPU usage and limit enhanced metrics");
         }
     }
+}
+
+pub fn build_cpu_metrics_tags() -> Option<SortedTags> {
+    let mut tag_parts = Vec::new();
+    // Azure tags from ddcommon
+    if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
+        let aas_tags = [
+            ("resource_id", aas_metadata.get_resource_id()),
+            ("resource_group", aas_metadata.get_resource_group()),
+            ("subscription_id", aas_metadata.get_subscription_id()),
+            ("name", aas_metadata.get_site_name()),
+        ];
+        for (name, value) in aas_tags {
+            if value != "unknown" {
+                tag_parts.push(format!("{}:{}", name, value));
+            }
+        }
+    }
+
+    // Tags from env vars (not in ddcommon) - origin tag is added by DogStatsD
+    for (tag_name, env_var) in [
+        ("region", "REGION_NAME"),
+        ("plan_tier", "WEBSITE_SKU"),
+        ("service", "DD_SERVICE"),
+        ("env", "DD_ENV"),
+        ("version", "DD_VERSION"),
+        ("serverless_compat_version", "DD_SERVERLESS_COMPAT_VERSION"),
+    ] {
+        if let Ok(val) = env::var(env_var) {
+            if !val.is_empty() {
+                tag_parts.push(format!("{}:{}", tag_name, val));
+            }
+        }
+    }
+
+    if tag_parts.is_empty() {
+        return None;
+    }
+    SortedTags::parse(&tag_parts.join(",")).ok()
 }
