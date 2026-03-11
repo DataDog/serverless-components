@@ -121,8 +121,13 @@ impl LogFlusher {
         api_key: &str,
     ) -> Result<(), FlushError> {
         let (body, content_encoding) = if compress {
-            let compressed = compress_zstd(batch, self.config.compression_level)?;
-            (compressed, Some("zstd"))
+            match compress_zstd(batch, self.config.compression_level) {
+                Ok(compressed) => (compressed, Some("zstd")),
+                Err(e) => {
+                    warn!("failed to compress log batch, sending uncompressed: {e}");
+                    (batch.to_vec(), None)
+                }
+            }
         } else {
             (batch.to_vec(), None)
         };
