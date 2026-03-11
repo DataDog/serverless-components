@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use crate::constants::{DEFAULT_COMPRESSION_LEVEL, DEFAULT_FLUSH_TIMEOUT_SECS, DEFAULT_SITE};
+use crate::logs_additional_endpoint::{parse_additional_endpoints, LogsAdditionalEndpoint};
 
 /// Controls where and how logs are shipped.
 #[derive(Debug, Clone)]
@@ -31,8 +32,9 @@ pub struct LogFlusherConfig {
     /// Flusher mode — Datadog vs Observability Pipelines Worker.
     pub mode: FlusherMode,
 
-    /// Additional Datadog intake URLs to ship each batch to in parallel.
-    pub additional_endpoints: Vec<String>,
+    /// Additional Datadog intake endpoints to ship each batch to in parallel.
+    /// Each endpoint uses its own API key and full intake URL.
+    pub additional_endpoints: Vec<LogsAdditionalEndpoint>,
 
     /// Enable zstd compression (ignored in OPW mode, which is always uncompressed).
     pub use_compression: bool,
@@ -93,7 +95,9 @@ impl LogFlusherConfig {
             api_key,
             site,
             mode,
-            additional_endpoints: Vec::new(),
+            additional_endpoints: std::env::var("DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS")
+                .map(|v| parse_additional_endpoints(&v))
+                .unwrap_or_default(),
             use_compression,
             compression_level,
             flush_timeout: Duration::from_secs(flush_timeout_secs),
