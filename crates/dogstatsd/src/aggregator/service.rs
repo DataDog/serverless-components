@@ -159,7 +159,7 @@ impl AggregatorService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metric::{parse, EMPTY_TAGS};
+    use crate::metric::{EMPTY_TAGS, parse};
 
     #[tokio::test]
     async fn test_aggregator_service_basic_flow() {

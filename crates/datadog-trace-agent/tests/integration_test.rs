@@ -7,7 +7,7 @@ use common::helpers::{create_test_trace_payload, send_tcp_request};
 use common::mock_server::MockServer;
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
-    config::{test_helpers::create_tcp_test_config, Config},
+    config::{Config, test_helpers::create_tcp_test_config},
     mini_agent::MiniAgent,
     proxy_flusher::ProxyFlusher,
     trace_flusher::TraceFlusher,

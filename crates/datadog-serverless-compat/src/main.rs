@@ -10,7 +10,7 @@
 use std::{env, sync::Arc};
 use tokio::{
     sync::Mutex as TokioMutex,
-    time::{interval, Duration},
+    time::{Duration, interval},
 };
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
@@ -36,7 +36,7 @@ use dogstatsd::{
     util::parse_metric_namespace,
 };
 
-use dogstatsd::metric::{SortedTags, EMPTY_TAGS};
+use dogstatsd::metric::{EMPTY_TAGS, SortedTags};
 use tokio_util::sync::CancellationToken;
 
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;

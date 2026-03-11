@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 
 use crate::aggregator::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
-use crate::metric::{id, parse, Metric};
+use crate::metric::{Metric, id, parse};
 use socket2::{Domain, Protocol, Socket, Type};
 use tracing::{debug, error, trace};
 
@@ -822,9 +822,11 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
 
         assert_eq!(response.series.len(), 1);
         assert_eq!(response.series[0].series.len(), 1);
-        assert!(response.series[0].series[0]
-            .metric
-            .starts_with("custom.namespace.my.metric"));
+        assert!(
+            response.series[0].series[0]
+                .metric
+                .starts_with("custom.namespace.my.metric")
+        );
     }
 
     #[tokio::test]
@@ -838,9 +840,11 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         // aws.lambda.enhanced.invocations should be filtered out
         assert_eq!(response.series.len(), 1);
         assert_eq!(response.series[0].series.len(), 1);
-        assert!(response.series[0].series[0]
-            .metric
-            .starts_with("custom.metric"));
+        assert!(
+            response.series[0].series[0]
+                .metric
+                .starts_with("custom.metric")
+        );
     }
 
     #[tokio::test]

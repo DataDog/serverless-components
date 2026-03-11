@@ -1,0 +1,26 @@
+[package]
+name = "datadog-agent-config"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "mod.rs"
+
+[dependencies]
+figment = { version = "0.10", default-features = false, features = ["yaml", "env"] }
+libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "d52ee90209cb12a28bdda0114535c1a985a29d95" }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "d52ee90209cb12a28bdda0114535c1a985a29d95" }
+log = { version = "0.4", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde-aux = { version = "4.7", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+tracing = { version = "0.1", default-features = false }
+dogstatsd = { path = "../dogstatsd" }
+tokio = { version = "1.47", default-features = false, features = ["time"] }
+
+[dev-dependencies]
+figment = { version = "0.10", default-features = false, features = ["yaml", "env", "test"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }

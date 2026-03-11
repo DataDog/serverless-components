@@ -15,7 +15,7 @@ use mockito::Server;
 use std::sync::Arc;
 use tokio::{
     net::UdpSocket,
-    time::{sleep, timeout, Duration},
+    time::{Duration, sleep, timeout},
 };
 use tokio_util::sync::CancellationToken;
 use zstd::zstd_safe::CompressionLevel;
@@ -133,7 +133,7 @@ async fn start_dogstatsd_on_port(
 #[tokio::test]
 async fn test_send_with_retry_immediate_failure() {
     use dogstatsd::datadog::{DdApi, DdDdUrl, RetryStrategy};
-    use dogstatsd::metric::{parse, SortedTags};
+    use dogstatsd::metric::{SortedTags, parse};
 
     let mut server = Server::new_async().await;
     let mock = server
@@ -182,7 +182,7 @@ async fn test_send_with_retry_immediate_failure() {
 #[tokio::test]
 async fn test_send_with_retry_linear_backoff_success() {
     use dogstatsd::datadog::{DdApi, DdDdUrl, RetryStrategy};
-    use dogstatsd::metric::{parse, SortedTags};
+    use dogstatsd::metric::{SortedTags, parse};
 
     let mut server = Server::new_async().await;
     let mock = server
@@ -246,7 +246,7 @@ async fn test_send_with_retry_linear_backoff_success() {
 async fn test_send_with_retry_immediate_failure_after_one_attempt() {
     use dogstatsd::datadog::{DdApi, DdDdUrl, RetryStrategy};
     use dogstatsd::flusher::ShippingError;
-    use dogstatsd::metric::{parse, SortedTags};
+    use dogstatsd::metric::{SortedTags, parse};
 
     let mut server = Server::new_async().await;
     let mock = server
