@@ -1,6 +1,5 @@
 pub mod additional_endpoints;
 pub mod apm_replace_rule;
-pub mod aws;
 pub mod env;
 pub mod flush_strategy;
 pub mod log_level;
