@@ -499,6 +499,7 @@ name = "datadog-log-agent"
 version = "0.1.0"
 dependencies = [
  "datadog-fips",
+ "futures",
  "http",
  "http-body-util",
  "hyper",
