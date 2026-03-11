@@ -64,26 +64,35 @@ impl LogFlusher {
         debug!("flushing {} log batch(es)", batches.len());
 
         let (primary_url, use_compression) = self.resolve_endpoint();
-        let mut all_ok = true;
 
-        for batch in &batches {
-            if let Err(e) = self.ship_batch(batch, &primary_url, use_compression).await {
-                error!("failed to ship log batch to primary endpoint: {e}");
-                all_ok = false;
-            }
-
-            let extra_futures = self.config.additional_endpoints.iter().map(|extra_url| {
-                let extra_url = extra_url.clone();
-                async move {
-                    if let Err(e) = self.ship_batch(batch, &extra_url, use_compression).await {
-                        warn!("failed to ship log batch to additional endpoint {extra_url}: {e}");
+        let batch_futures = batches.iter().map(|batch| {
+            let primary_url = primary_url.clone();
+            async move {
+                let primary_ok = match self.ship_batch(batch, &primary_url, use_compression).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        error!("failed to ship log batch to primary endpoint: {e}");
+                        false
                     }
-                }
-            });
-            join_all(extra_futures).await;
-        }
+                };
 
-        all_ok
+                let extra_futures = self.config.additional_endpoints.iter().map(|extra_url| {
+                    let extra_url = extra_url.clone();
+                    async move {
+                        if let Err(e) = self.ship_batch(batch, &extra_url, use_compression).await {
+                            warn!(
+                                "failed to ship log batch to additional endpoint {extra_url}: {e}"
+                            );
+                        }
+                    }
+                });
+                join_all(extra_futures).await;
+
+                primary_ok
+            }
+        });
+
+        join_all(batch_futures).await.into_iter().all(|ok| ok)
     }
 
     fn resolve_endpoint(&self) -> (String, bool) {
