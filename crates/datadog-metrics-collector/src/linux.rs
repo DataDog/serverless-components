@@ -171,7 +171,10 @@ fn compute_cgroup_cpu_limit_nc(cgroup_stats: &CgroupStats) -> Option<f64> {
             }
             Some(current_limit_nc) if quota_limit_nc < current_limit_nc => {
                 limit_nc = Some(quota_limit_nc);
-                debug!("CPU limit from cfs quota is less than current limit, setting CPU limit from cfs quota: {} nanocores", quota_limit_nc);
+                debug!(
+                    "CPU limit from cfs quota is less than current limit, setting CPU limit from cfs quota: {} nanocores",
+                    quota_limit_nc
+                );
             }
             _ => {
                 debug!("Keeping cpuset limit: {:?} nanocores", limit_nc);

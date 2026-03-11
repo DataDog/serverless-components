@@ -120,7 +120,9 @@ impl CpuMetricsCollector {
                 }
             }
         } else {
-            debug!("Skipping CPU metrics collection - could not find data to generate CPU usage and limit enhanced metrics");
+            debug!(
+                "Skipping CPU metrics collection - could not find data to generate CPU usage and limit enhanced metrics"
+            );
         }
     }
 }
