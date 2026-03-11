@@ -49,7 +49,7 @@ use datadog_metrics_collector::azure_instance::InstanceMetricsCollector;
 use dogstatsd::metric::{EMPTY_TAGS, SortedTags};
 use tokio_util::sync::CancellationToken;
 
-const CPU_METRICS_COLLECTION_INTERVAL_SECS: u64 = 3;
+const CPU_METRICS_COLLECTION_INTERVAL_SECS: u64 = 1;
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const INSTANCE_METRICS_COLLECTION_INTERVAL_SECS: u64 = 3;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
