@@ -93,9 +93,9 @@ async fn main() {
     // Flush
     println!("Flushing to {endpoint}...");
     let flusher = LogFlusher::new(config, client, handle);
-    let ok = flusher.flush().await;
+    let failed = flusher.flush(vec![]).await;
 
-    if ok {
+    if failed.is_empty() {
         println!("\n✓ Flush succeeded");
     } else {
         eprintln!("\n✗ Flush failed — check endpoint and API key");

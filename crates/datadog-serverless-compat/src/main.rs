@@ -227,6 +227,10 @@ pub async fn main() {
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     flush_interval.tick().await; // discard first tick, which is instantaneous
 
+    // Builders for log batches that failed transiently in the previous flush
+    // cycle. They are redriven on the next cycle before new batches are sent.
+    let mut pending_log_retries: Vec<reqwest::RequestBuilder> = Vec::new();
+
     loop {
         flush_interval.tick().await;
 
@@ -237,11 +241,17 @@ pub async fn main() {
 
         if let Some(log_flusher) = log_flusher.as_ref() {
             debug!("Flushing log agent");
-            // TODO: surface flush failures into health/metrics telemetry so
-            // operators have a durable signal beyond log lines when logs are
-            // being dropped (e.g. increment a statsd counter or set a gauge).
-            if !log_flusher.flush().await {
-                warn!("log agent flush failed; logs may have been dropped");
+            let retry_in = std::mem::take(&mut pending_log_retries);
+            let failed = log_flusher.flush(retry_in).await;
+            if !failed.is_empty() {
+                // TODO: surface flush failures into health/metrics telemetry so
+                // operators have a durable signal beyond log lines when logs are
+                // being dropped (e.g. increment a statsd counter or set a gauge).
+                warn!(
+                    "log agent flush failed for {} batch(es); will retry next cycle",
+                    failed.len()
+                );
+                pending_log_retries = failed;
             }
         }
     }

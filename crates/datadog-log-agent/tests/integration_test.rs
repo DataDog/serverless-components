@@ -73,10 +73,10 @@ async fn test_pipeline_inserts_and_flushes() {
         .expect("insert_batch");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result, "flush should return true on 200");
+    assert!(result.is_empty(), "flush should return empty on 200");
     mock.assert_async().await;
 }
 
@@ -91,10 +91,10 @@ async fn test_empty_flush_makes_no_request() {
 
     let url = server.url();
     let result = LogFlusher::new(opw_config(&url), build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result, "empty flush should return true");
+    assert!(result.is_empty(), "empty flush should return empty");
     // No mock was set up — if a request had been made, mockito would panic.
     drop(server);
 }
@@ -292,10 +292,10 @@ async fn test_overflow_produces_two_batches_and_two_posts() {
     handle.insert_batch(entries).expect("insert");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result);
+    assert!(result.is_empty());
     mock.assert_async().await;
 }
 
@@ -326,10 +326,10 @@ async fn test_oversized_entry_dropped_valid_entries_still_flush() {
         .expect("insert");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result, "flush should succeed for valid entries");
+    assert!(result.is_empty(), "flush should succeed for valid entries");
     mock.assert_async().await;
 }
 
@@ -385,10 +385,10 @@ async fn test_concurrent_producers_all_entries_flushed() {
     r2.expect("task 2");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result);
+    assert!(result.is_empty());
     mock.assert_async().await;
 }
 
@@ -425,10 +425,10 @@ async fn test_opw_mode_uses_custom_url_and_omits_dd_protocol() {
     };
 
     let result = LogFlusher::new(config, build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result);
+    assert!(result.is_empty());
     mock.assert_async().await;
 }
 
@@ -471,10 +471,10 @@ async fn test_opw_mode_disables_compression_regardless_of_config() {
     };
 
     let result = LogFlusher::new(config, build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result);
+    assert!(result.is_empty());
     mock.assert_async().await;
 }
 
@@ -505,10 +505,10 @@ async fn test_retry_on_500_succeeds_on_second_attempt() {
         .expect("insert");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result, "should succeed after retry");
+    assert!(result.is_empty(), "should succeed after retry");
 }
 
 /// A 403 is a permanent error; flush fails without additional retry attempts.
@@ -529,10 +529,14 @@ async fn test_permanent_error_on_403_no_retry() {
         .expect("insert");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(!result, "403 should cause flush to return false");
+    // 403 is a permanent error — dropped silently; no builder to retry.
+    assert!(
+        result.is_empty(),
+        "403 is a permanent error; no retry builder returned"
+    );
     mock.assert_async().await;
 }
 
@@ -554,10 +558,14 @@ async fn test_exhausted_retries_returns_false() {
         .expect("insert");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(!result, "exhausted retries should return false");
+    // Transient 503 exhausts per-invocation retries; builder returned for next flush.
+    assert!(
+        !result.is_empty(),
+        "exhausted retries should return a retry builder"
+    );
     mock.assert_async().await;
 }
 
@@ -606,10 +614,10 @@ async fn test_additional_endpoints_receive_same_batch() {
     };
 
     let result = LogFlusher::new(config, build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result);
+    assert!(result.is_empty());
     primary_mock.assert_async().await;
     secondary_mock.assert_async().await;
 }
@@ -654,11 +662,11 @@ async fn test_additional_endpoint_failure_does_not_affect_return_value() {
     };
 
     let result = LogFlusher::new(config, build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
     assert!(
-        result,
+        result.is_empty(),
         "primary succeeded — additional endpoint failure must not affect return value"
     );
 }
@@ -724,10 +732,10 @@ async fn test_server_to_flusher_full_pipeline() {
 
     // Flush everything accumulated in the aggregator to the mock backend.
     let result = LogFlusher::new(opw_config(&backend.url()), build_client(), handle)
-        .flush()
+        .flush(vec![])
         .await;
 
-    assert!(result, "flush should return true on 200");
+    assert!(result.is_empty(), "flush should return empty on 200");
     mock.assert_async().await;
 }
 
@@ -790,9 +798,9 @@ async fn test_server_concurrent_clients_all_entries_arrive() {
         .insert_batch(vec![entry("placeholder")])
         .expect("insert");
     let result = LogFlusher::new(opw_config(&backend.url()), build_client(), handle2)
-        .flush()
+        .flush(vec![])
         .await;
-    assert!(result);
+    assert!(result.is_empty());
     mock.assert_async().await;
 }
 
