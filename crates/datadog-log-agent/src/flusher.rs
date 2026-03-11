@@ -41,24 +41,61 @@ impl LogFlusher {
         }
     }
 
-    /// Drain the aggregator and ship all pending batches to Datadog.
+    /// Drain the aggregator, ship all pending batches to Datadog, and redrive any
+    /// builders that failed transiently in the previous invocation.
     ///
-    /// Returns `true` if all batches were shipped successfully (or if there was
-    /// nothing to ship). Returns `false` if any batch failed after all retries.
+    /// # Arguments
     ///
-    /// Failures on additional endpoints are logged but do not affect the returned value.
-    pub async fn flush(&self) -> bool {
+    /// * `retry_requests` — builders returned by a previous `flush` call that
+    ///   exhausted their per-invocation retry budget. They are re-sent before
+    ///   draining new batches from the aggregator.
+    ///
+    /// # Returns
+    ///
+    /// A vec of `RequestBuilder`s that still failed after all in-call retries.
+    /// The caller should pass these back on the next invocation to re-attempt
+    /// delivery. An empty vec means every batch was delivered successfully
+    /// (or encountered a permanent error and was dropped — those are logged).
+    ///
+    /// Failures on additional endpoints are logged as warnings but their
+    /// builders are not included in the returned vec (best-effort delivery).
+    pub async fn flush(
+        &self,
+        retry_requests: Vec<reqwest::RequestBuilder>,
+    ) -> Vec<reqwest::RequestBuilder> {
+        let mut failed: Vec<reqwest::RequestBuilder> = Vec::new();
+
+        // Redrive builders that failed transiently in the previous invocation.
+        if !retry_requests.is_empty() {
+            debug!(
+                "redriving {} log builder(s) from previous flush",
+                retry_requests.len()
+            );
+        }
+        let retry_futures = retry_requests.into_iter().map(|builder| async move {
+            match self.send_with_retry(builder).await {
+                Ok(()) => None,
+                Err(b) => Some(b),
+            }
+        });
+        for result in join_all(retry_futures).await {
+            if let Some(b) = result {
+                failed.push(b);
+            }
+        }
+
+        // Drain new batches from the aggregator.
         let batches = match self.aggregator_handle.get_batches().await {
             Ok(b) => b,
             Err(e) => {
                 error!("failed to retrieve log batches from aggregator: {e}");
-                return false;
+                return failed;
             }
         };
 
         if batches.is_empty() {
             debug!("no log batches to flush");
-            return true;
+            return failed;
         }
 
         debug!("flushing {} log batch(es)", batches.len());
@@ -68,36 +105,39 @@ impl LogFlusher {
         let batch_futures = batches.iter().map(|batch| {
             let primary_url = primary_url.clone();
             async move {
-                let primary_ok = match self
+                // Primary endpoint — failures are tracked for cross-invocation retry.
+                let primary_result = self
                     .ship_batch(batch, &primary_url, use_compression, &self.config.api_key)
-                    .await
-                {
-                    Ok(()) => true,
-                    Err(e) => {
-                        error!("failed to ship log batch to primary endpoint: {e}");
-                        false
-                    }
-                };
+                    .await;
 
+                // Additional endpoints — best-effort; failures are only logged.
                 let extra_futures = self.config.additional_endpoints.iter().map(|endpoint| {
                     let url = endpoint.url.clone();
                     let api_key = endpoint.api_key.clone();
                     async move {
-                        if let Err(e) = self
+                        if let Err(_) = self
                             .ship_batch(batch, &url, use_compression, &api_key)
                             .await
                         {
-                            warn!("failed to ship log batch to additional endpoint {url}: {e}");
+                            warn!(
+                                "failed to ship log batch to additional endpoint {url} after all retries"
+                            );
                         }
                     }
                 });
                 join_all(extra_futures).await;
 
-                primary_ok
+                primary_result
             }
         });
 
-        join_all(batch_futures).await.into_iter().all(|ok| ok)
+        for result in join_all(batch_futures).await {
+            if let Err(b) = result {
+                failed.push(b);
+            }
+        }
+
+        failed
     }
 
     fn resolve_endpoint(&self) -> (String, bool) {
@@ -119,7 +159,7 @@ impl LogFlusher {
         url: &str,
         compress: bool,
         api_key: &str,
-    ) -> Result<(), FlushError> {
+    ) -> Result<(), reqwest::RequestBuilder> {
         let (body, content_encoding) = if compress {
             match compress_zstd(batch, self.config.compression_level) {
                 Ok(compressed) => (compressed, Some("zstd")),
@@ -151,7 +191,18 @@ impl LogFlusher {
         self.send_with_retry(req).await
     }
 
-    async fn send_with_retry(&self, builder: reqwest::RequestBuilder) -> Result<(), FlushError> {
+    /// Send `builder`, retrying transient failures up to `MAX_FLUSH_ATTEMPTS`.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` — success **or** a permanent error (no point retrying; already
+    ///   logged at `warn!`).
+    /// * `Err(builder)` — all attempts exhausted on a transient error. The
+    ///   original builder is returned so the caller can retry it next invocation.
+    async fn send_with_retry(
+        &self,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<(), reqwest::RequestBuilder> {
         let mut attempts: u32 = 0;
 
         loop {
@@ -160,9 +211,9 @@ impl LogFlusher {
             let cloned = match builder.try_clone() {
                 Some(b) => b,
                 None => {
-                    return Err(FlushError::Request(
-                        "failed to clone request builder".to_string(),
-                    ));
+                    // Streaming body — can't clone, can't retry.
+                    warn!("log batch request is not cloneable; dropping batch");
+                    return Ok(());
                 }
             };
 
@@ -190,15 +241,13 @@ impl LogFlusher {
                     // intake endpoint while it is still rate-limiting us.
                     let retryable_4xx = matches!(status.as_u16(), 408 | 425 | 429);
 
-                    // Permanent client errors — stop immediately, do not retry
+                    // Permanent client errors — stop immediately, do not retry.
                     if status.as_u16() >= 400 && status.as_u16() < 500 && !retryable_4xx {
-                        warn!("permanent error from logs intake: {status}");
-                        return Err(FlushError::PermanentError {
-                            status: status.as_u16(),
-                        });
+                        warn!("permanent error from logs intake: {status}; dropping batch");
+                        return Ok(());
                     }
 
-                    // Transient server errors — fall through to retry
+                    // Transient server errors — fall through to retry.
                     warn!(
                         "transient error from logs intake: {status} (attempt {attempts}/{MAX_FLUSH_ATTEMPTS})"
                     );
@@ -211,7 +260,8 @@ impl LogFlusher {
             }
 
             if attempts >= MAX_FLUSH_ATTEMPTS {
-                return Err(FlushError::MaxRetriesExceeded { attempts });
+                warn!("log batch failed after {attempts} attempts; will retry next flush");
+                return Err(builder);
             }
         }
     }
@@ -270,7 +320,10 @@ mod tests {
         let client = reqwest::Client::builder().build().expect("client");
         let flusher = LogFlusher::new(config, client, handle);
 
-        assert!(flusher.flush().await, "empty flush should succeed");
+        assert!(
+            flusher.flush(vec![]).await.is_empty(),
+            "empty flush should succeed"
+        );
         // No mock assertions needed — absence of request is the assertion
     }
 
@@ -351,8 +404,8 @@ mod tests {
         handle
             .insert_batch(vec![make_entry("opw log")])
             .expect("insert");
-        let result = flusher.flush().await;
-        assert!(result, "OPW flush should return true on 200");
+        let result = flusher.flush(vec![]).await;
+        assert!(result.is_empty(), "OPW flush should return empty on 200");
         mock.assert_async().await;
     }
 
@@ -377,8 +430,12 @@ mod tests {
         handle
             .insert_batch(vec![make_entry("log")])
             .expect("insert");
-        let result = flusher.flush().await;
-        assert!(!result, "403 should cause flush() to return false");
+        let result = flusher.flush(vec![]).await;
+        // 403 is a permanent error — the batch is dropped, no builder to retry.
+        assert!(
+            result.is_empty(),
+            "403 is a permanent error; no builder to retry"
+        );
         mock.assert_async().await;
     }
 
@@ -411,8 +468,8 @@ mod tests {
         handle
             .insert_batch(vec![make_entry("throttled log")])
             .expect("insert");
-        let result = flusher.flush().await;
-        assert!(result, "should succeed after 429 retry");
+        let result = flusher.flush(vec![]).await;
+        assert!(result.is_empty(), "should succeed after 429 retry");
     }
 
     #[tokio::test]
@@ -442,8 +499,8 @@ mod tests {
         handle
             .insert_batch(vec![make_entry("log")])
             .expect("insert");
-        let result = flusher.flush().await;
-        assert!(result, "should succeed on second attempt");
+        let result = flusher.flush(vec![]).await;
+        assert!(result.is_empty(), "should succeed on second attempt");
     }
 
     /// All additional endpoints receive the same batch when flush() is called.
@@ -502,7 +559,7 @@ mod tests {
         let flusher = LogFlusher::new(config, client, handle.clone());
         handle.insert_batch(vec![make_entry("hi")]).expect("insert");
 
-        assert!(flusher.flush().await);
+        assert!(flusher.flush(vec![]).await.is_empty());
         primary_mock.assert_async().await;
         extra1_mock.assert_async().await;
         extra2_mock.assert_async().await;
@@ -579,6 +636,105 @@ mod tests {
             .insert_batch(vec![make_entry("concurrent")])
             .expect("insert");
 
-        assert!(flusher.flush().await);
+        assert!(flusher.flush(vec![]).await.is_empty());
+    }
+
+    /// A builder returned by `flush` can be redriven on the next call.
+    ///
+    /// The mock fails on the first 3 attempts (exhausting the per-invocation
+    /// retry budget), then succeeds on the 4th attempt (the next invocation).
+    /// This proves the cross-invocation retry path end-to-end.
+    #[tokio::test]
+    async fn test_cross_invocation_retry_delivers_on_redrive() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+
+        let mut mock_server = mockito::Server::new_async().await;
+        // First 3 calls: transient 503 → exhausts per-invocation retry budget
+        let _fail_mock = mock_server
+            .mock("POST", "/api/v2/logs")
+            .with_status(503)
+            .expect(3)
+            .create_async()
+            .await;
+        // 4th call: redriven on the next flush → succeeds
+        let _ok_mock = mock_server
+            .mock("POST", "/api/v2/logs")
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let config = config_for_mock(&mock_server.url());
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("retry-me")])
+            .expect("insert");
+
+        // First flush: all 3 attempts fail → returns the builder for retry.
+        let failed = flusher.flush(vec![]).await;
+        assert_eq!(failed.len(), 1, "one builder should be returned for retry");
+
+        // Second flush: aggregator is empty; redrives the failed builder → succeeds.
+        let result = flusher.flush(failed).await;
+        assert!(
+            result.is_empty(),
+            "redriven builder should succeed on the next invocation"
+        );
+    }
+
+    /// Additional-endpoint failures are best-effort: their builders are NOT
+    /// included in the returned retry vec, even when they exhaust all retries.
+    /// Only primary-endpoint failures are tracked for cross-invocation retry.
+    #[tokio::test]
+    async fn test_additional_endpoint_failures_not_tracked_for_retry() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+
+        let mut primary = mockito::Server::new_async().await;
+        let mut extra = mockito::Server::new_async().await;
+
+        let _primary_mock = primary
+            .mock("POST", "/api/v2/logs")
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+        // Additional endpoint always returns 503 — exhausts per-invocation retries.
+        let _extra_mock = extra
+            .mock("POST", "/extra")
+            .with_status(503)
+            .expect(3) // MAX_FLUSH_ATTEMPTS
+            .create_async()
+            .await;
+
+        let config = LogFlusherConfig {
+            api_key: "key".to_string(),
+            site: "datadoghq.com".to_string(),
+            mode: FlusherMode::ObservabilityPipelinesWorker {
+                url: format!("{}/api/v2/logs", primary.url()),
+            },
+            additional_endpoints: vec![LogsAdditionalEndpoint {
+                api_key: "extra-key".to_string(),
+                url: format!("{}/extra", extra.url()),
+                is_reliable: true,
+            }],
+            use_compression: false,
+            compression_level: 3,
+            flush_timeout: Duration::from_secs(5),
+        };
+
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("test")])
+            .expect("insert");
+
+        let result = flusher.flush(vec![]).await;
+        assert!(
+            result.is_empty(),
+            "additional-endpoint failures are best-effort and must not be tracked for retry"
+        );
     }
 }
