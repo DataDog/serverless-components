@@ -68,7 +68,10 @@ impl LogFlusher {
         let batch_futures = batches.iter().map(|batch| {
             let primary_url = primary_url.clone();
             async move {
-                let primary_ok = match self.ship_batch(batch, &primary_url, use_compression).await {
+                let primary_ok = match self
+                    .ship_batch(batch, &primary_url, use_compression, &self.config.api_key)
+                    .await
+                {
                     Ok(()) => true,
                     Err(e) => {
                         error!("failed to ship log batch to primary endpoint: {e}");
@@ -76,13 +79,15 @@ impl LogFlusher {
                     }
                 };
 
-                let extra_futures = self.config.additional_endpoints.iter().map(|extra_url| {
-                    let extra_url = extra_url.clone();
+                let extra_futures = self.config.additional_endpoints.iter().map(|endpoint| {
+                    let url = endpoint.url.clone();
+                    let api_key = endpoint.api_key.clone();
                     async move {
-                        if let Err(e) = self.ship_batch(batch, &extra_url, use_compression).await {
-                            warn!(
-                                "failed to ship log batch to additional endpoint {extra_url}: {e}"
-                            );
+                        if let Err(e) = self
+                            .ship_batch(batch, &url, use_compression, &api_key)
+                            .await
+                        {
+                            warn!("failed to ship log batch to additional endpoint {url}: {e}");
                         }
                     }
                 });
@@ -108,7 +113,13 @@ impl LogFlusher {
         }
     }
 
-    async fn ship_batch(&self, batch: &[u8], url: &str, compress: bool) -> Result<(), FlushError> {
+    async fn ship_batch(
+        &self,
+        batch: &[u8],
+        url: &str,
+        compress: bool,
+        api_key: &str,
+    ) -> Result<(), FlushError> {
         let (body, content_encoding) = if compress {
             let compressed = compress_zstd(batch, self.config.compression_level)?;
             (compressed, Some("zstd"))
@@ -120,7 +131,7 @@ impl LogFlusher {
             .client
             .post(url)
             .timeout(self.config.flush_timeout)
-            .header("DD-API-KEY", &self.config.api_key)
+            .header("DD-API-KEY", api_key)
             .header("Content-Type", "application/json");
 
         if matches!(self.config.mode, FlusherMode::Datadog) {
@@ -220,6 +231,7 @@ mod tests {
     use crate::aggregator::AggregatorService;
     use crate::config::{FlusherMode, LogFlusherConfig};
     use crate::log_entry::LogEntry;
+    use crate::logs_additional_endpoint::LogsAdditionalEndpoint;
     use mockito::Matcher;
     use std::time::Duration;
 
@@ -293,7 +305,7 @@ mod tests {
         let url = format!("{}/api/v2/logs", mock_server.url());
         let batch = b"[{\"message\":\"test\"}]";
         flusher
-            .ship_batch(batch, &url, false)
+            .ship_batch(batch, &url, false, "test-api-key")
             .await
             .expect("ship_batch should succeed");
 
@@ -465,8 +477,16 @@ mod tests {
                 url: format!("{}/api/v2/logs", primary.url()),
             },
             additional_endpoints: vec![
-                format!("{}/extra", extra1.url()),
-                format!("{}/extra", extra2.url()),
+                LogsAdditionalEndpoint {
+                    api_key: "extra-key-1".to_string(),
+                    url: format!("{}/extra", extra1.url()),
+                    is_reliable: true,
+                },
+                LogsAdditionalEndpoint {
+                    api_key: "extra-key-2".to_string(),
+                    url: format!("{}/extra", extra2.url()),
+                    is_reliable: true,
+                },
             ],
             use_compression: false,
             compression_level: 3,
@@ -531,7 +551,18 @@ mod tests {
             mode: FlusherMode::ObservabilityPipelinesWorker {
                 url: format!("{}/api/v2/logs", primary.url()),
             },
-            additional_endpoints: vec![url1, url2],
+            additional_endpoints: vec![
+                LogsAdditionalEndpoint {
+                    api_key: "extra-key-1".to_string(),
+                    url: url1,
+                    is_reliable: true,
+                },
+                LogsAdditionalEndpoint {
+                    api_key: "extra-key-2".to_string(),
+                    url: url2,
+                    is_reliable: true,
+                },
+            ],
             use_compression: false,
             compression_level: 3,
             flush_timeout: Duration::from_secs(5),

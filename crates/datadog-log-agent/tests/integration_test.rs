@@ -19,7 +19,7 @@
 
 use datadog_log_agent::{
     AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig, LogServer,
-    LogServerConfig,
+    LogServerConfig, LogsAdditionalEndpoint,
 };
 use mockito::{Matcher, Server};
 use std::time::Duration;
@@ -595,7 +595,11 @@ async fn test_additional_endpoints_receive_same_batch() {
         mode: FlusherMode::ObservabilityPipelinesWorker {
             url: format!("{}/logs", primary.url()),
         },
-        additional_endpoints: vec![format!("{}/extra", secondary.url())],
+        additional_endpoints: vec![LogsAdditionalEndpoint {
+            api_key: "secondary-api-key".to_string(),
+            url: format!("{}/extra", secondary.url()),
+            is_reliable: true,
+        }],
         use_compression: false,
         compression_level: 0,
         flush_timeout: Duration::from_secs(5),
@@ -639,7 +643,11 @@ async fn test_additional_endpoint_failure_does_not_affect_return_value() {
         mode: FlusherMode::ObservabilityPipelinesWorker {
             url: format!("{}/logs", primary.url()),
         },
-        additional_endpoints: vec![format!("{}/extra", secondary.url())],
+        additional_endpoints: vec![LogsAdditionalEndpoint {
+            api_key: "secondary-api-key".to_string(),
+            url: format!("{}/extra", secondary.url()),
+            is_reliable: true,
+        }],
         use_compression: false,
         compression_level: 0,
         flush_timeout: Duration::from_secs(5),
