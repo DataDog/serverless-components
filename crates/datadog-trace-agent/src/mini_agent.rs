@@ -3,7 +3,7 @@
 
 use http_body_util::BodyExt;
 use hyper::service::service_fn;
-use hyper::{http, Method, Response, StatusCode};
+use hyper::{Method, Response, StatusCode, http};
 use libdd_common::hyper_migration;
 use serde_json::json;
 use std::io;

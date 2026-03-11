@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hyper::{http, StatusCode};
+use hyper::{StatusCode, http};
 use libdd_common::hyper_migration;
 use tokio::sync::mpsc::Sender;
 use tracing::debug;
@@ -123,19 +123,19 @@ impl TraceProcessor for ServerlessTraceProcessor {
                 return log_and_create_traces_success_http_response(
                     &format!("Error processing trace chunks: {err}"),
                     StatusCode::INTERNAL_SERVER_ERROR,
-                )
+                );
             }
         };
 
         // Add function_tags to payload if we can
-        if let Some(function_tags) = config.tags.function_tags() {
-            if let TracerPayloadCollection::V07(ref mut tracer_payloads) = payload {
-                for tracer_payload in tracer_payloads {
-                    tracer_payload.tags.insert(
-                        TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY.to_string(),
-                        function_tags.to_string(),
-                    );
-                }
+        if let Some(function_tags) = config.tags.function_tags()
+            && let TracerPayloadCollection::V07(ref mut tracer_payloads) = payload
+        {
+            for tracer_payload in tracer_payloads {
+                tracer_payload.tags.insert(
+                    TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY.to_string(),
+                    function_tags.to_string(),
+                );
             }
         }
 
@@ -168,9 +168,9 @@ mod tests {
 
     use crate::{
         config::{Config, Tags},
-        trace_processor::{self, TraceProcessor, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY},
+        trace_processor::{self, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY, TraceProcessor},
     };
-    use libdd_common::{hyper_migration, Endpoint};
+    use libdd_common::{Endpoint, hyper_migration};
     use libdd_trace_protobuf::pb;
     use libdd_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
     use libdd_trace_utils::trace_utils::MiniAgentMetadata;

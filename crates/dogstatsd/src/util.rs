@@ -58,7 +58,8 @@ pub fn parse_metric_namespace(namespace: &str) -> Option<String> {
     {
         tracing::error!(
             "DD_STATSD_METRIC_NAMESPACE contains invalid character '{}' in '{}'. Only ASCII alphanumerics, underscores, and periods are allowed. Ignoring namespace.",
-            invalid_char, trimmed
+            invalid_char,
+            trimmed
         );
         return None;
     }

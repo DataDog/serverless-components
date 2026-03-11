@@ -4,7 +4,7 @@
 //! Simple mock HTTP server for testing flushers
 
 use http_body_util::BodyExt;
-use hyper::{body::Incoming, Request, Response};
+use hyper::{Request, Response, body::Incoming};
 use hyper_util::rt::TokioIo;
 use libdd_common::hyper_migration;
 use std::net::SocketAddr;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
-use hyper::{http, StatusCode};
+use hyper::{StatusCode, http};
 use libdd_common::hyper_migration;
 use tokio::sync::mpsc::Sender;
 use tracing::debug;

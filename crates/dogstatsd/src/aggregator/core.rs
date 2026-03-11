@@ -153,7 +153,10 @@ impl Aggregator {
                 || (this_batch_size + next_chunk_size >= self.max_batch_bytes_sketch_metric)
             {
                 if this_batch_size == 0 {
-                    warn!("Only one distribution exceeds max batch size, adding it anyway: {:?} with {}", sketch.metric, next_chunk_size);
+                    warn!(
+                        "Only one distribution exceeds max batch size, adding it anyway: {:?} with {}",
+                        sketch.metric, next_chunk_size
+                    );
                 } else {
                     batched_payloads.push(sketch_payload);
                     sketch_payload = SketchPayload::new();
@@ -218,7 +221,10 @@ impl Aggregator {
                         >= self.max_batch_bytes_single_metric)
                 {
                     if this_batch_size == 0 {
-                        warn!("Only one metric exceeds max batch size, adding it anyway: {:?} with {}", metric.metric, serialized_metric_size);
+                        warn!(
+                            "Only one metric exceeds max batch size, adding it anyway: {:?} with {}",
+                            metric.metric, serialized_metric_size
+                        );
                     } else {
                         batched_payloads.push(series_payload);
                         series_payload = Series {
@@ -320,7 +326,7 @@ fn build_metric(entry: &Metric, mut base_tag_vec: SortedTags) -> Option<MetricTo
 pub mod tests {
     use crate::aggregator::Aggregator;
     use crate::metric;
-    use crate::metric::{parse, SortedTags, EMPTY_TAGS};
+    use crate::metric::{EMPTY_TAGS, SortedTags, parse};
     use datadog_protos::metrics::SketchPayload;
     use hashbrown::hash_table;
     use protobuf::Message;
@@ -514,14 +520,18 @@ pub mod tests {
         let mut aggregator = Aggregator::new(EMPTY_TAGS, 1_000).unwrap();
         assert_eq!(aggregator.distributions_to_protobuf().sketches.len(), 0);
 
-        assert!(aggregator
-            .insert(parse("test1:1|d|#k:v".to_string().as_str()).expect("metric parse failed"))
-            .is_ok());
+        assert!(
+            aggregator
+                .insert(parse("test1:1|d|#k:v".to_string().as_str()).expect("metric parse failed"))
+                .is_ok()
+        );
         assert_eq!(aggregator.distributions_to_protobuf().sketches.len(), 1);
 
-        assert!(aggregator
-            .insert(parse("foo:1|c|#k:v").expect("metric parse failed"))
-            .is_ok());
+        assert!(
+            aggregator
+                .insert(parse("foo:1|c|#k:v").expect("metric parse failed"))
+                .is_ok()
+        );
         assert_eq!(aggregator.distributions_to_protobuf().sketches.len(), 1);
     }
 
@@ -618,12 +628,14 @@ pub mod tests {
 
     fn add_metrics(tot: usize, aggregator: &mut Aggregator, counter_or_distro: String) {
         for i in 1..=tot {
-            assert!(aggregator
-                .insert(
-                    parse(format!("test{i}:{i}|{counter_or_distro}|#k:v").as_str())
-                        .expect("metric parse failed")
-                )
-                .is_ok());
+            assert!(
+                aggregator
+                    .insert(
+                        parse(format!("test{i}:{i}|{counter_or_distro}|#k:v").as_str())
+                            .expect("metric parse failed")
+                    )
+                    .is_ok()
+            );
         }
     }
 
@@ -633,19 +645,25 @@ pub mod tests {
 
         assert_eq!(aggregator.consume_metrics().len(), 0);
 
-        assert!(aggregator
-            .insert(parse("test1:1|c|#k:v".to_string().as_str()).expect("metric parse failed"))
-            .is_ok());
+        assert!(
+            aggregator
+                .insert(parse("test1:1|c|#k:v".to_string().as_str()).expect("metric parse failed"))
+                .is_ok()
+        );
         assert_eq!(aggregator.consume_distributions().len(), 0);
         assert_eq!(aggregator.consume_metrics().len(), 1);
         assert_eq!(aggregator.consume_metrics().len(), 0);
 
-        assert!(aggregator
-            .insert(parse("test1:1|c|#k:v".to_string().as_str()).expect("metric parse failed"))
-            .is_ok());
-        assert!(aggregator
-            .insert(parse("foo:1|d|#k:v").expect("metric parse failed"))
-            .is_ok());
+        assert!(
+            aggregator
+                .insert(parse("test1:1|c|#k:v".to_string().as_str()).expect("metric parse failed"))
+                .is_ok()
+        );
+        assert!(
+            aggregator
+                .insert(parse("foo:1|d|#k:v").expect("metric parse failed"))
+                .is_ok()
+        );
         assert_eq!(aggregator.consume_metrics().len(), 1);
         assert_eq!(aggregator.consume_distributions().len(), 1);
         assert_eq!(aggregator.consume_distributions().len(), 0);

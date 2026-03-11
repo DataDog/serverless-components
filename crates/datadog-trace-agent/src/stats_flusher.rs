@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use std::{sync::Arc, time};
-use tokio::sync::{mpsc::Receiver, Mutex};
+use tokio::sync::{Mutex, mpsc::Receiver};
 use tracing::{debug, error};
 
 use libdd_trace_protobuf::pb;

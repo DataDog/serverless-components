@@ -3,10 +3,10 @@
 
 use async_trait::async_trait;
 use std::{error::Error, sync::Arc, time};
-use tokio::sync::{mpsc::Receiver, Mutex};
+use tokio::sync::{Mutex, mpsc::Receiver};
 use tracing::{debug, error};
 
-use libdd_common::{hyper_migration, GenericHttpClient};
+use libdd_common::{GenericHttpClient, hyper_migration};
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 

@@ -155,12 +155,17 @@ impl Flusher {
         match tokio::try_join!(series_handle, distributions_handle) {
             Ok(((series_failed, series_had_error), (sketches_failed, sketches_had_error))) => {
                 if series_failed.is_empty() && sketches_failed.is_empty() {
-                    debug!("Successfully flushed {n_series} series and {n_distributions} distributions");
+                    debug!(
+                        "Successfully flushed {n_series} series and {n_distributions} distributions"
+                    );
                     None // Return None to indicate success
                 } else if series_had_error || sketches_had_error {
                     // Only return the metrics if there was an actual shipping error
-                    error!("Failed to flush some metrics due to shipping errors: {} series and {} sketches",
-                        series_failed.len(), sketches_failed.len());
+                    error!(
+                        "Failed to flush some metrics due to shipping errors: {} series and {} sketches",
+                        series_failed.len(),
+                        sketches_failed.len()
+                    );
                     // Return the failed metrics for potential retry
                     Some((series_failed, sketches_failed))
                 } else {
