@@ -27,7 +27,6 @@ use datadog_trace_agent::{
 
 use datadog_metrics_collector::cpu::CpuMetricsCollector;
 
-use libdd_common::azure_app_services;
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
@@ -304,7 +303,7 @@ pub async fn main() {
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
     let mut cpu_collector = if dd_enhanced_metrics && metrics_flusher.is_some() {
         aggregator_handle.as_ref().map(|handle| {
-            let tags = build_cpu_metrics_tags();
+            let tags = datadog_metrics_collector::cpu::build_cpu_metrics_tags();
             CpuMetricsCollector::new(handle.clone(), tags)
         })
     } else {
