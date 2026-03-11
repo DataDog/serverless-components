@@ -58,7 +58,6 @@ impl CpuMetricsCollector {
     pub fn collect_and_submit(&mut self) {
         if let Some(cpu_stats) = self.reader.read() {
             // Submit metrics
-            debug!("Collected CPU stats!");
             let current_usage_ns = cpu_stats.total;
             let now_instant = std::time::Instant::now();
 
@@ -118,7 +117,6 @@ impl CpuMetricsCollector {
                     error!("Failed to insert CPU limit metric: {}", e);
                 }
             }
-            debug!("Submitting CPU metrics!");
         } else {
             debug!("Skipping CPU metrics collection - could not find data to generate CPU usage and limit enhanced metrics");
         }

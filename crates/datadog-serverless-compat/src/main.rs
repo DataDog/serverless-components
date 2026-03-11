@@ -42,7 +42,7 @@ use dogstatsd::{
 use dogstatsd::metric::{SortedTags, EMPTY_TAGS};
 use tokio_util::sync::CancellationToken;
 
-const CPU_METRICS_COLLECTION_INTERVAL_SECS: u64 = 3;
+const CPU_METRICS_COLLECTION_INTERVAL_SECS: u64 = 1;
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
