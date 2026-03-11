@@ -3,6 +3,7 @@
 
 use std::io::Write as _;
 
+use futures::future::join_all;
 use reqwest::Client;
 use tracing::{debug, error, warn};
 use zstd::stream::write::Encoder;
@@ -71,11 +72,15 @@ impl LogFlusher {
                 all_ok = false;
             }
 
-            for extra_url in &self.config.additional_endpoints {
-                if let Err(e) = self.ship_batch(batch, extra_url, use_compression).await {
-                    warn!("failed to ship log batch to additional endpoint {extra_url}: {e}");
+            let extra_futures = self.config.additional_endpoints.iter().map(|extra_url| {
+                let extra_url = extra_url.clone();
+                async move {
+                    if let Err(e) = self.ship_batch(batch, &extra_url, use_compression).await {
+                        warn!("failed to ship log batch to additional endpoint {extra_url}: {e}");
+                    }
                 }
-            }
+            });
+            join_all(extra_futures).await;
         }
 
         all_ok
@@ -410,5 +415,122 @@ mod tests {
             .expect("insert");
         let result = flusher.flush().await;
         assert!(result, "should succeed on second attempt");
+    }
+
+    /// All additional endpoints receive the same batch when flush() is called.
+    #[tokio::test]
+    async fn test_additional_endpoints_all_receive_batch() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+
+        let mut primary = mockito::Server::new_async().await;
+        let mut extra1 = mockito::Server::new_async().await;
+        let mut extra2 = mockito::Server::new_async().await;
+
+        let primary_mock = primary
+            .mock("POST", "/api/v2/logs")
+            .with_status(202)
+            .expect(1)
+            .create_async()
+            .await;
+        let extra1_mock = extra1
+            .mock("POST", "/extra")
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+        let extra2_mock = extra2
+            .mock("POST", "/extra")
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let config = LogFlusherConfig {
+            api_key: "key".to_string(),
+            site: "datadoghq.com".to_string(),
+            mode: FlusherMode::ObservabilityPipelinesWorker {
+                url: format!("{}/api/v2/logs", primary.url()),
+            },
+            additional_endpoints: vec![
+                format!("{}/extra", extra1.url()),
+                format!("{}/extra", extra2.url()),
+            ],
+            use_compression: false,
+            compression_level: 3,
+            flush_timeout: Duration::from_secs(5),
+        };
+
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle.insert_batch(vec![make_entry("hi")]).expect("insert");
+
+        assert!(flusher.flush().await);
+        primary_mock.assert_async().await;
+        extra1_mock.assert_async().await;
+        extra2_mock.assert_async().await;
+    }
+
+    /// Additional endpoints are dispatched concurrently: if they were sequential,
+    /// two endpoints each waiting at a Barrier(2) would deadlock — only concurrent
+    /// dispatch lets both handlers reach the barrier simultaneously.
+    #[tokio::test]
+    async fn test_additional_endpoints_dispatched_concurrently() {
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::TcpListener;
+        use tokio::sync::Barrier;
+
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+
+        let barrier = Arc::new(Barrier::new(2));
+
+        // Spawn a minimal HTTP server that waits at the barrier before
+        // responding, so both must be in-flight at the same time to complete.
+        async fn serve_once(barrier: Arc<Barrier>) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                barrier.wait().await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+            });
+            format!("http://127.0.0.1:{}/logs", addr.port())
+        }
+
+        let url1 = serve_once(barrier.clone()).await;
+        let url2 = serve_once(barrier.clone()).await;
+
+        let mut primary = mockito::Server::new_async().await;
+        let _primary_mock = primary
+            .mock("POST", "/api/v2/logs")
+            .with_status(202)
+            .create_async()
+            .await;
+
+        let config = LogFlusherConfig {
+            api_key: "key".to_string(),
+            site: "datadoghq.com".to_string(),
+            mode: FlusherMode::ObservabilityPipelinesWorker {
+                url: format!("{}/api/v2/logs", primary.url()),
+            },
+            additional_endpoints: vec![url1, url2],
+            use_compression: false,
+            compression_level: 3,
+            flush_timeout: Duration::from_secs(5),
+        };
+
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("concurrent")])
+            .expect("insert");
+
+        assert!(flusher.flush().await);
     }
 }
