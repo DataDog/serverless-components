@@ -72,16 +72,11 @@ impl LogFlusher {
                 retry_requests.len()
             );
         }
-        let retry_futures = retry_requests.into_iter().map(|builder| async move {
-            match self.send_with_retry(builder).await {
-                Ok(()) => None,
-                Err(b) => Some(b),
-            }
-        });
-        for result in join_all(retry_futures).await {
-            if let Some(b) = result {
-                failed.push(b);
-            }
+        let retry_futures = retry_requests
+            .into_iter()
+            .map(|builder| async move { self.send_with_retry(builder).await.err() });
+        for b in join_all(retry_futures).await.into_iter().flatten() {
+            failed.push(b);
         }
 
         // Drain new batches from the aggregator.
@@ -115,9 +110,10 @@ impl LogFlusher {
                     let url = endpoint.url.clone();
                     let api_key = endpoint.api_key.clone();
                     async move {
-                        if let Err(_) = self
+                        if self
                             .ship_batch(batch, &url, use_compression, &api_key)
                             .await
+                            .is_err()
                         {
                             warn!(
                                 "failed to ship log batch to additional endpoint {url} after all retries"
