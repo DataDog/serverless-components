@@ -42,7 +42,7 @@
 //! | DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL       | (empty)            |
 //! | LOG_ENTRY_COUNT                                  | 5                  |
 
-use datadog_log_agent::{AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig};
+use datadog_log_agent::{AggregatorService, FlusherMode, IntakeEntry, LogFlusher, LogFlusherConfig};
 
 #[allow(clippy::disallowed_methods)] // plain reqwest::Client for local testing
 #[tokio::main]
@@ -105,7 +105,7 @@ async fn main() {
 
 // ── Sample log entry builders ─────────────────────────────────────────────────
 
-fn lambda_entry(i: usize) -> LogEntry {
+fn lambda_entry(i: usize) -> IntakeEntry {
     let mut attrs = serde_json::Map::new();
     attrs.insert(
         "lambda".to_string(),
@@ -114,7 +114,7 @@ fn lambda_entry(i: usize) -> LogEntry {
             "request_id": format!("req-{i:04}")
         }),
     );
-    LogEntry {
+    IntakeEntry {
         message: format!("[lambda] invocation #{i} completed"),
         timestamp: now_ms(),
         hostname: Some("arn:aws:lambda:us-east-1:123456789012:function:my-fn".to_string()),
@@ -126,7 +126,7 @@ fn lambda_entry(i: usize) -> LogEntry {
     }
 }
 
-fn azure_entry(i: usize) -> LogEntry {
+fn azure_entry(i: usize) -> IntakeEntry {
     let mut attrs = serde_json::Map::new();
     attrs.insert(
         "azure".to_string(),
@@ -135,7 +135,7 @@ fn azure_entry(i: usize) -> LogEntry {
             "operation_name": "Microsoft.Web/sites/functions/run/action"
         }),
     );
-    LogEntry {
+    IntakeEntry {
         message: format!("[azure] function triggered #{i}"),
         timestamp: now_ms(),
         hostname: Some("my-azure-fn".to_string()),
@@ -147,8 +147,8 @@ fn azure_entry(i: usize) -> LogEntry {
     }
 }
 
-fn plain_entry(i: usize) -> LogEntry {
-    LogEntry {
+fn plain_entry(i: usize) -> IntakeEntry {
+    IntakeEntry {
         message: format!("[generic] log message #{i}"),
         timestamp: now_ms(),
         hostname: Some("localhost".to_string()),

@@ -437,7 +437,7 @@ fn start_log_agent(
 
 #[cfg(test)]
 mod log_agent_integration_tests {
-    use datadog_log_agent::{AggregatorService, LogEntry, LogServer, LogServerConfig};
+    use datadog_log_agent::{AggregatorService, IntakeEntry, LogServer, LogServerConfig};
 
     #[tokio::test]
     async fn test_log_agent_full_pipeline_compiles_and_runs() {
@@ -445,7 +445,7 @@ mod log_agent_integration_tests {
         tokio::spawn(service.run());
 
         handle
-            .insert_batch(vec![LogEntry {
+            .insert_batch(vec![IntakeEntry {
                 message: "azure function invoked".to_string(),
                 timestamp: 1_700_000_000_000,
                 hostname: Some("my-azure-fn".to_string()),

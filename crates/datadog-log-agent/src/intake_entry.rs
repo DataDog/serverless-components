@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 ///     "arn": function_arn,
 ///     "request_id": request_id,
 /// }));
-/// let entry = LogEntry {
+/// let entry = IntakeEntry {
 ///     message: log_line,
 ///     timestamp: timestamp_ms,
 ///     hostname: Some(function_arn),
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogEntry {
+pub struct IntakeEntry {
     /// The log message body.
     pub message: String,
 
@@ -63,7 +63,7 @@ pub struct LogEntry {
     pub attributes: serde_json::Map<String, serde_json::Value>,
 }
 
-impl LogEntry {
+impl IntakeEntry {
     /// Create a minimal log entry from a message and timestamp.
     /// All optional fields default to `None`; use struct literal syntax to set them.
     pub fn from_message(message: impl Into<String>, timestamp: i64) -> Self {
@@ -85,8 +85,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_log_entry_minimal_serialization() {
-        let entry = LogEntry::from_message("hello world", 1_700_000_000_000);
+    fn test_intake_entry_minimal_serialization() {
+        let entry = IntakeEntry::from_message("hello world", 1_700_000_000_000);
         let json = serde_json::to_string(&entry).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
 
@@ -101,8 +101,8 @@ mod tests {
     }
 
     #[test]
-    fn test_log_entry_full_serialization() {
-        let entry = LogEntry {
+    fn test_intake_entry_full_serialization() {
+        let entry = IntakeEntry {
             message: "user logged in".to_string(),
             timestamp: 1_700_000_001_000,
             hostname: Some("my-host".to_string()),
@@ -128,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn test_log_entry_with_lambda_attributes_flattened() {
+    fn test_intake_entry_with_lambda_attributes_flattened() {
         // Simulates what the lambda extension would build
         let mut attrs = serde_json::Map::new();
         attrs.insert(
@@ -138,7 +138,7 @@ mod tests {
                 "request_id": "abc-123"
             }),
         );
-        let entry = LogEntry {
+        let entry = IntakeEntry {
             message: "function invoked".to_string(),
             timestamp: 1_700_000_002_000,
             hostname: Some("arn:aws:lambda:us-east-1:123456789012:function:my-fn".to_string()),
@@ -161,8 +161,8 @@ mod tests {
     }
 
     #[test]
-    fn test_log_entry_deserialization_roundtrip() {
-        let original = LogEntry {
+    fn test_intake_entry_deserialization_roundtrip() {
+        let original = IntakeEntry {
             message: "test".to_string(),
             timestamp: 42,
             hostname: Some("h".to_string()),
@@ -173,7 +173,7 @@ mod tests {
             attributes: serde_json::Map::new(),
         };
         let json = serde_json::to_string(&original).expect("serialize");
-        let restored: LogEntry = serde_json::from_str(&json).expect("deserialize");
+        let restored: IntakeEntry = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(restored.message, original.message);
         assert_eq!(restored.timestamp, original.timestamp);

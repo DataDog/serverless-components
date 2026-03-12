@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use crate::constants::{MAX_BATCH_ENTRIES, MAX_CONTENT_BYTES, MAX_LOG_BYTES};
 use crate::errors::AggregatorError;
-use crate::log_entry::LogEntry;
+use crate::intake_entry::IntakeEntry;
 
 /// In-memory log batch accumulator.
 ///
@@ -37,7 +37,7 @@ impl LogAggregator {
     /// Returns `Ok(true)` if the batch is now full and ready to flush.
     /// Returns `Err(AggregatorError::EntryTooLarge)` if the serialized
     /// entry exceeds `MAX_LOG_BYTES` — the entry is dropped.
-    pub fn insert(&mut self, entry: &LogEntry) -> Result<bool, AggregatorError> {
+    pub fn insert(&mut self, entry: &IntakeEntry) -> Result<bool, AggregatorError> {
         let serialized = serde_json::to_string(entry)?;
         let len = serialized.len();
 
@@ -141,10 +141,10 @@ impl LogAggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::log_entry::LogEntry;
+    use crate::intake_entry::IntakeEntry;
 
-    fn make_entry(msg: &str) -> LogEntry {
-        LogEntry::from_message(msg, 1_700_000_000_000)
+    fn make_entry(msg: &str) -> IntakeEntry {
+        IntakeEntry::from_message(msg, 1_700_000_000_000)
     }
 
     #[test]

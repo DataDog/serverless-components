@@ -12,7 +12,7 @@ pub mod config;
 pub mod constants;
 pub mod errors;
 pub mod flusher;
-pub mod log_entry;
+pub mod intake_entry;
 pub mod logs_additional_endpoint;
 
 pub mod server;
@@ -21,6 +21,6 @@ pub mod server;
 pub use aggregator::{AggregatorHandle, AggregatorService};
 pub use config::{FlusherMode, LogFlusherConfig};
 pub use flusher::LogFlusher;
-pub use log_entry::LogEntry;
+pub use intake_entry::IntakeEntry;
 pub use logs_additional_endpoint::LogsAdditionalEndpoint;
 pub use server::{LogServer, LogServerConfig};
