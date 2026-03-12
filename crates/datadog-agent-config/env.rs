@@ -15,7 +15,7 @@ use crate::{
     deserialize_optional_bool_from_anything, deserialize_optional_duration_from_microseconds,
     deserialize_optional_duration_from_seconds,
     deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
-    deserialize_string_or_int, deserialize_trace_propagation_style,
+    deserialize_string_or_int, deserialize_trace_propagation_style, deserialize_with_default,
     flush_strategy::FlushStrategy,
     log_level::LogLevel,
     logs_additional_endpoints::{LogsAdditionalEndpoint, deserialize_logs_additional_endpoints},
@@ -43,6 +43,7 @@ pub struct EnvConfig {
     ///
     /// Minimum log level of the Datadog Agent.
     /// Valid log levels are: trace, debug, info, warn, and error.
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub log_level: Option<LogLevel>,
 
     /// @env `DD_FLUSH_TIMEOUT`
@@ -398,6 +399,7 @@ pub struct EnvConfig {
     /// @env `DD_SERVERLESS_FLUSH_STRATEGY`
     ///
     /// The flush strategy to use for AWS Lambda.
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub serverless_flush_strategy: Option<FlushStrategy>,
     /// @env `DD_ENHANCED_METRICS`
     ///
@@ -715,6 +717,130 @@ mod tests {
         log_level::LogLevel,
         processing_rule::{Kind, ProcessingRule},
     };
+
+    /// Comprehensive test: every non-string env var set to an invalid value.
+    /// The load MUST succeed, and invalid fields must fall back to defaults.
+    ///
+    /// Note: string-typed fields (DD_SITE, DD_API_KEY, etc.) can't fail from env
+    /// because all env values are strings. This test covers all non-string types.
+    ///
+    /// When adding a new non-string field to EnvConfig, add an entry here with
+    /// an invalid value to ensure graceful deserialization is in place.
+    #[test]
+    fn test_all_env_fields_wrong_type_fallback_to_default() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            // Numeric fields → invalid string
+            jail.set_env("DD_FLUSH_TIMEOUT", "not_a_number");
+            jail.set_env("DD_COMPRESSION_LEVEL", "not_a_number");
+            jail.set_env("DD_LOGS_CONFIG_COMPRESSION_LEVEL", "not_a_number");
+            jail.set_env("DD_APM_CONFIG_COMPRESSION_LEVEL", "not_a_number");
+            jail.set_env("DD_METRICS_CONFIG_COMPRESSION_LEVEL", "not_a_number");
+            jail.set_env("DD_CAPTURE_LAMBDA_PAYLOAD_MAX_DEPTH", "not_a_number");
+            jail.set_env("DD_DOGSTATSD_SO_RCVBUF", "not_a_number");
+            jail.set_env("DD_DOGSTATSD_BUFFER_SIZE", "not_a_number");
+            jail.set_env("DD_DOGSTATSD_QUEUE_SIZE", "not_a_number");
+            jail.set_env(
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB",
+                "not_a_number",
+            );
+            jail.set_env("DD_OTLP_CONFIG_METRICS_DELTA_TTL", "not_a_number");
+            jail.set_env(
+                "DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE",
+                "not_a_number",
+            );
+
+            // Bool fields → invalid string
+            jail.set_env("DD_SKIP_SSL_VALIDATION", "not_a_bool");
+            jail.set_env("DD_LOGS_CONFIG_USE_COMPRESSION", "not_a_bool");
+            jail.set_env(
+                "DD_APM_CONFIG_OBFUSCATION_HTTP_REMOVE_QUERY_STRING",
+                "not_a_bool",
+            );
+            jail.set_env(
+                "DD_APM_CONFIG_OBFUSCATION_HTTP_REMOVE_PATHS_WITH_DIGITS",
+                "not_a_bool",
+            );
+            jail.set_env("DD_TRACE_PROPAGATION_EXTRACT_FIRST", "not_a_bool");
+            jail.set_env("DD_TRACE_PROPAGATION_HTTP_BAGGAGE_ENABLED", "not_a_bool");
+            jail.set_env("DD_TRACE_AWS_SERVICE_REPRESENTATION_ENABLED", "not_a_bool");
+            jail.set_env("DD_ENHANCED_METRICS", "not_a_bool");
+            jail.set_env("DD_LAMBDA_PROC_ENHANCED_METRICS", "not_a_bool");
+            jail.set_env("DD_CAPTURE_LAMBDA_PAYLOAD", "not_a_bool");
+            jail.set_env("DD_COMPUTE_TRACE_STATS_ON_EXTENSION", "not_a_bool");
+            jail.set_env("DD_SERVERLESS_APPSEC_ENABLED", "not_a_bool");
+            jail.set_env("DD_API_SECURITY_ENABLED", "not_a_bool");
+            jail.set_env("DD_OTLP_CONFIG_TRACES_ENABLED", "not_a_bool");
+            jail.set_env(
+                "DD_OTLP_CONFIG_TRACES_SPAN_NAME_AS_RESOURCE_NAME",
+                "not_a_bool",
+            );
+            jail.set_env("DD_OTLP_CONFIG_IGNORE_MISSING_DATADOG_FIELDS", "not_a_bool");
+            jail.set_env("DD_OTLP_CONFIG_METRICS_ENABLED", "not_a_bool");
+            jail.set_env(
+                "DD_OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS",
+                "not_a_bool",
+            );
+            jail.set_env(
+                "DD_OTLP_CONFIG_METRICS_INSTRUMENTATION_SCOPE_METADATA_AS_TAGS",
+                "not_a_bool",
+            );
+            jail.set_env(
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_COUNT_SUM_METRICS",
+                "not_a_bool",
+            );
+            jail.set_env(
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS",
+                "not_a_bool",
+            );
+            jail.set_env("DD_OTLP_CONFIG_LOGS_ENABLED", "not_a_bool");
+            jail.set_env(
+                "DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED",
+                "not_a_bool",
+            );
+            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "not_a_bool");
+            jail.set_env("DD_LOGS_ENABLED", "not_a_bool");
+
+            // Enum fields → invalid string
+            jail.set_env("DD_LOG_LEVEL", "invalid_level_999");
+            jail.set_env("DD_SERVERLESS_FLUSH_STRATEGY", "[[[invalid");
+
+            // Duration fields → invalid string
+            jail.set_env("DD_SPAN_DEDUP_TIMEOUT", "not_a_number");
+            jail.set_env("DD_API_KEY_SECRET_RELOAD_INTERVAL", "not_a_number");
+            jail.set_env("DD_APPSEC_WAF_TIMEOUT", "not_a_number");
+            jail.set_env("DD_API_SECURITY_SAMPLE_DELAY", "not_a_number");
+
+            // JSON fields → invalid JSON
+            jail.set_env("DD_ADDITIONAL_ENDPOINTS", "not_json{{");
+            jail.set_env("DD_APM_ADDITIONAL_ENDPOINTS", "not_json{{");
+            jail.set_env("DD_LOGS_CONFIG_PROCESSING_RULES", "not_json{{");
+            jail.set_env("DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS", "not_json{{");
+            jail.set_env("DD_APM_REPLACE_TAGS", "not_json{{");
+
+            // Comma/space-separated fields → invalid (these are lenient but include for completeness)
+            jail.set_env("DD_SERVICE_MAPPING", "no-colon-here");
+            jail.set_env("DD_APM_FEATURES", ""); // empty
+            jail.set_env("DD_APM_FILTER_TAGS_REQUIRE", "");
+            jail.set_env("DD_APM_FILTER_TAGS_REJECT", "");
+            jail.set_env("DD_APM_FILTER_TAGS_REGEX_REQUIRE", "");
+            jail.set_env("DD_APM_FILTER_TAGS_REGEX_REJECT", "");
+            jail.set_env("DD_OTLP_CONFIG_TRACES_SPAN_NAME_REMAPPINGS", "no-colon");
+
+            let mut config = Config::default();
+            // This MUST succeed — no single field should crash the whole config
+            EnvConfigSource
+                .load(&mut config)
+                .expect("load must not fail when env vars have wrong types");
+
+            // No string env vars were set, so string fields stay at default.
+            // All non-string env vars were set to invalid values, so they also stay at default.
+            // The entire config should equal the default.
+            assert_eq!(config, Config::default());
+            Ok(())
+        });
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]

@@ -20,7 +20,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 use std::{collections::HashMap, fmt};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::{
     apm_replace_rule::deserialize_apm_replace_rules,
@@ -689,7 +689,13 @@ pub fn deserialize_key_value_pair_array_to_hashmap<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    let array: Vec<String> = Vec::deserialize(deserializer)?;
+    let array: Vec<String> = match Vec::deserialize(deserializer) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to deserialize tags array: {e}, ignoring");
+            return Ok(HashMap::new());
+        }
+    };
     let mut map = HashMap::new();
     for s in array {
         if let Some((key, val)) = parse_key_value_tag(&s) {
@@ -760,40 +766,82 @@ where
     }
 }
 
+/// Gracefully deserialize any field, falling back to `T::default()` on error.
+///
+/// This ensures that a single field with the wrong type never fails the entire
+/// struct extraction. Works for any `T` that implements `Deserialize + Default`:
+/// - `Option<T>` defaults to `None`
+/// - `Vec<T>` defaults to `[]`
+/// - `HashMap<K,V>` defaults to `{}`
+/// - Structs with `#[derive(Default)]` use their default
+pub fn deserialize_with_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    match T::deserialize(deserializer) {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            warn!("Failed to deserialize field: {}, using default", e);
+            Ok(T::default())
+        }
+    }
+}
+
 pub fn deserialize_optional_duration_from_microseconds<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Duration>, D::Error> {
-    Ok(Option::<u64>::deserialize(deserializer)?.map(Duration::from_micros))
+    match Option::<u64>::deserialize(deserializer) {
+        Ok(opt) => Ok(opt.map(Duration::from_micros)),
+        Err(e) => {
+            error!("Failed to deserialize duration (microseconds): {e}, ignoring");
+            Ok(None)
+        }
+    }
 }
 
 pub fn deserialize_optional_duration_from_seconds<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Duration>, D::Error> {
-    struct DurationVisitor;
-    impl serde::de::Visitor<'_> for DurationVisitor {
-        type Value = Option<Duration>;
-        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "a duration in seconds (integer or float)")
-        }
-        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
-            Ok(Some(Duration::from_secs(v)))
-        }
-        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
-            if v < 0 {
-                error!("Failed to parse duration: negative durations are not allowed, ignoring");
-                return Ok(None);
+    // Deserialize into a generic Value first to avoid propagating type errors,
+    // then try to extract a duration from it.
+    match Value::deserialize(deserializer) {
+        Ok(Value::Number(n)) => {
+            if let Some(u) = n.as_u64() {
+                Ok(Some(Duration::from_secs(u)))
+            } else if let Some(i) = n.as_i64() {
+                if i < 0 {
+                    error!(
+                        "Failed to parse duration: negative durations are not allowed, ignoring"
+                    );
+                    Ok(None)
+                } else {
+                    Ok(Some(Duration::from_secs(i as u64)))
+                }
+            } else if let Some(f) = n.as_f64() {
+                if f < 0.0 {
+                    error!(
+                        "Failed to parse duration: negative durations are not allowed, ignoring"
+                    );
+                    Ok(None)
+                } else {
+                    Ok(Some(Duration::from_secs_f64(f)))
+                }
+            } else {
+                error!("Failed to parse duration: unsupported number format, ignoring");
+                Ok(None)
             }
-            self.visit_u64(u64::try_from(v).expect("positive i64 to u64 conversion never fails"))
         }
-        fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
-            if v < 0f64 {
-                error!("Failed to parse duration: negative durations are not allowed, ignoring");
-                return Ok(None);
-            }
-            Ok(Some(Duration::from_secs_f64(v)))
+        Ok(Value::Null) => Ok(None),
+        Ok(other) => {
+            error!("Failed to parse duration: expected number, got {other}, ignoring");
+            Ok(None)
+        }
+        Err(e) => {
+            error!("Failed to deserialize duration: {e}, ignoring");
+            Ok(None)
         }
     }
-    deserializer.deserialize_any(DurationVisitor)
 }
 
 // Like deserialize_optional_duration_from_seconds(), but return None if the value is 0
@@ -814,7 +862,13 @@ where
     D: Deserializer<'de>,
 {
     use std::str::FromStr;
-    let s: String = String::deserialize(deserializer)?;
+    let s: String = match String::deserialize(deserializer) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to deserialize trace propagation style: {e}, ignoring");
+            return Ok(Vec::new());
+        }
+    };
 
     Ok(s.split(',')
         .filter_map(
@@ -1477,18 +1531,25 @@ pub mod tests {
             serde_json::from_str::<Value>("{}").expect("failed to parse JSON"),
             Value { duration: None }
         );
-        serde_json::from_str::<Value>(r#"{"duration":-1}"#)
-            .expect_err("should have failed parsing");
+        // Negative and non-integer values gracefully fall back to None
+        assert_eq!(
+            serde_json::from_str::<Value>(r#"{"duration":-1}"#).expect("should not fail"),
+            Value { duration: None }
+        );
         assert_eq!(
             serde_json::from_str::<Value>(r#"{"duration":1000000}"#).expect("failed to parse JSON"),
             Value {
                 duration: Some(Duration::from_secs(1))
             }
         );
-        serde_json::from_str::<Value>(r#"{"duration":-1.5}"#)
-            .expect_err("should have failed parsing");
-        serde_json::from_str::<Value>(r#"{"duration":1.5}"#)
-            .expect_err("should have failed parsing");
+        assert_eq!(
+            serde_json::from_str::<Value>(r#"{"duration":-1.5}"#).expect("should not fail"),
+            Value { duration: None }
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(r#"{"duration":1.5}"#).expect("should not fail"),
+            Value { duration: None }
+        );
     }
 
     #[test]
