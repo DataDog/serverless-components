@@ -470,24 +470,20 @@ mod log_agent_integration_tests {
         handle.shutdown().expect("shutdown");
     }
 
-    /// start_log_agent must reject OPW mode with an empty URL.
-    #[test]
-    fn test_opw_empty_url_is_detected() {
-        let config = LogFlusherConfig {
-            api_key: "key".to_string(),
-            site: "datadoghq.com".to_string(),
-            mode: FlusherMode::ObservabilityPipelinesWorker { url: String::new() },
-            additional_endpoints: Vec::new(),
-            use_compression: false,
-            compression_level: 3,
-            flush_timeout: std::time::Duration::from_secs(5),
-        };
+    /// start_log_agent must return None when OPW mode is enabled but the URL is empty.
+    #[tokio::test]
+    async fn test_opw_empty_url_is_detected() {
+        use super::start_log_agent;
+        // Enable OPW mode with a deliberately empty URL — the production guard
+        // inside start_log_agent must catch this and return None.
+        std::env::set_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED", "true");
+        std::env::set_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL", "");
+        let result = start_log_agent(Some("test-key".to_string()), None, 0);
+        std::env::remove_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED");
+        std::env::remove_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL");
         assert!(
-            matches!(
-                &config.mode,
-                FlusherMode::ObservabilityPipelinesWorker { url } if url.is_empty()
-            ),
-            "should detect empty OPW URL"
+            result.is_none(),
+            "start_log_agent must return None when OPW URL is empty"
         );
     }
 
