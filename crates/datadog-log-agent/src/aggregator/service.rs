@@ -4,11 +4,11 @@
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
 
-use crate::aggregator::LogAggregator;
+use crate::aggregator::Aggregator;
 use crate::intake_entry::IntakeEntry;
 
 #[derive(Debug)]
-enum LogAggregatorCommand {
+enum AggregatorCommand {
     InsertBatch(Vec<IntakeEntry>),
     GetBatches(oneshot::Sender<Vec<Vec<u8>>>),
     Shutdown,
@@ -17,7 +17,7 @@ enum LogAggregatorCommand {
 /// Cloneable handle for sending commands to a running [`AggregatorService`].
 #[derive(Clone)]
 pub struct AggregatorHandle {
-    tx: mpsc::UnboundedSender<LogAggregatorCommand>,
+    tx: mpsc::UnboundedSender<AggregatorCommand>,
 }
 
 impl AggregatorHandle {
@@ -26,7 +26,7 @@ impl AggregatorHandle {
     /// Returns an error only if the service has already stopped.
     pub fn insert_batch(&self, entries: Vec<IntakeEntry>) -> Result<(), String> {
         self.tx
-            .send(LogAggregatorCommand::InsertBatch(entries))
+            .send(AggregatorCommand::InsertBatch(entries))
             .map_err(|e| format!("failed to send InsertBatch: {e}"))
     }
 
@@ -36,7 +36,7 @@ impl AggregatorHandle {
     pub async fn get_batches(&self) -> Result<Vec<Vec<u8>>, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(LogAggregatorCommand::GetBatches(tx))
+            .send(AggregatorCommand::GetBatches(tx))
             .map_err(|e| format!("failed to send GetBatches: {e}"))?;
         rx.await
             .map_err(|e| format!("failed to receive GetBatches response: {e}"))
@@ -45,18 +45,18 @@ impl AggregatorHandle {
     /// Signal the service to stop processing and exit its run loop.
     pub fn shutdown(&self) -> Result<(), String> {
         self.tx
-            .send(LogAggregatorCommand::Shutdown)
+            .send(AggregatorCommand::Shutdown)
             .map_err(|e| format!("failed to send Shutdown: {e}"))
     }
 }
 
-/// Background tokio task owning a [`LogAggregator`] and processing commands.
+/// Background tokio task owning a [`Aggregator`] and processing commands.
 ///
 /// Create with [`AggregatorService::new`], spawn with `tokio::spawn(service.run())`,
 /// and interact via the returned [`AggregatorHandle`].
 pub struct AggregatorService {
-    aggregator: LogAggregator,
-    rx: mpsc::UnboundedReceiver<LogAggregatorCommand>,
+    aggregator: Aggregator,
+    rx: mpsc::UnboundedReceiver<AggregatorCommand>,
 }
 
 impl AggregatorService {
@@ -64,7 +64,7 @@ impl AggregatorService {
     pub fn new() -> (Self, AggregatorHandle) {
         let (tx, rx) = mpsc::unbounded_channel();
         let service = Self {
-            aggregator: LogAggregator::new(),
+            aggregator: Aggregator::new(),
             rx,
         };
         let handle = AggregatorHandle { tx };
@@ -79,7 +79,7 @@ impl AggregatorService {
 
         while let Some(command) = self.rx.recv().await {
             match command {
-                LogAggregatorCommand::InsertBatch(entries) => {
+                AggregatorCommand::InsertBatch(entries) => {
                     for entry in &entries {
                         if let Err(e) = self.aggregator.insert(entry) {
                             warn!("dropping log entry: {e}");
@@ -87,14 +87,14 @@ impl AggregatorService {
                     }
                 }
 
-                LogAggregatorCommand::GetBatches(response_tx) => {
+                AggregatorCommand::GetBatches(response_tx) => {
                     let batches = self.aggregator.get_all_batches();
                     if response_tx.send(batches).is_err() {
                         error!("failed to send GetBatches response — receiver dropped");
                     }
                 }
 
-                LogAggregatorCommand::Shutdown => {
+                AggregatorCommand::Shutdown => {
                     debug!("log aggregator service shutting down");
                     break;
                 }

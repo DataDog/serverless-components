@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod core;
-pub use core::LogAggregator;
+pub use core::Aggregator;
 
 pub mod service;
 pub use service::{AggregatorHandle, AggregatorService};
