@@ -462,6 +462,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-log-agent"
+version = "0.1.0"
+dependencies = [
+ "datadog-fips",
+ "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "mockito",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
 name = "datadog-opentelemetry"
 version = "0.3.0"
 source = "git+https://github.com/DataDog/dd-trace-rs?rev=f51cefc4ad24bec81b38fb2f36b1ed93f21ae913#f51cefc4ad24bec81b38fb2f36b1ed93f21ae913"
@@ -492,26 +512,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
-]
-
-[[package]]
-name = "datadog-log-agent"
-version = "0.1.0"
-dependencies = [
- "datadog-fips",
- "futures",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "mockito",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "zstd",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ use crate::logs_additional_endpoint::{parse_additional_endpoints, LogsAdditional
 
 /// Controls where and how logs are shipped.
 #[derive(Debug, Clone)]
-pub enum FlusherMode {
+pub enum Destination {
     /// Ship to Datadog Logs API.
     /// Endpoint: `https://http-intake.logs.{site}/api/v2/logs`
     /// Headers: `DD-API-KEY`, `DD-PROTOCOL: agent-json`, optionally `Content-Encoding: zstd`
@@ -30,7 +30,7 @@ pub struct LogFlusherConfig {
     pub site: String,
 
     /// Flusher mode — Datadog vs Observability Pipelines Worker.
-    pub mode: FlusherMode,
+    pub mode: Destination,
 
     /// Additional Datadog intake endpoints to ship each batch to in parallel.
     /// Each endpoint uses its own API key and full intake URL.
@@ -58,6 +58,7 @@ impl LogFlusherConfig {
     /// | `DD_FLUSH_TIMEOUT` | `5` (seconds) |
     /// | `DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED` | `false` |
     /// | `DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL` | (none) |
+    #[must_use]
     pub fn from_env() -> Self {
         let api_key = std::env::var("DD_API_KEY").unwrap_or_default();
         let site = std::env::var("DD_SITE").unwrap_or_else(|_| DEFAULT_SITE.to_string());
@@ -86,9 +87,9 @@ impl LogFlusherConfig {
             if url.is_empty() {
                 tracing::warn!("OPW mode enabled but DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL is not set — log flush will fail");
             }
-            FlusherMode::ObservabilityPipelinesWorker { url }
+            Destination::ObservabilityPipelinesWorker { url }
         } else {
-            FlusherMode::Datadog
+            Destination::Datadog
         };
 
         Self {

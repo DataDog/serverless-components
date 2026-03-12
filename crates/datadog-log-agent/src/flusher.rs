@@ -9,7 +9,7 @@ use tracing::{debug, error, warn};
 use zstd::stream::write::Encoder;
 
 use crate::aggregator::AggregatorHandle;
-use crate::config::{FlusherMode, LogFlusherConfig};
+use crate::config::{Destination, LogFlusherConfig};
 use crate::errors::FlushError;
 
 /// Maximum number of send attempts before giving up on a batch.
@@ -142,11 +142,11 @@ impl LogFlusher {
 
     fn resolve_endpoint(&self) -> (String, bool) {
         match &self.config.mode {
-            FlusherMode::Datadog => {
+            Destination::Datadog => {
                 let url = format!("https://http-intake.logs.{}/api/v2/logs", self.config.site);
                 (url, self.config.use_compression)
             }
-            FlusherMode::ObservabilityPipelinesWorker { url } => {
+            Destination::ObservabilityPipelinesWorker { url } => {
                 // OPW does not support compression
                 (url.clone(), false)
             }
@@ -179,7 +179,7 @@ impl LogFlusher {
             .header("DD-API-KEY", api_key)
             .header("Content-Type", "application/json");
 
-        if matches!(self.config.mode, FlusherMode::Datadog) {
+        if matches!(self.config.mode, Destination::Datadog) {
             req = req.header("DD-PROTOCOL", "agent-json");
         }
 
@@ -284,7 +284,7 @@ fn compress_zstd(data: &[u8], level: i32) -> Result<Vec<u8>, FlushError> {
 mod tests {
     use super::*;
     use crate::aggregator::AggregatorService;
-    use crate::config::{FlusherMode, LogFlusherConfig};
+    use crate::config::{Destination, LogFlusherConfig};
     use crate::intake_entry::IntakeEntry;
     use crate::logs_additional_endpoint::LogsAdditionalEndpoint;
     use mockito::Matcher;
@@ -299,7 +299,7 @@ mod tests {
         LogFlusherConfig {
             api_key: "test-api-key".to_string(),
             site: "datadoghq.com".to_string(),
-            mode: FlusherMode::ObservabilityPipelinesWorker {
+            mode: Destination::ObservabilityPipelinesWorker {
                 url: format!("{mock_url}/api/v2/logs"),
             },
             additional_endpoints: Vec::new(),
@@ -348,7 +348,7 @@ mod tests {
         let config = LogFlusherConfig {
             api_key: "test-api-key".to_string(),
             site: "datadoghq.com".to_string(),
-            mode: FlusherMode::Datadog,
+            mode: Destination::Datadog,
             additional_endpoints: Vec::new(),
             use_compression: false,
             compression_level: 3,
@@ -391,7 +391,7 @@ mod tests {
         let config = LogFlusherConfig {
             api_key: "test-api-key".to_string(),
             site: "unused".to_string(),
-            mode: FlusherMode::ObservabilityPipelinesWorker { url: opw_url },
+            mode: Destination::ObservabilityPipelinesWorker { url: opw_url },
             additional_endpoints: Vec::new(),
             use_compression: false,
             compression_level: 3,
@@ -535,7 +535,7 @@ mod tests {
         let config = LogFlusherConfig {
             api_key: "key".to_string(),
             site: "datadoghq.com".to_string(),
-            mode: FlusherMode::ObservabilityPipelinesWorker {
+            mode: Destination::ObservabilityPipelinesWorker {
                 url: format!("{}/api/v2/logs", primary.url()),
             },
             additional_endpoints: vec![
@@ -610,7 +610,7 @@ mod tests {
         let config = LogFlusherConfig {
             api_key: "key".to_string(),
             site: "datadoghq.com".to_string(),
-            mode: FlusherMode::ObservabilityPipelinesWorker {
+            mode: Destination::ObservabilityPipelinesWorker {
                 url: format!("{}/api/v2/logs", primary.url()),
             },
             additional_endpoints: vec![
@@ -712,7 +712,7 @@ mod tests {
         let config = LogFlusherConfig {
             api_key: "key".to_string(),
             site: "datadoghq.com".to_string(),
-            mode: FlusherMode::ObservabilityPipelinesWorker {
+            mode: Destination::ObservabilityPipelinesWorker {
                 url: format!("{}/api/v2/logs", primary.url()),
             },
             additional_endpoints: vec![LogsAdditionalEndpoint {
