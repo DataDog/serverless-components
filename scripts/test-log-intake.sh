@@ -35,7 +35,7 @@ done
 
 # ── Build the example first ──────────────────────────────────────────────────
 echo "Building send_logs example..."
-cargo build -p datadog-log-agent --example send_logs --quiet 2>&1
+cargo build -p datadog-logs-agent --example send_logs --quiet 2>&1
 
 # ── Real Datadog mode ─────────────────────────────────────────────────────────
 if [[ "$REAL_MODE" == true ]]; then
@@ -46,7 +46,7 @@ if [[ "$REAL_MODE" == true ]]; then
   echo ""
   echo "Flushing to real Datadog endpoint..."
   LOG_ENTRY_COUNT="${LOG_ENTRY_COUNT:-5}" \
-    cargo run -p datadog-log-agent --example send_logs --quiet 2>&1
+    cargo run -p datadog-logs-agent --example send_logs --quiet 2>&1
   exit $?
 fi
 
@@ -127,7 +127,7 @@ DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED=true \
 DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL="http://localhost:${PORT}/logs" \
 DD_API_KEY="${DD_API_KEY:-local-test-key}" \
 LOG_ENTRY_COUNT="${LOG_ENTRY_COUNT:-5}" \
-  cargo run -p datadog-log-agent --example send_logs --quiet 2>&1
+  cargo run -p datadog-logs-agent --example send_logs --quiet 2>&1
 
 echo ""
 echo "Done. Press Ctrl-C to stop the capture server."

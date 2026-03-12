@@ -26,7 +26,7 @@ use datadog_trace_agent::{
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
-use datadog_log_agent::{
+use datadog_logs_agent::{
     AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
     Destination as LogDestination, LogFlusher, LogFlusherConfig, LogServer, LogServerConfig,
 };
@@ -439,7 +439,7 @@ fn start_log_agent(
 
 #[cfg(test)]
 mod log_agent_integration_tests {
-    use datadog_log_agent::{AggregatorService, IntakeEntry, LogServer, LogServerConfig};
+    use datadog_logs_agent::{AggregatorService, IntakeEntry, LogServer, LogServerConfig};
 
     #[tokio::test]
     async fn test_log_agent_full_pipeline_compiles_and_runs() {

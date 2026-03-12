@@ -462,7 +462,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "datadog-log-agent"
+name = "datadog-logs-agent"
 version = "0.1.0"
 dependencies = [
  "datadog-fips",
@@ -533,7 +533,7 @@ name = "datadog-serverless-compat"
 version = "0.1.0"
 dependencies = [
  "datadog-fips",
- "datadog-log-agent",
+ "datadog-logs-agent",
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils 1.0.0",

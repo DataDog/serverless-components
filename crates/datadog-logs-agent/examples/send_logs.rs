@@ -20,7 +20,7 @@
 //!   DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED=true \
 //!   DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL=http://localhost:9999/logs \
 //!   DD_API_KEY=local-test-key \
-//!   cargo run -p datadog-log-agent --example send_logs
+//!   cargo run -p datadog-logs-agent --example send_logs
 //!
 //! NOTE: `python3 -m http.server` does NOT work — it rejects POST requests.
 //!
@@ -28,7 +28,7 @@
 //!
 //!   DD_API_KEY=<your-key> \
 //!   DD_SITE=datadoghq.com \
-//!   cargo run -p datadog-log-agent --example send_logs
+//!   cargo run -p datadog-logs-agent --example send_logs
 //!
 //! ## Configuration via env vars
 //!
@@ -42,7 +42,7 @@
 //! | DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL       | (empty)            |
 //! | LOG_ENTRY_COUNT                                  | 5                  |
 
-use datadog_log_agent::{
+use datadog_logs_agent::{
     AggregatorService, Destination, IntakeEntry, LogFlusher, LogFlusherConfig,
 };
 
@@ -59,7 +59,7 @@ async fn main() {
     // Print effective configuration
     let (endpoint, compressed) = describe_config(&config);
     println!("──────────────────────────────────────────");
-    println!("  datadog-log-agent local test");
+    println!("  datadog-logs-agent local test");
     println!("──────────────────────────────────────────");
     println!("  endpoint    : {endpoint}");
     println!("  api_key     : {}", mask(&config.api_key));
