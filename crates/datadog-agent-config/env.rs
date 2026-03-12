@@ -834,52 +834,10 @@ mod tests {
                 .load(&mut config)
                 .expect("load must not fail when env vars have wrong types");
 
-            // Every non-string field should be at its default
-            let default = Config::default();
-            assert_eq!(config.log_level, default.log_level);
-            assert_eq!(config.flush_timeout, default.flush_timeout);
-            assert_eq!(config.compression_level, default.compression_level);
-            assert_eq!(config.skip_ssl_validation, default.skip_ssl_validation);
-            assert_eq!(config.additional_endpoints, default.additional_endpoints);
-            assert_eq!(config.logs_config_processing_rules, default.logs_config_processing_rules);
-            assert_eq!(config.logs_config_use_compression, default.logs_config_use_compression);
-            assert_eq!(config.logs_config_compression_level, default.logs_config_compression_level);
-            assert_eq!(config.logs_config_additional_endpoints, default.logs_config_additional_endpoints);
-            assert_eq!(config.observability_pipelines_worker_logs_enabled, default.observability_pipelines_worker_logs_enabled);
-            assert_eq!(config.apm_replace_tags, default.apm_replace_tags);
-            assert_eq!(config.apm_config_obfuscation_http_remove_query_string, default.apm_config_obfuscation_http_remove_query_string);
-            assert_eq!(config.apm_config_obfuscation_http_remove_paths_with_digits, default.apm_config_obfuscation_http_remove_paths_with_digits);
-            assert_eq!(config.apm_config_compression_level, default.apm_config_compression_level);
-            assert_eq!(config.apm_additional_endpoints, default.apm_additional_endpoints);
-            assert_eq!(config.trace_aws_service_representation_enabled, default.trace_aws_service_representation_enabled);
-            assert_eq!(config.trace_propagation_extract_first, default.trace_propagation_extract_first);
-            assert_eq!(config.trace_propagation_http_baggage_enabled, default.trace_propagation_http_baggage_enabled);
-            assert_eq!(config.enhanced_metrics, default.enhanced_metrics);
-            assert_eq!(config.lambda_proc_enhanced_metrics, default.lambda_proc_enhanced_metrics);
-            assert_eq!(config.capture_lambda_payload, default.capture_lambda_payload);
-            assert_eq!(config.capture_lambda_payload_max_depth, default.capture_lambda_payload_max_depth);
-            assert_eq!(config.serverless_flush_strategy, default.serverless_flush_strategy);
-            assert_eq!(config.serverless_logs_enabled, default.serverless_logs_enabled);
-            assert_eq!(config.compute_trace_stats_on_extension, default.compute_trace_stats_on_extension);
-            assert_eq!(config.span_dedup_timeout, default.span_dedup_timeout);
-            assert_eq!(config.api_key_secret_reload_interval, default.api_key_secret_reload_interval);
-            assert_eq!(config.serverless_appsec_enabled, default.serverless_appsec_enabled);
-            assert_eq!(config.appsec_waf_timeout, default.appsec_waf_timeout);
-            assert_eq!(config.api_security_enabled, default.api_security_enabled);
-            assert_eq!(config.api_security_sample_delay, default.api_security_sample_delay);
-            assert_eq!(config.dogstatsd_so_rcvbuf, default.dogstatsd_so_rcvbuf);
-            assert_eq!(config.dogstatsd_buffer_size, default.dogstatsd_buffer_size);
-            assert_eq!(config.dogstatsd_queue_size, default.dogstatsd_queue_size);
-            assert_eq!(config.otlp_config_traces_enabled, default.otlp_config_traces_enabled);
-            assert_eq!(config.otlp_config_traces_span_name_as_resource_name, default.otlp_config_traces_span_name_as_resource_name);
-            assert_eq!(config.otlp_config_ignore_missing_datadog_fields, default.otlp_config_ignore_missing_datadog_fields);
-            assert_eq!(config.otlp_config_metrics_enabled, default.otlp_config_metrics_enabled);
-            assert_eq!(config.otlp_config_metrics_resource_attributes_as_tags, default.otlp_config_metrics_resource_attributes_as_tags);
-            assert_eq!(config.otlp_config_metrics_instrumentation_scope_metadata_as_tags, default.otlp_config_metrics_instrumentation_scope_metadata_as_tags);
-            assert_eq!(config.otlp_config_metrics_histograms_send_count_sum_metrics, default.otlp_config_metrics_histograms_send_count_sum_metrics);
-            assert_eq!(config.otlp_config_metrics_histograms_send_aggregation_metrics, default.otlp_config_metrics_histograms_send_aggregation_metrics);
-            assert_eq!(config.otlp_config_logs_enabled, default.otlp_config_logs_enabled);
-            assert_eq!(config.metrics_config_compression_level, default.metrics_config_compression_level);
+            // No string env vars were set, so string fields stay at default.
+            // All non-string env vars were set to invalid values, so they also stay at default.
+            // The entire config should equal the default.
+            assert_eq!(config, Config::default());
             Ok(())
         });
     }

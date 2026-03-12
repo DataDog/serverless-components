@@ -20,7 +20,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 use std::{collections::HashMap, fmt};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::{
     apm_replace_rule::deserialize_apm_replace_rules,
@@ -782,7 +782,7 @@ where
     match T::deserialize(deserializer) {
         Ok(value) => Ok(value),
         Err(e) => {
-            error!("Failed to deserialize field: {}, using default", e);
+            warn!("Failed to deserialize field: {}, using default", e);
             Ok(T::default())
         }
     }
