@@ -437,10 +437,7 @@ fn start_log_agent(
 
 #[cfg(test)]
 mod log_agent_integration_tests {
-    use datadog_log_agent::{
-        AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig, LogServer,
-        LogServerConfig,
-    };
+    use datadog_log_agent::{AggregatorService, LogEntry, LogServer, LogServerConfig};
 
     #[tokio::test]
     async fn test_log_agent_full_pipeline_compiles_and_runs() {
@@ -485,14 +482,6 @@ mod log_agent_integration_tests {
             result.is_none(),
             "start_log_agent must return None when OPW URL is empty"
         );
-    }
-
-    /// Verify the LogFlusher struct is constructible from within this crate — compile-time test.
-    #[allow(dead_code)]
-    fn _assert_log_flusher_constructible() {
-        let _ = std::mem::size_of::<LogFlusher>();
-        let _ = std::mem::size_of::<LogFlusherConfig>();
-        let _ = std::mem::size_of::<FlusherMode>();
     }
 
     /// Full network intake path: entries posted over HTTP to LogServer must
