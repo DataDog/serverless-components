@@ -59,7 +59,13 @@ pub fn deserialize_apm_replace_rules<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    let json_string = deserializer.deserialize_any(StringOrReplaceRulesVisitor)?;
+    let json_string = match deserializer.deserialize_any(StringOrReplaceRulesVisitor) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to deserialize APM replace rules: {e}, ignoring");
+            return Ok(None);
+        }
+    };
 
     match parse_rules_from_string(&json_string) {
         Ok(rules) => Ok(Some(rules)),
