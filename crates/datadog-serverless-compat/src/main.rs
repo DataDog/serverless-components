@@ -28,7 +28,7 @@ use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentTy
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_log_agent::{
     AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
-    FlusherMode as LogFlusherMode, LogFlusher, LogFlusherConfig, LogServer, LogServerConfig,
+    Destination as LogDestination, LogFlusher, LogFlusherConfig, LogServer, LogServerConfig,
 };
 use dogstatsd::{
     aggregator::{AggregatorHandle, AggregatorService},
@@ -405,7 +405,7 @@ fn start_log_agent(
     };
 
     // Fail fast: OPW mode with an empty URL will always produce a network error at flush time.
-    if let LogFlusherMode::ObservabilityPipelinesWorker { url } = &config.mode {
+    if let LogDestination::ObservabilityPipelinesWorker { url } = &config.mode {
         if url.is_empty() {
             error!("OPW mode enabled but DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL is empty — log agent disabled");
             return None;

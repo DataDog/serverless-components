@@ -12,13 +12,13 @@
 //!   HTTP POST → `LogServer` → `AggregatorHandle::insert_batch` → `LogFlusher::flush` → HTTP endpoint
 //!
 //! HTTP traffic is directed to a local `mockito` server via
-//! `FlusherMode::ObservabilityPipelinesWorker`, which accepts a direct URL.
+//! `Destination::ObservabilityPipelinesWorker`, which accepts a direct URL.
 //! Datadog-mode-specific headers (`DD-PROTOCOL`) are covered by unit tests in `flusher.rs`.
 
 #![allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::expect_used)]
 
 use datadog_log_agent::{
-    AggregatorService, FlusherMode, IntakeEntry, LogFlusher, LogFlusherConfig, LogServer,
+    AggregatorService, Destination, IntakeEntry, LogFlusher, LogFlusherConfig, LogServer,
     LogServerConfig, LogsAdditionalEndpoint,
 };
 use mockito::{Matcher, Server};
@@ -38,7 +38,7 @@ fn opw_config(mock_url: &str) -> LogFlusherConfig {
     LogFlusherConfig {
         api_key: "test-api-key".to_string(),
         site: "ignored.datadoghq.com".to_string(),
-        mode: FlusherMode::ObservabilityPipelinesWorker {
+        mode: Destination::ObservabilityPipelinesWorker {
             url: format!("{}/logs", mock_url),
         },
         additional_endpoints: Vec::new(),
@@ -415,7 +415,7 @@ async fn test_opw_mode_uses_custom_url_and_omits_dd_protocol() {
     let config = LogFlusherConfig {
         api_key: "test-api-key".to_string(),
         site: "ignored".to_string(),
-        mode: FlusherMode::ObservabilityPipelinesWorker {
+        mode: Destination::ObservabilityPipelinesWorker {
             url: format!("{}{}", server.url(), opw_path),
         },
         additional_endpoints: Vec::new(),
@@ -461,7 +461,7 @@ async fn test_opw_mode_disables_compression_regardless_of_config() {
     let config = LogFlusherConfig {
         api_key: "key".to_string(),
         site: "ignored".to_string(),
-        mode: FlusherMode::ObservabilityPipelinesWorker {
+        mode: Destination::ObservabilityPipelinesWorker {
             url: format!("{}/logs", server.url()),
         },
         additional_endpoints: Vec::new(),
@@ -600,7 +600,7 @@ async fn test_additional_endpoints_receive_same_batch() {
     let config = LogFlusherConfig {
         api_key: "test-api-key".to_string(),
         site: "ignored".to_string(),
-        mode: FlusherMode::ObservabilityPipelinesWorker {
+        mode: Destination::ObservabilityPipelinesWorker {
             url: format!("{}/logs", primary.url()),
         },
         additional_endpoints: vec![LogsAdditionalEndpoint {
@@ -648,7 +648,7 @@ async fn test_additional_endpoint_failure_does_not_affect_return_value() {
     let config = LogFlusherConfig {
         api_key: "key".to_string(),
         site: "ignored".to_string(),
-        mode: FlusherMode::ObservabilityPipelinesWorker {
+        mode: Destination::ObservabilityPipelinesWorker {
             url: format!("{}/logs", primary.url()),
         },
         additional_endpoints: vec![LogsAdditionalEndpoint {

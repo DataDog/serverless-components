@@ -42,7 +42,9 @@
 //! | DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL       | (empty)            |
 //! | LOG_ENTRY_COUNT                                  | 5                  |
 
-use datadog_log_agent::{AggregatorService, FlusherMode, IntakeEntry, LogFlusher, LogFlusherConfig};
+use datadog_log_agent::{
+    AggregatorService, Destination, IntakeEntry, LogFlusher, LogFlusherConfig,
+};
 
 #[allow(clippy::disallowed_methods)] // plain reqwest::Client for local testing
 #[tokio::main]
@@ -175,11 +177,11 @@ fn now_ms() -> i64 {
 
 fn describe_config(config: &LogFlusherConfig) -> (String, bool) {
     match &config.mode {
-        FlusherMode::Datadog => (
+        Destination::Datadog => (
             format!("https://http-intake.logs.{}/api/v2/logs", config.site),
             config.use_compression,
         ),
-        FlusherMode::ObservabilityPipelinesWorker { url } => (url.clone(), false),
+        Destination::ObservabilityPipelinesWorker { url } => (url.clone(), false),
     }
 }
 
