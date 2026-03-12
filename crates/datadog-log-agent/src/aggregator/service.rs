@@ -111,7 +111,7 @@ mod tests {
     use crate::log_entry::LogEntry;
 
     fn make_entry(msg: &str) -> LogEntry {
-        LogEntry::new(msg, 1_700_000_000_000)
+        LogEntry::from_message(msg, 1_700_000_000_000)
     }
 
     #[tokio::test]
@@ -149,7 +149,7 @@ mod tests {
         let (service, handle) = AggregatorService::new();
         let task = tokio::spawn(service.run());
 
-        let big = LogEntry::new("x".repeat(crate::constants::MAX_LOG_BYTES + 1), 0);
+        let big = LogEntry::from_message("x".repeat(crate::constants::MAX_LOG_BYTES + 1), 0);
         handle.insert_batch(vec![big]).expect("send ok");
 
         let batches = handle.get_batches().await.expect("get_batches");

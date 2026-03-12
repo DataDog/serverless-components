@@ -49,7 +49,7 @@ fn opw_config(mock_url: &str) -> LogFlusherConfig {
 }
 
 fn entry(msg: &str) -> LogEntry {
-    LogEntry::new(msg, 1_700_000_000_000)
+    LogEntry::from_message(msg, 1_700_000_000_000)
 }
 
 // ── Pipeline happy path ───────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ async fn test_absent_optional_fields_not_serialized() {
     let _task = tokio::spawn(svc.run());
 
     handle
-        .insert_batch(vec![LogEntry::new("minimal", 0)])
+        .insert_batch(vec![LogEntry::from_message("minimal", 0)])
         .expect("insert");
 
     let batches = handle.get_batches().await.expect("get_batches");
@@ -315,7 +315,7 @@ async fn test_oversized_entry_dropped_valid_entries_still_flush() {
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
 
-    let oversized = LogEntry::new(
+    let oversized = LogEntry::from_message(
         "x".repeat(datadog_log_agent::constants::MAX_LOG_BYTES + 1),
         0,
     );
@@ -339,7 +339,7 @@ async fn test_all_oversized_entries_produces_no_request() {
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
 
-    let oversized = LogEntry::new(
+    let oversized = LogEntry::from_message(
         "x".repeat(datadog_log_agent::constants::MAX_LOG_BYTES + 1),
         0,
     );

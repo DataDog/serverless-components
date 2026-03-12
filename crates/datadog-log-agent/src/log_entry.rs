@@ -64,8 +64,9 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    /// Create a minimal log entry with only the required fields.
-    pub fn new(message: impl Into<String>, timestamp: i64) -> Self {
+    /// Create a minimal log entry from a message and timestamp.
+    /// All optional fields default to `None`; use struct literal syntax to set them.
+    pub fn from_message(message: impl Into<String>, timestamp: i64) -> Self {
         Self {
             message: message.into(),
             timestamp,
@@ -85,7 +86,7 @@ mod tests {
 
     #[test]
     fn test_log_entry_minimal_serialization() {
-        let entry = LogEntry::new("hello world", 1_700_000_000_000);
+        let entry = LogEntry::from_message("hello world", 1_700_000_000_000);
         let json = serde_json::to_string(&entry).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
 

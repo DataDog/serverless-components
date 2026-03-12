@@ -291,7 +291,7 @@ mod tests {
     use std::time::Duration;
 
     fn make_entry(msg: &str) -> LogEntry {
-        LogEntry::new(msg, 1_700_000_000_000)
+        LogEntry::from_message(msg, 1_700_000_000_000)
     }
 
     fn config_for_mock(mock_url: &str) -> LogFlusherConfig {

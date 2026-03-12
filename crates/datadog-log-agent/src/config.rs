@@ -39,7 +39,7 @@ pub struct LogFlusherConfig {
     /// Enable zstd compression (ignored in OPW mode, which is always uncompressed).
     pub use_compression: bool,
 
-    /// zstd compression level 1–21 (ignored when `use_compression` is false).
+    /// zstd compression level (ignored when `use_compression` is false).
     pub compression_level: i32,
 
     /// Per-request timeout.
