@@ -831,6 +831,7 @@ where
 
 #[cfg_attr(coverage_nightly, coverage(off))] // Test modules skew coverage metrics
 #[cfg(test)]
+#[allow(clippy::result_large_err)]
 pub mod tests {
     use libdd_trace_obfuscation::replacer::parse_rules_from_string;
 
