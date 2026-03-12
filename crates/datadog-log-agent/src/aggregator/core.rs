@@ -55,8 +55,14 @@ impl LogAggregator {
     }
 
     /// Returns `true` if the batch has reached its entry count or byte limit.
+    ///
+    /// The byte check accounts for JSON framing: `[` + `]` (2 bytes) plus one
+    /// comma per entry after the first (`N - 1` bytes).
     pub fn is_full(&self) -> bool {
-        self.messages.len() >= MAX_BATCH_ENTRIES || self.current_size_bytes >= MAX_CONTENT_BYTES
+        let n = self.messages.len();
+        // framing: 2 bytes for `[`/`]` + (n - 1) commas
+        let framing = if n == 0 { 0 } else { 2 + (n - 1) };
+        n >= MAX_BATCH_ENTRIES || self.current_size_bytes + framing >= MAX_CONTENT_BYTES
     }
 
     /// Returns `true` if no log entries are buffered.
@@ -93,9 +99,10 @@ impl LogAggregator {
                 None => break,
             };
 
-            // Account for the comma separator added before every entry after the first
+            // Account for the comma separator and the 2-byte `[`/`]` framing.
+            // Total wire size = bytes_in_batch + (separator) + msg_len + 2 (for `[` and `]`)
             let separator = if count == 0 { 0 } else { 1 };
-            if count > 0 && bytes_in_batch + separator + msg_len > MAX_CONTENT_BYTES {
+            if bytes_in_batch + separator + msg_len + 2 > MAX_CONTENT_BYTES {
                 break;
             }
 
@@ -236,5 +243,28 @@ mod tests {
     fn test_get_all_batches_empty_returns_empty_vec() {
         let mut agg = LogAggregator::new();
         assert!(agg.get_all_batches().is_empty());
+    }
+
+    #[test]
+    fn test_batch_never_exceeds_max_content_bytes() {
+        // Fill with entries whose sizes sum to just under MAX_CONTENT_BYTES so
+        // that the framing bytes (`[`, `]`, commas) would push a naive
+        // implementation over the limit.
+        let mut agg = LogAggregator::new();
+        // Each entry's serialized JSON is roughly 50 bytes; pack enough entries
+        // that their raw sum approaches MAX_CONTENT_BYTES.
+        let entry = make_entry("x");
+        for _ in 0..1000 {
+            let _ = agg.insert(&entry);
+        }
+
+        for batch in agg.get_all_batches() {
+            assert!(
+                batch.len() <= MAX_CONTENT_BYTES,
+                "batch size {} exceeds MAX_CONTENT_BYTES {}",
+                batch.len(),
+                MAX_CONTENT_BYTES
+            );
+        }
     }
 }
