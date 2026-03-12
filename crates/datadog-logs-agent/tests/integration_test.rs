@@ -1,7 +1,7 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-//! Integration tests for the `datadog-log-agent` crate.
+//! Integration tests for the `datadog-logs-agent` crate.
 //!
 //! These tests exercise two intake paths:
 //!
@@ -17,7 +17,7 @@
 
 #![allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::expect_used)]
 
-use datadog_log_agent::{
+use datadog_logs_agent::{
     AggregatorService, Destination, IntakeEntry, LogFlusher, LogFlusherConfig, LogServer,
     LogServerConfig, LogsAdditionalEndpoint,
 };
@@ -252,7 +252,7 @@ async fn test_azure_attributes_flattened_at_top_level() {
 /// Exactly MAX_BATCH_ENTRIES entries produce a single batch.
 #[tokio::test]
 async fn test_max_entries_fits_in_one_batch() {
-    const MAX: usize = datadog_log_agent::constants::MAX_BATCH_ENTRIES;
+    const MAX: usize = datadog_logs_agent::constants::MAX_BATCH_ENTRIES;
 
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
@@ -274,7 +274,7 @@ async fn test_max_entries_fits_in_one_batch() {
 /// MAX_BATCH_ENTRIES + 1 entries split into two batches; two POSTs are sent.
 #[tokio::test]
 async fn test_overflow_produces_two_batches_and_two_posts() {
-    const MAX: usize = datadog_log_agent::constants::MAX_BATCH_ENTRIES;
+    const MAX: usize = datadog_logs_agent::constants::MAX_BATCH_ENTRIES;
 
     let mut server = Server::new_async().await;
     let mock = server
@@ -316,7 +316,7 @@ async fn test_oversized_entry_dropped_valid_entries_still_flush() {
     let _task = tokio::spawn(svc.run());
 
     let oversized = IntakeEntry::from_message(
-        "x".repeat(datadog_log_agent::constants::MAX_LOG_BYTES + 1),
+        "x".repeat(datadog_logs_agent::constants::MAX_LOG_BYTES + 1),
         0,
     );
     let normal = entry("this one is fine");
@@ -340,7 +340,7 @@ async fn test_all_oversized_entries_produces_no_request() {
     let _task = tokio::spawn(svc.run());
 
     let oversized = IntakeEntry::from_message(
-        "x".repeat(datadog_log_agent::constants::MAX_LOG_BYTES + 1),
+        "x".repeat(datadog_logs_agent::constants::MAX_LOG_BYTES + 1),
         0,
     );
     handle.insert_batch(vec![oversized]).expect("insert");
@@ -675,7 +675,7 @@ async fn test_additional_endpoint_failure_does_not_affect_return_value() {
 
 /// Bind :0 to get a free port, drop the listener, then start LogServer on that
 /// port.  Returns the base URL ("http://127.0.0.1:<port>").
-async fn start_log_server(handle: datadog_log_agent::AggregatorHandle) -> String {
+async fn start_log_server(handle: datadog_logs_agent::AggregatorHandle) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind :0");

@@ -10,7 +10,7 @@ default = []
 windows-pipes = ["datadog-trace-agent/windows-pipes", "dogstatsd/windows-pipes"]
 
 [dependencies]
-datadog-log-agent = { path = "../datadog-log-agent" }
+datadog-logs-agent = { path = "../datadog-logs-agent" }
 datadog-trace-agent = { path = "../datadog-trace-agent" }
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "8c88979985154d6d97c0fc2ca9039682981eacad" }
 datadog-fips = { path = "../datadog-fips", default-features = false }
