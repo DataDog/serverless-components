@@ -15,7 +15,7 @@ use crate::{
     deserialize_optional_bool_from_anything, deserialize_optional_duration_from_microseconds,
     deserialize_optional_duration_from_seconds,
     deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
-    deserialize_string_or_int, deserialize_trace_propagation_style,
+    deserialize_string_or_int, deserialize_trace_propagation_style, deserialize_with_default,
     flush_strategy::FlushStrategy,
     log_level::LogLevel,
     logs_additional_endpoints::{LogsAdditionalEndpoint, deserialize_logs_additional_endpoints},
@@ -43,6 +43,7 @@ pub struct EnvConfig {
     ///
     /// Minimum log level of the Datadog Agent.
     /// Valid log levels are: trace, debug, info, warn, and error.
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub log_level: Option<LogLevel>,
 
     /// @env `DD_FLUSH_TIMEOUT`
@@ -398,6 +399,7 @@ pub struct EnvConfig {
     /// @env `DD_SERVERLESS_FLUSH_STRATEGY`
     ///
     /// The flush strategy to use for AWS Lambda.
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub serverless_flush_strategy: Option<FlushStrategy>,
     /// @env `DD_ENHANCED_METRICS`
     ///
@@ -715,6 +717,208 @@ mod tests {
         log_level::LogLevel,
         processing_rule::{Kind, ProcessingRule},
     };
+
+    /// Comprehensive test: every non-string env var set to an invalid value.
+    /// The load MUST succeed, and invalid fields must fall back to defaults.
+    ///
+    /// Note: string-typed fields (DD_SITE, DD_API_KEY, etc.) can't fail from env
+    /// because all env values are strings. This test covers all non-string types.
+    ///
+    /// When adding a new non-string field to EnvConfig, add an entry here with
+    /// an invalid value to ensure graceful deserialization is in place.
+    #[test]
+    fn test_all_env_fields_wrong_type_fallback_to_default() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            // Numeric fields → invalid string
+            jail.set_env("DD_FLUSH_TIMEOUT", "not_a_number");
+            jail.set_env("DD_COMPRESSION_LEVEL", "not_a_number");
+            jail.set_env("DD_LOGS_CONFIG_COMPRESSION_LEVEL", "not_a_number");
+            jail.set_env("DD_APM_CONFIG_COMPRESSION_LEVEL", "not_a_number");
+            jail.set_env("DD_METRICS_CONFIG_COMPRESSION_LEVEL", "not_a_number");
+            jail.set_env("DD_CAPTURE_LAMBDA_PAYLOAD_MAX_DEPTH", "not_a_number");
+            jail.set_env("DD_DOGSTATSD_SO_RCVBUF", "not_a_number");
+            jail.set_env("DD_DOGSTATSD_BUFFER_SIZE", "not_a_number");
+            jail.set_env("DD_DOGSTATSD_QUEUE_SIZE", "not_a_number");
+            jail.set_env(
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB",
+                "not_a_number",
+            );
+            jail.set_env("DD_OTLP_CONFIG_METRICS_DELTA_TTL", "not_a_number");
+            jail.set_env(
+                "DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE",
+                "not_a_number",
+            );
+
+            // Bool fields → invalid string
+            jail.set_env("DD_SKIP_SSL_VALIDATION", "not_a_bool");
+            jail.set_env("DD_LOGS_CONFIG_USE_COMPRESSION", "not_a_bool");
+            jail.set_env(
+                "DD_APM_CONFIG_OBFUSCATION_HTTP_REMOVE_QUERY_STRING",
+                "not_a_bool",
+            );
+            jail.set_env(
+                "DD_APM_CONFIG_OBFUSCATION_HTTP_REMOVE_PATHS_WITH_DIGITS",
+                "not_a_bool",
+            );
+            jail.set_env("DD_TRACE_PROPAGATION_EXTRACT_FIRST", "not_a_bool");
+            jail.set_env("DD_TRACE_PROPAGATION_HTTP_BAGGAGE_ENABLED", "not_a_bool");
+            jail.set_env("DD_TRACE_AWS_SERVICE_REPRESENTATION_ENABLED", "not_a_bool");
+            jail.set_env("DD_ENHANCED_METRICS", "not_a_bool");
+            jail.set_env("DD_LAMBDA_PROC_ENHANCED_METRICS", "not_a_bool");
+            jail.set_env("DD_CAPTURE_LAMBDA_PAYLOAD", "not_a_bool");
+            jail.set_env("DD_COMPUTE_TRACE_STATS_ON_EXTENSION", "not_a_bool");
+            jail.set_env("DD_SERVERLESS_APPSEC_ENABLED", "not_a_bool");
+            jail.set_env("DD_API_SECURITY_ENABLED", "not_a_bool");
+            jail.set_env("DD_OTLP_CONFIG_TRACES_ENABLED", "not_a_bool");
+            jail.set_env(
+                "DD_OTLP_CONFIG_TRACES_SPAN_NAME_AS_RESOURCE_NAME",
+                "not_a_bool",
+            );
+            jail.set_env("DD_OTLP_CONFIG_IGNORE_MISSING_DATADOG_FIELDS", "not_a_bool");
+            jail.set_env("DD_OTLP_CONFIG_METRICS_ENABLED", "not_a_bool");
+            jail.set_env(
+                "DD_OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS",
+                "not_a_bool",
+            );
+            jail.set_env(
+                "DD_OTLP_CONFIG_METRICS_INSTRUMENTATION_SCOPE_METADATA_AS_TAGS",
+                "not_a_bool",
+            );
+            jail.set_env(
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_COUNT_SUM_METRICS",
+                "not_a_bool",
+            );
+            jail.set_env(
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS",
+                "not_a_bool",
+            );
+            jail.set_env("DD_OTLP_CONFIG_LOGS_ENABLED", "not_a_bool");
+            jail.set_env(
+                "DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED",
+                "not_a_bool",
+            );
+            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "not_a_bool");
+            jail.set_env("DD_LOGS_ENABLED", "not_a_bool");
+
+            // Enum fields → invalid string
+            jail.set_env("DD_LOG_LEVEL", "invalid_level_999");
+            jail.set_env("DD_SERVERLESS_FLUSH_STRATEGY", "[[[invalid");
+
+            // Duration fields → invalid string
+            jail.set_env("DD_SPAN_DEDUP_TIMEOUT", "not_a_number");
+            jail.set_env("DD_API_KEY_SECRET_RELOAD_INTERVAL", "not_a_number");
+            jail.set_env("DD_APPSEC_WAF_TIMEOUT", "not_a_number");
+            jail.set_env("DD_API_SECURITY_SAMPLE_DELAY", "not_a_number");
+
+            // JSON fields → invalid JSON
+            jail.set_env("DD_ADDITIONAL_ENDPOINTS", "not_json{{");
+            jail.set_env("DD_APM_ADDITIONAL_ENDPOINTS", "not_json{{");
+            jail.set_env("DD_LOGS_CONFIG_PROCESSING_RULES", "not_json{{");
+            jail.set_env("DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS", "not_json{{");
+            jail.set_env("DD_APM_REPLACE_TAGS", "not_json{{");
+
+            let mut config = Config::default();
+            // This MUST succeed — no single field should crash the whole config
+            EnvConfigSource
+                .load(&mut config)
+                .expect("load must not fail when env vars have wrong types");
+
+            // Every non-string field should be at its default
+            let default = Config::default();
+            assert_eq!(config.log_level, default.log_level);
+            assert_eq!(config.flush_timeout, default.flush_timeout);
+            assert_eq!(config.compression_level, default.compression_level);
+            assert_eq!(config.skip_ssl_validation, default.skip_ssl_validation);
+            assert_eq!(config.additional_endpoints, default.additional_endpoints);
+            assert_eq!(
+                config.logs_config_processing_rules,
+                default.logs_config_processing_rules
+            );
+            assert_eq!(
+                config.logs_config_use_compression,
+                default.logs_config_use_compression
+            );
+            assert_eq!(
+                config.logs_config_compression_level,
+                default.logs_config_compression_level
+            );
+            assert_eq!(
+                config.logs_config_additional_endpoints,
+                default.logs_config_additional_endpoints
+            );
+            assert_eq!(config.apm_replace_tags, default.apm_replace_tags);
+            assert_eq!(
+                config.apm_config_compression_level,
+                default.apm_config_compression_level
+            );
+            assert_eq!(
+                config.apm_additional_endpoints,
+                default.apm_additional_endpoints
+            );
+            assert_eq!(config.enhanced_metrics, default.enhanced_metrics);
+            assert_eq!(
+                config.lambda_proc_enhanced_metrics,
+                default.lambda_proc_enhanced_metrics
+            );
+            assert_eq!(
+                config.capture_lambda_payload,
+                default.capture_lambda_payload
+            );
+            assert_eq!(
+                config.capture_lambda_payload_max_depth,
+                default.capture_lambda_payload_max_depth
+            );
+            assert_eq!(
+                config.serverless_flush_strategy,
+                default.serverless_flush_strategy
+            );
+            assert_eq!(
+                config.serverless_logs_enabled,
+                default.serverless_logs_enabled
+            );
+            assert_eq!(
+                config.compute_trace_stats_on_extension,
+                default.compute_trace_stats_on_extension
+            );
+            assert_eq!(config.span_dedup_timeout, default.span_dedup_timeout);
+            assert_eq!(
+                config.api_key_secret_reload_interval,
+                default.api_key_secret_reload_interval
+            );
+            assert_eq!(
+                config.serverless_appsec_enabled,
+                default.serverless_appsec_enabled
+            );
+            assert_eq!(config.appsec_waf_timeout, default.appsec_waf_timeout);
+            assert_eq!(config.api_security_enabled, default.api_security_enabled);
+            assert_eq!(
+                config.api_security_sample_delay,
+                default.api_security_sample_delay
+            );
+            assert_eq!(config.dogstatsd_so_rcvbuf, default.dogstatsd_so_rcvbuf);
+            assert_eq!(config.dogstatsd_buffer_size, default.dogstatsd_buffer_size);
+            assert_eq!(config.dogstatsd_queue_size, default.dogstatsd_queue_size);
+            assert_eq!(
+                config.otlp_config_traces_enabled,
+                default.otlp_config_traces_enabled
+            );
+            assert_eq!(
+                config.otlp_config_metrics_enabled,
+                default.otlp_config_metrics_enabled
+            );
+            assert_eq!(
+                config.otlp_config_logs_enabled,
+                default.otlp_config_logs_enabled
+            );
+            assert_eq!(
+                config.metrics_config_compression_level,
+                default.metrics_config_compression_level
+            );
+            Ok(())
+        });
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]
