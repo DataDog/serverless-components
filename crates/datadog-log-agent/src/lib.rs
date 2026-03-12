@@ -24,3 +24,9 @@ pub use flusher::LogFlusher;
 pub use intake_entry::IntakeEntry;
 pub use logs_additional_endpoint::LogsAdditionalEndpoint;
 pub use server::{LogServer, LogServerConfig};
+
+// Aliases for consumers that use the older names from the adoption plan.
+/// Alias for [`Destination`] — use `Destination` in new code.
+pub type FlusherMode = Destination;
+/// Alias for [`IntakeEntry`] — use `IntakeEntry` in new code.
+pub type LogEntry = IntakeEntry;
