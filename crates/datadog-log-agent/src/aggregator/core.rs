@@ -12,18 +12,18 @@ use crate::intake_entry::IntakeEntry;
 /// Stores pre-serialized JSON strings in a FIFO queue. A batch is "full"
 /// when it reaches `MAX_BATCH_ENTRIES` entries or `MAX_CONTENT_BYTES` of
 /// uncompressed content.
-pub struct LogAggregator {
+pub struct Aggregator {
     messages: VecDeque<String>,
     current_size_bytes: usize,
 }
 
-impl Default for LogAggregator {
+impl Default for Aggregator {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LogAggregator {
+impl Aggregator {
     /// Create a new, empty aggregator.
     pub fn new() -> Self {
         Self {
@@ -149,14 +149,14 @@ mod tests {
 
     #[test]
     fn test_new_aggregator_is_empty() {
-        let agg = LogAggregator::new();
+        let agg = Aggregator::new();
         assert!(agg.is_empty());
         assert_eq!(agg.len(), 0);
     }
 
     #[test]
     fn test_insert_single_entry() {
-        let mut agg = LogAggregator::new();
+        let mut agg = Aggregator::new();
         let full = agg.insert(&make_entry("hello")).expect("insert failed");
         assert!(!full, "single entry should not fill the batch");
         assert_eq!(agg.len(), 1);
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_get_batch_returns_valid_json_array() {
-        let mut agg = LogAggregator::new();
+        let mut agg = Aggregator::new();
         agg.insert(&make_entry("line 1")).expect("insert");
         agg.insert(&make_entry("line 2")).expect("insert");
 
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_get_batch_drains_aggregator() {
-        let mut agg = LogAggregator::new();
+        let mut agg = Aggregator::new();
         agg.insert(&make_entry("log")).expect("insert");
 
         let _ = agg.get_batch();
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_entry_too_large_returns_error() {
-        let mut agg = LogAggregator::new();
+        let mut agg = Aggregator::new();
         // Construct an entry whose JSON serialization exceeds MAX_LOG_BYTES
         let big_message = "x".repeat(crate::constants::MAX_LOG_BYTES + 1);
         let entry = make_entry(&big_message);
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn test_insert_returns_true_when_batch_full_by_count() {
         use crate::constants::MAX_BATCH_ENTRIES;
-        let mut agg = LogAggregator::new();
+        let mut agg = Aggregator::new();
         let entry = make_entry("x");
 
         for _ in 0..(MAX_BATCH_ENTRIES - 1) {
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn test_get_all_batches_splits_large_queue() {
         use crate::constants::MAX_BATCH_ENTRIES;
-        let mut agg = LogAggregator::new();
+        let mut agg = Aggregator::new();
         let entry = make_entry("x");
 
         for _ in 0..(MAX_BATCH_ENTRIES + 5) {
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_get_all_batches_empty_returns_empty_vec() {
-        let mut agg = LogAggregator::new();
+        let mut agg = Aggregator::new();
         assert!(agg.get_all_batches().is_empty());
     }
 
@@ -250,7 +250,7 @@ mod tests {
         // Fill with entries whose sizes sum to just under MAX_CONTENT_BYTES so
         // that the framing bytes (`[`, `]`, commas) would push a naive
         // implementation over the limit.
-        let mut agg = LogAggregator::new();
+        let mut agg = Aggregator::new();
         // Each entry's serialized JSON is roughly 50 bytes; pack enough entries
         // that their raw sum approaches MAX_CONTENT_BYTES.
         let entry = make_entry("x");
