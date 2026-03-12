@@ -157,7 +157,7 @@ fn plain_entry(i: usize) -> IntakeEntry {
         service: Some("test-service".to_string()),
         ddsource: Some("rust".to_string()),
         ddtags: Some("env:local".to_string()),
-        status: if i % 5 == 0 {
+        status: if i.is_multiple_of(5) {
             Some("error".to_string())
         } else {
             Some("info".to_string())

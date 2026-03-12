@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use crate::constants::{DEFAULT_COMPRESSION_LEVEL, DEFAULT_FLUSH_TIMEOUT_SECS, DEFAULT_SITE};
-use crate::logs_additional_endpoint::{parse_additional_endpoints, LogsAdditionalEndpoint};
+use crate::logs_additional_endpoint::{LogsAdditionalEndpoint, parse_additional_endpoints};
 
 /// Controls where and how logs are shipped.
 #[derive(Debug, Clone)]
@@ -85,7 +85,9 @@ impl LogFlusherConfig {
             let url =
                 std::env::var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL").unwrap_or_default();
             if url.is_empty() {
-                tracing::warn!("OPW mode enabled but DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL is not set — log flush will fail");
+                tracing::warn!(
+                    "OPW mode enabled but DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL is not set — log flush will fail"
+                );
             }
             Destination::ObservabilityPipelinesWorker { url }
         } else {

@@ -405,11 +405,13 @@ fn start_log_agent(
     };
 
     // Fail fast: OPW mode with an empty URL will always produce a network error at flush time.
-    if let LogDestination::ObservabilityPipelinesWorker { url } = &config.mode {
-        if url.is_empty() {
-            error!("OPW mode enabled but DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL is empty — log agent disabled");
-            return None;
-        }
+    if let LogDestination::ObservabilityPipelinesWorker { url } = &config.mode
+        && url.is_empty()
+    {
+        error!(
+            "OPW mode enabled but DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL is empty — log agent disabled"
+        );
+        return None;
     }
 
     // Start the HTTP intake server so external adapters can POST log entries.
@@ -473,11 +475,17 @@ mod log_agent_integration_tests {
         use super::start_log_agent;
         // Enable OPW mode with a deliberately empty URL — the production guard
         // inside start_log_agent must catch this and return None.
-        std::env::set_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED", "true");
-        std::env::set_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL", "");
+        // SAFETY: test-only, single-threaded setup before any spawned tasks.
+        unsafe {
+            std::env::set_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED", "true");
+            std::env::set_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL", "");
+        }
         let result = start_log_agent(Some("test-key".to_string()), None, 0);
-        std::env::remove_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED");
-        std::env::remove_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL");
+        // SAFETY: test-only cleanup.
+        unsafe {
+            std::env::remove_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED");
+            std::env::remove_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL");
+        }
         assert!(
             result.is_none(),
             "start_log_agent must return None when OPW URL is empty"
@@ -490,7 +498,7 @@ mod log_agent_integration_tests {
     #[tokio::test]
     #[allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::expect_used)]
     async fn test_log_server_network_intake_end_to_end() {
-        use tokio::time::{sleep, Duration};
+        use tokio::time::{Duration, sleep};
 
         let (service, handle) = AggregatorService::new();
         tokio::spawn(service.run());

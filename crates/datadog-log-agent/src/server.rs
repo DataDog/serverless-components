@@ -141,13 +141,12 @@ async fn handle_request(
         .get(hyper::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok())
+        && content_length > MAX_BODY_BYTES
     {
-        if content_length > MAX_BODY_BYTES {
-            return Ok(Response::builder()
-                .status(StatusCode::PAYLOAD_TOO_LARGE)
-                .body("payload too large".to_string())
-                .unwrap_or_default());
-        }
+        return Ok(Response::builder()
+            .status(StatusCode::PAYLOAD_TOO_LARGE)
+            .body("payload too large".to_string())
+            .unwrap_or_default());
     }
 
     let bytes = match req.collect().await {
@@ -207,7 +206,7 @@ async fn handle_request(
 mod tests {
     use super::*;
     use crate::aggregator::AggregatorService;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     /// Bind `:0`, record the OS-assigned port, drop the listener, then start
     /// `LogServer` on that port. Returns the base URL.

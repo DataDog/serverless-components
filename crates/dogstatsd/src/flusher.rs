@@ -231,6 +231,7 @@ async fn should_try_next_batch(resp: Result<Response, ShippingError>) -> (bool, 
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::aggregator::AggregatorService;

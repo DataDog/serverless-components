@@ -104,7 +104,7 @@ mod tests {
 
         aggregator.add(payload);
         assert_eq!(aggregator.queue.len(), 1);
-        assert_eq!(aggregator.queue[0].is_empty(), false);
+        assert!(!aggregator.queue[0].is_empty());
         assert_eq!(aggregator.queue[0].len(), 1);
     }
 
