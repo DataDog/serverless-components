@@ -5,11 +5,11 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
 
 use crate::aggregator::LogAggregator;
-use crate::log_entry::LogEntry;
+use crate::intake_entry::IntakeEntry;
 
 #[derive(Debug)]
 enum LogAggregatorCommand {
-    InsertBatch(Vec<LogEntry>),
+    InsertBatch(Vec<IntakeEntry>),
     GetBatches(oneshot::Sender<Vec<Vec<u8>>>),
     Shutdown,
 }
@@ -24,7 +24,7 @@ impl AggregatorHandle {
     /// Queue a batch of log entries for aggregation.
     ///
     /// Returns an error only if the service has already stopped.
-    pub fn insert_batch(&self, entries: Vec<LogEntry>) -> Result<(), String> {
+    pub fn insert_batch(&self, entries: Vec<IntakeEntry>) -> Result<(), String> {
         self.tx
             .send(LogAggregatorCommand::InsertBatch(entries))
             .map_err(|e| format!("failed to send InsertBatch: {e}"))
@@ -108,10 +108,10 @@ impl AggregatorService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::log_entry::LogEntry;
+    use crate::intake_entry::IntakeEntry;
 
-    fn make_entry(msg: &str) -> LogEntry {
-        LogEntry::from_message(msg, 1_700_000_000_000)
+    fn make_entry(msg: &str) -> IntakeEntry {
+        IntakeEntry::from_message(msg, 1_700_000_000_000)
     }
 
     #[tokio::test]
@@ -149,7 +149,7 @@ mod tests {
         let (service, handle) = AggregatorService::new();
         let task = tokio::spawn(service.run());
 
-        let big = LogEntry::from_message("x".repeat(crate::constants::MAX_LOG_BYTES + 1), 0);
+        let big = IntakeEntry::from_message("x".repeat(crate::constants::MAX_LOG_BYTES + 1), 0);
         handle.insert_batch(vec![big]).expect("send ok");
 
         let batches = handle.get_batches().await.expect("get_batches");

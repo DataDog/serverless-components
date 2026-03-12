@@ -285,13 +285,13 @@ mod tests {
     use super::*;
     use crate::aggregator::AggregatorService;
     use crate::config::{FlusherMode, LogFlusherConfig};
-    use crate::log_entry::LogEntry;
+    use crate::intake_entry::IntakeEntry;
     use crate::logs_additional_endpoint::LogsAdditionalEndpoint;
     use mockito::Matcher;
     use std::time::Duration;
 
-    fn make_entry(msg: &str) -> LogEntry {
-        LogEntry::from_message(msg, 1_700_000_000_000)
+    fn make_entry(msg: &str) -> IntakeEntry {
+        IntakeEntry::from_message(msg, 1_700_000_000_000)
     }
 
     fn config_for_mock(mock_url: &str) -> LogFlusherConfig {

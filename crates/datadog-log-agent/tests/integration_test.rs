@@ -6,7 +6,7 @@
 //! These tests exercise two intake paths:
 //!
 //! **Direct intake** (bottlecap / in-process):
-//!   `LogEntry` → `AggregatorHandle::insert_batch` → `LogFlusher::flush` → HTTP endpoint
+//!   `IntakeEntry` → `AggregatorHandle::insert_batch` → `LogFlusher::flush` → HTTP endpoint
 //!
 //! **Network intake** (serverless-compat / over HTTP):
 //!   HTTP POST → `LogServer` → `AggregatorHandle::insert_batch` → `LogFlusher::flush` → HTTP endpoint
@@ -18,7 +18,7 @@
 #![allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::expect_used)]
 
 use datadog_log_agent::{
-    AggregatorService, FlusherMode, LogEntry, LogFlusher, LogFlusherConfig, LogServer,
+    AggregatorService, FlusherMode, IntakeEntry, LogFlusher, LogFlusherConfig, LogServer,
     LogServerConfig, LogsAdditionalEndpoint,
 };
 use mockito::{Matcher, Server};
@@ -48,8 +48,8 @@ fn opw_config(mock_url: &str) -> LogFlusherConfig {
     }
 }
 
-fn entry(msg: &str) -> LogEntry {
-    LogEntry::from_message(msg, 1_700_000_000_000)
+fn entry(msg: &str) -> IntakeEntry {
+    IntakeEntry::from_message(msg, 1_700_000_000_000)
 }
 
 // ── Pipeline happy path ───────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ async fn test_payload_is_json_array_with_correct_fields() {
     let _task = tokio::spawn(svc.run());
 
     handle
-        .insert_batch(vec![LogEntry {
+        .insert_batch(vec![IntakeEntry {
             message: "user login".to_string(),
             timestamp: 1_700_000_001_000,
             hostname: Some("web-01".to_string()),
@@ -144,7 +144,7 @@ async fn test_absent_optional_fields_not_serialized() {
     let _task = tokio::spawn(svc.run());
 
     handle
-        .insert_batch(vec![LogEntry::from_message("minimal", 0)])
+        .insert_batch(vec![IntakeEntry::from_message("minimal", 0)])
         .expect("insert");
 
     let batches = handle.get_batches().await.expect("get_batches");
@@ -177,7 +177,7 @@ async fn test_lambda_attributes_flattened_at_top_level() {
     );
 
     handle
-        .insert_batch(vec![LogEntry {
+        .insert_batch(vec![IntakeEntry {
             message: "invocation complete".to_string(),
             timestamp: 0,
             hostname: Some("my-fn".to_string()),
@@ -217,7 +217,7 @@ async fn test_azure_attributes_flattened_at_top_level() {
     );
 
     handle
-        .insert_batch(vec![LogEntry {
+        .insert_batch(vec![IntakeEntry {
             message: "azure function triggered".to_string(),
             timestamp: 0,
             hostname: Some("my-azure-fn".to_string()),
@@ -257,7 +257,7 @@ async fn test_max_entries_fits_in_one_batch() {
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
 
-    let entries: Vec<LogEntry> = (0..MAX).map(|i| entry(&format!("log {i}"))).collect();
+    let entries: Vec<IntakeEntry> = (0..MAX).map(|i| entry(&format!("log {i}"))).collect();
     handle.insert_batch(entries).expect("insert");
 
     let batches = handle.get_batches().await.expect("get_batches");
@@ -288,7 +288,7 @@ async fn test_overflow_produces_two_batches_and_two_posts() {
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
 
-    let entries: Vec<LogEntry> = (0..=MAX).map(|i| entry(&format!("log {i}"))).collect();
+    let entries: Vec<IntakeEntry> = (0..=MAX).map(|i| entry(&format!("log {i}"))).collect();
     handle.insert_batch(entries).expect("insert");
 
     let result = LogFlusher::new(opw_config(&server.url()), build_client(), handle)
@@ -315,7 +315,7 @@ async fn test_oversized_entry_dropped_valid_entries_still_flush() {
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
 
-    let oversized = LogEntry::from_message(
+    let oversized = IntakeEntry::from_message(
         "x".repeat(datadog_log_agent::constants::MAX_LOG_BYTES + 1),
         0,
     );
@@ -339,7 +339,7 @@ async fn test_all_oversized_entries_produces_no_request() {
     let (svc, handle) = AggregatorService::new();
     let _task = tokio::spawn(svc.run());
 
-    let oversized = LogEntry::from_message(
+    let oversized = IntakeEntry::from_message(
         "x".repeat(datadog_log_agent::constants::MAX_LOG_BYTES + 1),
         0,
     );

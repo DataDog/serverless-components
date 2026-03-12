@@ -4,7 +4,7 @@
 //! HTTP intake server for the log agent.
 //!
 //! [`LogServer`] listens on a TCP port and accepts `POST /v1/input` requests
-//! whose body is a JSON array of [`crate::LogEntry`] values.  Entries are
+//! whose body is a JSON array of [`crate::IntakeEntry`] values.  Entries are
 //! forwarded to the shared [`crate::AggregatorHandle`] for batching and
 //! eventual flushing.
 //!
@@ -37,7 +37,7 @@ use hyper_util::rt::TokioIo;
 use tracing::{debug, error, warn};
 
 use crate::aggregator::AggregatorHandle;
-use crate::log_entry::LogEntry;
+use crate::intake_entry::IntakeEntry;
 
 const LOG_INTAKE_PATH: &str = "/v1/input";
 /// Maximum accepted request body size in bytes (4 MiB). Requests larger than
@@ -167,7 +167,7 @@ async fn handle_request(
             .unwrap_or_default());
     }
 
-    let entries: Vec<LogEntry> = match serde_json::from_slice(&bytes) {
+    let entries: Vec<IntakeEntry> = match serde_json::from_slice(&bytes) {
         Ok(e) => e,
         Err(e) => {
             warn!("log server: failed to parse log entries: {e}");
@@ -418,11 +418,11 @@ mod tests {
         assert_eq!(arr[0]["message"], "chunked");
     }
 
-    /// All optional LogEntry fields (hostname, service, ddsource, ddtags,
+    /// All optional IntakeEntry fields (hostname, service, ddsource, ddtags,
     /// status) and arbitrary attributes must survive the HTTP round-trip
     /// through the server and appear intact in the aggregated batch.
     #[tokio::test]
-    async fn test_full_log_entry_fields_preserved_through_http() {
+    async fn test_full_intake_entry_fields_preserved_through_http() {
         let (service, handle) = AggregatorService::new();
         tokio::spawn(service.run());
 
