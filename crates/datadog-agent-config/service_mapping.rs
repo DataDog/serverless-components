@@ -12,7 +12,7 @@ where
     let s: String = match String::deserialize(deserializer) {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("Failed to deserialize service mapping: {e}, ignoring");
+            tracing::warn!("Failed to deserialize service mapping: {e}, ignoring");
             return Ok(HashMap::new());
         }
     };
@@ -28,7 +28,7 @@ where
             if let (Some(service), Some(to_map)) = (service, to_map) {
                 Some((service.trim().to_string(), to_map.trim().to_string()))
             } else {
-                tracing::error!("Failed to parse service mapping '{}', expected format 'service:mapped_service', ignoring", pair.trim());
+                tracing::warn!("Failed to parse service mapping '{}', expected format 'service:mapped_service', ignoring", pair.trim());
                 None
             }
         })

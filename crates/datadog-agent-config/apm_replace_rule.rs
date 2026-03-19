@@ -28,7 +28,7 @@ impl<'de> Visitor<'de> for StringOrReplaceRulesVisitor {
         match serde_json::from_str::<serde_json::Value>(value) {
             Ok(_) => Ok(value.to_string()),
             Err(e) => {
-                tracing::error!("Invalid JSON string for APM replace rules: {}", e);
+                tracing::warn!("Invalid JSON string for APM replace rules: {}", e);
                 Ok(String::new())
             }
         }
@@ -46,7 +46,7 @@ impl<'de> Visitor<'de> for StringOrReplaceRulesVisitor {
         match serde_json::to_string(&rules) {
             Ok(json) => Ok(json),
             Err(e) => {
-                tracing::error!("Failed to convert YAML rules to JSON: {}", e);
+                tracing::warn!("Failed to convert YAML rules to JSON: {}", e);
                 Ok(String::new())
             }
         }
@@ -62,7 +62,7 @@ where
     let json_string = match deserializer.deserialize_any(StringOrReplaceRulesVisitor) {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("Failed to deserialize APM replace rules: {e}, ignoring");
+            tracing::warn!("Failed to deserialize APM replace rules: {e}, ignoring");
             return Ok(None);
         }
     };
@@ -70,7 +70,7 @@ where
     match parse_rules_from_string(&json_string) {
         Ok(rules) => Ok(Some(rules)),
         Err(e) => {
-            tracing::error!("Failed to parse APM replace rule, ignoring: {}", e);
+            tracing::warn!("Failed to parse APM replace rule, ignoring: {}", e);
             Ok(None)
         }
     }
