@@ -15,7 +15,7 @@ use crate::{
     deserialize_optional_bool_from_anything, deserialize_optional_duration_from_microseconds,
     deserialize_optional_duration_from_seconds,
     deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
-    deserialize_string_or_int, deserialize_trace_propagation_style,
+    deserialize_string_or_int, deserialize_trace_propagation_style, deserialize_with_default,
     flush_strategy::FlushStrategy,
     log_level::LogLevel,
     logs_additional_endpoints::{LogsAdditionalEndpoint, deserialize_logs_additional_endpoints},
@@ -43,6 +43,7 @@ pub struct EnvConfig {
     ///
     /// Minimum log level of the Datadog Agent.
     /// Valid log levels are: trace, debug, info, warn, and error.
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub log_level: Option<LogLevel>,
 
     /// @env `DD_FLUSH_TIMEOUT`
@@ -398,6 +399,7 @@ pub struct EnvConfig {
     /// @env `DD_SERVERLESS_FLUSH_STRATEGY`
     ///
     /// The flush strategy to use for AWS Lambda.
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub serverless_flush_strategy: Option<FlushStrategy>,
     /// @env `DD_ENHANCED_METRICS`
     ///
@@ -715,6 +717,249 @@ mod tests {
         log_level::LogLevel,
         processing_rule::{Kind, ProcessingRule},
     };
+
+    /// Comprehensive test: every DD_ env var is set. Non-string fields get
+    /// invalid values and must fall back to defaults; string fields get
+    /// non-default values and must be preserved.
+    ///
+    /// The field count is derived from the source file so the test will fail
+    /// automatically when a field is added to `EnvConfig` without a
+    /// corresponding entry in the arrays below.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn test_all_env_fields_wrong_type_fallback_to_default() {
+        // Non-string fields → invalid values that exercise graceful fallback.
+        let invalid_non_string_env_vars: &[(&str, &str)] = &[
+            // Numeric
+            ("DD_FLUSH_TIMEOUT", "not_a_number"),
+            ("DD_COMPRESSION_LEVEL", "not_a_number"),
+            ("DD_LOGS_CONFIG_COMPRESSION_LEVEL", "not_a_number"),
+            ("DD_APM_CONFIG_COMPRESSION_LEVEL", "not_a_number"),
+            ("DD_METRICS_CONFIG_COMPRESSION_LEVEL", "not_a_number"),
+            ("DD_CAPTURE_LAMBDA_PAYLOAD_MAX_DEPTH", "not_a_number"),
+            ("DD_DOGSTATSD_SO_RCVBUF", "not_a_number"),
+            ("DD_DOGSTATSD_BUFFER_SIZE", "not_a_number"),
+            ("DD_DOGSTATSD_QUEUE_SIZE", "not_a_number"),
+            (
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB",
+                "not_a_number",
+            ),
+            ("DD_OTLP_CONFIG_METRICS_DELTA_TTL", "not_a_number"),
+            (
+                "DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE",
+                "not_a_number",
+            ),
+            // Bool
+            ("DD_SKIP_SSL_VALIDATION", "not_a_bool"),
+            ("DD_LOGS_CONFIG_USE_COMPRESSION", "not_a_bool"),
+            (
+                "DD_APM_CONFIG_OBFUSCATION_HTTP_REMOVE_QUERY_STRING",
+                "not_a_bool",
+            ),
+            (
+                "DD_APM_CONFIG_OBFUSCATION_HTTP_REMOVE_PATHS_WITH_DIGITS",
+                "not_a_bool",
+            ),
+            ("DD_TRACE_PROPAGATION_EXTRACT_FIRST", "not_a_bool"),
+            ("DD_TRACE_PROPAGATION_HTTP_BAGGAGE_ENABLED", "not_a_bool"),
+            ("DD_TRACE_AWS_SERVICE_REPRESENTATION_ENABLED", "not_a_bool"),
+            ("DD_ENHANCED_METRICS", "not_a_bool"),
+            ("DD_LAMBDA_PROC_ENHANCED_METRICS", "not_a_bool"),
+            ("DD_CAPTURE_LAMBDA_PAYLOAD", "not_a_bool"),
+            ("DD_COMPUTE_TRACE_STATS_ON_EXTENSION", "not_a_bool"),
+            ("DD_SERVERLESS_APPSEC_ENABLED", "not_a_bool"),
+            ("DD_API_SECURITY_ENABLED", "not_a_bool"),
+            ("DD_OTLP_CONFIG_TRACES_ENABLED", "not_a_bool"),
+            (
+                "DD_OTLP_CONFIG_TRACES_SPAN_NAME_AS_RESOURCE_NAME",
+                "not_a_bool",
+            ),
+            ("DD_OTLP_CONFIG_IGNORE_MISSING_DATADOG_FIELDS", "not_a_bool"),
+            ("DD_OTLP_CONFIG_METRICS_ENABLED", "not_a_bool"),
+            (
+                "DD_OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS",
+                "not_a_bool",
+            ),
+            (
+                "DD_OTLP_CONFIG_METRICS_INSTRUMENTATION_SCOPE_METADATA_AS_TAGS",
+                "not_a_bool",
+            ),
+            (
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_COUNT_SUM_METRICS",
+                "not_a_bool",
+            ),
+            (
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS",
+                "not_a_bool",
+            ),
+            ("DD_OTLP_CONFIG_LOGS_ENABLED", "not_a_bool"),
+            (
+                "DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED",
+                "not_a_bool",
+            ),
+            ("DD_SERVERLESS_LOGS_ENABLED", "not_a_bool"),
+            ("DD_LOGS_ENABLED", "not_a_bool"),
+            // Enum
+            ("DD_LOG_LEVEL", "invalid_level_999"),
+            ("DD_SERVERLESS_FLUSH_STRATEGY", "[[[invalid"),
+            // Duration
+            ("DD_SPAN_DEDUP_TIMEOUT", "not_a_number"),
+            ("DD_API_KEY_SECRET_RELOAD_INTERVAL", "not_a_number"),
+            ("DD_APPSEC_WAF_TIMEOUT", "not_a_number"),
+            ("DD_API_SECURITY_SAMPLE_DELAY", "not_a_number"),
+            // JSON
+            ("DD_ADDITIONAL_ENDPOINTS", "not_json{{"),
+            ("DD_APM_ADDITIONAL_ENDPOINTS", "not_json{{"),
+            ("DD_LOGS_CONFIG_PROCESSING_RULES", "not_json{{"),
+            ("DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS", "not_json{{"),
+            ("DD_APM_REPLACE_TAGS", "not_json{{"),
+            // Comma/space-separated and key:value
+            ("DD_PROXY_NO_PROXY", ""),
+            ("DD_SERVICE_MAPPING", "no-colon-here"),
+            ("DD_APM_FEATURES", ""),
+            ("DD_APM_FILTER_TAGS_REQUIRE", ""),
+            ("DD_APM_FILTER_TAGS_REJECT", ""),
+            ("DD_APM_FILTER_TAGS_REGEX_REQUIRE", ""),
+            ("DD_APM_FILTER_TAGS_REGEX_REJECT", ""),
+            ("DD_TAGS", "no-colon"),
+            ("DD_OTLP_CONFIG_TRACES_SPAN_NAME_REMAPPINGS", "no-colon"),
+            ("DD_TRACE_PROPAGATION_STYLE", "invalid_style"),
+            ("DD_TRACE_PROPAGATION_STYLE_EXTRACT", "invalid_style"),
+        ];
+
+        // String fields → valid non-default values to prove they survive
+        // alongside broken non-string fields.
+        let string_env_vars: &[(&str, &str)] = &[
+            ("DD_SITE", "custom-site.example.com"),
+            ("DD_API_KEY", "test-api-key-12345"),
+            ("DD_PROXY_HTTPS", "https://proxy.example.com"),
+            ("DD_HTTP_PROTOCOL", "http1"),
+            ("DD_TLS_CERT_FILE", "/opt/ca-cert.pem"),
+            ("DD_DD_URL", "https://custom-metrics.example.com"),
+            ("DD_URL", "https://custom-app.example.com"),
+            ("DD_ENV", "test_env"),
+            ("DD_SERVICE", "test_service"),
+            ("DD_VERSION", "v1.0.0"),
+            (
+                "DD_LOGS_CONFIG_LOGS_DD_URL",
+                "https://custom-logs.example.com",
+            ),
+            (
+                "DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL",
+                "https://opw.example.com",
+            ),
+            ("DD_APM_DD_URL", "https://custom-apm.example.com"),
+            ("DD_STATSD_METRIC_NAMESPACE", "testns"),
+            (
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT",
+                "0.0.0.0:4318",
+            ),
+            (
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT",
+                "0.0.0.0:4317",
+            ),
+            ("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT", "tcp"),
+            ("DD_OTLP_CONFIG_METRICS_TAG_CARDINALITY", "orchestrator"),
+            ("DD_OTLP_CONFIG_METRICS_HISTOGRAMS_MODE", "distributions"),
+            (
+                "DD_OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE",
+                "to_delta",
+            ),
+            (
+                "DD_OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIV_MONOTONIC_VALUE",
+                "keep",
+            ),
+            ("DD_OTLP_CONFIG_METRICS_SUMMARIES_MODE", "noquantiles"),
+            (
+                "DD_API_KEY_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123:secret:key",
+            ),
+            ("DD_KMS_API_KEY", "kms-encrypted-key"),
+            (
+                "DD_API_KEY_SSM_ARN",
+                "arn:aws:ssm:us-east-1:123:parameter/key",
+            ),
+            ("DD_APPSEC_RULES", "/opt/custom-rules.json"),
+        ];
+
+        // Programmatic guard: count `pub ` fields in the EnvConfig struct from
+        // the source file. If a field is added without updating the arrays
+        // above, this assertion will fail.
+        let source = include_str!("env.rs");
+        let struct_start = source
+            .find("pub struct EnvConfig")
+            .expect("EnvConfig not found in source");
+        let struct_body = &source[struct_start..];
+        let struct_end = struct_body
+            .find("\n}\n")
+            .expect("EnvConfig closing brace not found");
+        let field_count = struct_body[..struct_end].matches("\n    pub ").count();
+        assert_eq!(
+            invalid_non_string_env_vars.len() + string_env_vars.len(),
+            field_count,
+            "Field count mismatch: EnvConfig has {field_count} fields but test covers {}. \
+             Add new fields to invalid_non_string_env_vars or string_env_vars.",
+            invalid_non_string_env_vars.len() + string_env_vars.len()
+        );
+
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            for (key, value) in invalid_non_string_env_vars {
+                jail.set_env(key, value);
+            }
+            for (key, value) in string_env_vars {
+                jail.set_env(key, value);
+            }
+
+            let mut config = Config::default();
+            // This MUST succeed — no single field should crash the whole config
+            EnvConfigSource
+                .load(&mut config)
+                .expect("load must not fail when env vars have wrong types");
+
+            // Build expected: string fields have their non-default values,
+            // all non-string fields stay at defaults.
+            let mut expected = Config::default();
+            // String fields (merge_string! → Config String)
+            expected.site = "custom-site.example.com".to_string();
+            expected.api_key = "test-api-key-12345".to_string();
+            expected.dd_url = "https://custom-metrics.example.com".to_string();
+            expected.url = "https://custom-app.example.com".to_string();
+            expected.logs_config_logs_dd_url = "https://custom-logs.example.com".to_string();
+            expected.observability_pipelines_worker_logs_url =
+                "https://opw.example.com".to_string();
+            expected.apm_dd_url = "https://custom-apm.example.com".to_string();
+            expected.api_key_secret_arn =
+                "arn:aws:secretsmanager:us-east-1:123:secret:key".to_string();
+            expected.kms_api_key = "kms-encrypted-key".to_string();
+            expected.api_key_ssm_arn = "arn:aws:ssm:us-east-1:123:parameter/key".to_string();
+            // Option<String> fields (merge_option! → Config Option<String>)
+            expected.proxy_https = Some("https://proxy.example.com".to_string());
+            expected.http_protocol = Some("http1".to_string());
+            expected.tls_cert_file = Some("/opt/ca-cert.pem".to_string());
+            expected.env = Some("test_env".to_string());
+            expected.service = Some("test_service".to_string());
+            expected.version = Some("v1.0.0".to_string());
+            expected.statsd_metric_namespace = Some("testns".to_string());
+            expected.otlp_config_receiver_protocols_http_endpoint =
+                Some("0.0.0.0:4318".to_string());
+            expected.otlp_config_receiver_protocols_grpc_endpoint =
+                Some("0.0.0.0:4317".to_string());
+            expected.otlp_config_receiver_protocols_grpc_transport = Some("tcp".to_string());
+            expected.otlp_config_metrics_tag_cardinality = Some("orchestrator".to_string());
+            expected.otlp_config_metrics_histograms_mode = Some("distributions".to_string());
+            expected.otlp_config_metrics_sums_cumulative_monotonic_mode =
+                Some("to_delta".to_string());
+            expected.otlp_config_metrics_sums_initial_cumulativ_monotonic_value =
+                Some("keep".to_string());
+            expected.otlp_config_metrics_summaries_mode = Some("noquantiles".to_string());
+            expected.appsec_rules = Some("/opt/custom-rules.json".to_string());
+
+            assert_eq!(config, expected);
+            Ok(())
+        });
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]
