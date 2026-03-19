@@ -524,7 +524,7 @@ where
     match Value::deserialize(deserializer)? {
         Value::String(s) => Ok(Some(s)),
         other => {
-            error!(
+            warn!(
                 "Failed to parse value, expected a string, got: {}, ignoring",
                 other
             );
@@ -548,7 +548,7 @@ where
         }
         Value::Number(n) => Ok(Some(n.to_string())),
         _ => {
-            error!("Failed to parse value, expected a string or an integer, ignoring");
+            warn!("Failed to parse value, expected a string or an integer, ignoring");
             Ok(None)
         }
     }
@@ -568,7 +568,7 @@ where
         Some(value) => match deserialize_bool_from_anything(value) {
             Ok(bool_result) => Ok(Some(bool_result)),
             Err(e) => {
-                error!("Failed to parse bool value: {}, ignoring", e);
+                warn!("Failed to parse bool value: {}, ignoring", e);
                 Ok(None)
             }
         },
@@ -582,7 +582,7 @@ fn parse_key_value_tag(tag: &str) -> Option<(String, String)> {
     if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
         Some((parts[0].to_string(), parts[1].to_string()))
     } else {
-        error!(
+        warn!(
             "Failed to parse tag '{}', expected format 'key:value', ignoring",
             tag
         );
@@ -626,7 +626,7 @@ where
         where
             E: serde::de::Error,
         {
-            error!(
+            warn!(
                 "Failed to parse tags: expected string in format 'key:value', got number {}, ignoring",
                 value
             );
@@ -637,7 +637,7 @@ where
         where
             E: serde::de::Error,
         {
-            error!(
+            warn!(
                 "Failed to parse tags: expected string in format 'key:value', got number {}, ignoring",
                 value
             );
@@ -648,7 +648,7 @@ where
         where
             E: serde::de::Error,
         {
-            error!(
+            warn!(
                 "Failed to parse tags: expected string in format 'key:value', got number {}, ignoring",
                 value
             );
@@ -659,7 +659,7 @@ where
         where
             E: serde::de::Error,
         {
-            error!(
+            warn!(
                 "Failed to parse tags: expected string in format 'key:value', got boolean {}, ignoring",
                 value
             );
@@ -692,7 +692,7 @@ where
     let array: Vec<String> = match Vec::deserialize(deserializer) {
         Ok(v) => v,
         Err(e) => {
-            error!("Failed to deserialize tags array: {e}, ignoring");
+            warn!("Failed to deserialize tags array: {e}, ignoring");
             return Ok(HashMap::new());
         }
     };
@@ -760,7 +760,7 @@ where
     match Option::<T>::deserialize(deserializer) {
         Ok(value) => Ok(value),
         Err(e) => {
-            error!("Failed to deserialize optional value: {}, ignoring", e);
+            warn!("Failed to deserialize optional value: {}, ignoring", e);
             Ok(None)
         }
     }
@@ -794,7 +794,7 @@ pub fn deserialize_optional_duration_from_microseconds<'de, D: Deserializer<'de>
     match Option::<u64>::deserialize(deserializer) {
         Ok(opt) => Ok(opt.map(Duration::from_micros)),
         Err(e) => {
-            error!("Failed to deserialize duration (microseconds): {e}, ignoring");
+            warn!("Failed to deserialize duration (microseconds): {e}, ignoring");
             Ok(None)
         }
     }
@@ -811,34 +811,30 @@ pub fn deserialize_optional_duration_from_seconds<'de, D: Deserializer<'de>>(
                 Ok(Some(Duration::from_secs(u)))
             } else if let Some(i) = n.as_i64() {
                 if i < 0 {
-                    error!(
-                        "Failed to parse duration: negative durations are not allowed, ignoring"
-                    );
+                    warn!("Failed to parse duration: negative durations are not allowed, ignoring");
                     Ok(None)
                 } else {
                     Ok(Some(Duration::from_secs(i as u64)))
                 }
             } else if let Some(f) = n.as_f64() {
                 if f < 0.0 {
-                    error!(
-                        "Failed to parse duration: negative durations are not allowed, ignoring"
-                    );
+                    warn!("Failed to parse duration: negative durations are not allowed, ignoring");
                     Ok(None)
                 } else {
                     Ok(Some(Duration::from_secs_f64(f)))
                 }
             } else {
-                error!("Failed to parse duration: unsupported number format, ignoring");
+                warn!("Failed to parse duration: unsupported number format, ignoring");
                 Ok(None)
             }
         }
         Ok(Value::Null) => Ok(None),
         Ok(other) => {
-            error!("Failed to parse duration: expected number, got {other}, ignoring");
+            warn!("Failed to parse duration: expected number, got {other}, ignoring");
             Ok(None)
         }
         Err(e) => {
-            error!("Failed to deserialize duration: {e}, ignoring");
+            warn!("Failed to deserialize duration: {e}, ignoring");
             Ok(None)
         }
     }
@@ -865,7 +861,7 @@ where
     let s: String = match String::deserialize(deserializer) {
         Ok(s) => s,
         Err(e) => {
-            error!("Failed to deserialize trace propagation style: {e}, ignoring");
+            warn!("Failed to deserialize trace propagation style: {e}, ignoring");
             return Ok(Vec::new());
         }
     };
@@ -875,7 +871,7 @@ where
             |style| match TracePropagationStyle::from_str(style.trim()) {
                 Ok(parsed_style) => Some(parsed_style),
                 Err(e) => {
-                    error!("Failed to parse trace propagation style: {e}, ignoring");
+                    warn!("Failed to parse trace propagation style: {e}, ignoring");
                     None
                 }
             },
