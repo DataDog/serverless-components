@@ -1,0 +1,101 @@
+name: Publish Datadog Serverless Compat NPM packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Build or Build and Publish?'
+        required: true
+        type: choice
+        default: 'Build'
+        options:
+          - 'Build'
+          - 'Build and Publish'
+      version:
+        description: 'NPM package version (x.y.z)'
+        required: true
+        type: string
+
+permissions:
+  id-token: write # For OIDC npm publishing with provenance
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, windows-2022]
+    uses: ./.github/workflows/build-datadog-serverless-compat.yml
+    with:
+      runner: ${{ matrix.runner }}
+
+  package:
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: npm
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # 4.3.0
+        with:
+          name: linux-amd64
+          path: target/linux-amd64
+      - run: |
+          chmod +x target/linux-amd64/datadog-serverless-compat
+          upx target/linux-amd64/datadog-serverless-compat --lzma
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # 4.3.0
+        with:
+          name: linux-arm64
+          path: target/linux-arm64
+      - run: |
+          chmod +x target/linux-arm64/datadog-serverless-compat
+          upx target/linux-arm64/datadog-serverless-compat --lzma
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # 4.3.0
+        with:
+          name: windows-amd64
+          path: target/windows-amd64
+      - run: upx target/windows-amd64/datadog-serverless-compat.exe --lzma
+      - name: Package binaries into npm packages
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          mkdir -p npm/datadog-serverless-compat-linux-x64/bin
+          cp target/linux-amd64/datadog-serverless-compat npm/datadog-serverless-compat-linux-x64/bin/
+          npm --prefix npm/datadog-serverless-compat-linux-x64 pkg set version="$VERSION"
+
+          mkdir -p npm/datadog-serverless-compat-linux-arm64/bin
+          cp target/linux-arm64/datadog-serverless-compat npm/datadog-serverless-compat-linux-arm64/bin/
+          npm --prefix npm/datadog-serverless-compat-linux-arm64 pkg set version="$VERSION"
+
+          mkdir -p npm/datadog-serverless-compat-win32-x64/bin
+          cp target/windows-amd64/datadog-serverless-compat.exe npm/datadog-serverless-compat-win32-x64/bin/
+          npm --prefix npm/datadog-serverless-compat-win32-x64 pkg set version="$VERSION"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # 4.6.2
+        with:
+          name: npm-packages
+          path: npm/
+          retention-days: 3
+
+  publish:
+    if: ${{ inputs.publish == 'Build and Publish' }}
+    runs-on: ubuntu-24.04
+    environment: Production
+    needs: package
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # 4.3.0
+        with:
+          name: npm-packages
+          path: npm/
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "22.x"
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm config set _authToken=$NPM_PUBLISH_TOKEN
+        env:
+          NPM_PUBLISH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
+      - name: Publish npm packages
+        run: |
+          npm publish npm/datadog-serverless-compat-linux-x64 --provenance --access public
+          npm publish npm/datadog-serverless-compat-linux-arm64 --provenance --access public
+          npm publish npm/datadog-serverless-compat-win32-x64 --provenance --access public
