@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
 use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
@@ -31,6 +31,13 @@ const PROFILING_ENDPOINT_PATH: &str = "/profiling/v1/input";
 const TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const STATS_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
+/// Sentinel file written on startup in Lambda Lite mode.
+/// dd-trace (Node.js) checks this path via DATADOG_MINI_AGENT_PATH in constants.js
+/// (datadog/dd-trace-js) to decide whether to switch from LogExporter (stdout) to
+/// AgentExporter (HTTP :8126).
+/// The parent directory `/tmp/datadog/` is created by the serverless-compat JS layer
+/// before this binary is spawned.
+const LAMBDA_LITE_SENTINEL_PATH: &str = "/tmp/datadog/mini_agent_ready";
 
 pub struct MiniAgent {
     pub config: Arc<config::Config>,
@@ -146,6 +153,27 @@ impl MiniAgent {
             "Time taken to start the Mini Agent: {} ms",
             now.elapsed().as_millis()
         );
+
+        // Write a sentinel file so that Node.js dd-trace detects a running agent and
+        // switches from LogExporter (stdout) to AgentExporter (HTTP :8126).
+        // Only written for Lambda Lite; standard Lambda invocations use the Lambda
+        // Extension path (/opt/extensions/datadog-agent) instead.
+        // /opt is read-only in Lambda Lite, so we use /tmp/datadog/ (created by the
+        // serverless-compat JS layer before spawning this binary).
+        if crate::http_utils::is_lambda_lite() {
+            let sentinel = std::path::Path::new(LAMBDA_LITE_SENTINEL_PATH);
+            if let Some(parent) = sentinel.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(sentinel, b"") {
+                warn!(
+                    "Could not write Lambda Lite sentinel file at {}: {}. \
+                     dd-trace (Node.js) will fall back to LogExporter (stdout), \
+                     traces may not reach Datadog.",
+                    LAMBDA_LITE_SENTINEL_PATH, e
+                );
+            }
+        }
 
         if let Some(pipe_name) = pipe_name_opt {
             // Windows named pipe transport
