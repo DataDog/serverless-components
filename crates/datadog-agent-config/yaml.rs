@@ -735,6 +735,7 @@ impl ConfigSource for YamlConfigSource {
 
 #[cfg_attr(coverage_nightly, coverage(off))] // Test modules skew coverage metrics
 #[cfg(test)]
+#[allow(clippy::result_large_err)]
 mod tests {
     use std::path::Path;
     use std::time::Duration;

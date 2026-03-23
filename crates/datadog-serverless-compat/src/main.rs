@@ -12,7 +12,7 @@ use tokio::{
     sync::Mutex as TokioMutex,
     time::{Duration, interval},
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 use zstd::zstd_safe::CompressionLevel;
 
@@ -26,6 +26,10 @@ use datadog_trace_agent::{
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
+use datadog_logs_agent::{
+    AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
+    Destination as LogDestination, LogFlusher, LogFlusherConfig, LogServer, LogServerConfig,
+};
 use dogstatsd::{
     aggregator::{AggregatorHandle, AggregatorService},
     api_key::ApiKeyFactory,
@@ -42,6 +46,7 @@ use tokio_util::sync::CancellationToken;
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
+const DEFAULT_LOG_INTAKE_PORT: u16 = 10517;
 const AGENT_HOST: &str = "0.0.0.0";
 
 #[tokio::main]
@@ -107,6 +112,13 @@ pub async fn main() {
     let https_proxy = env::var("DD_PROXY_HTTPS")
         .or_else(|_| env::var("HTTPS_PROXY"))
         .ok();
+    let dd_logs_enabled = env::var("DD_LOGS_ENABLED")
+        .map(|val| val.to_lowercase() == "true")
+        .unwrap_or(false);
+    let dd_logs_port: u16 = env::var("DD_LOGS_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_LOG_INTAKE_PORT);
     debug!("Starting serverless trace mini agent");
 
     let env_filter = format!("h2=off,hyper=off,rustls=off,{}", log_level);
@@ -174,9 +186,9 @@ pub async fn main() {
         debug!("Starting dogstatsd");
         let (_, metrics_flusher, aggregator_handle) = start_dogstatsd(
             dd_dogstatsd_port,
-            dd_api_key,
+            dd_api_key.clone(),
             dd_site,
-            https_proxy,
+            https_proxy.clone(),
             dogstatsd_tags,
             dd_statsd_metric_namespace,
             #[cfg(all(windows, feature = "windows-pipes"))]
@@ -194,8 +206,30 @@ pub async fn main() {
         (None, None)
     };
 
+    let (log_flusher, _log_aggregator_handle): (Option<LogFlusher>, Option<LogAggregatorHandle>) =
+        if dd_logs_enabled {
+            debug!("Starting log agent");
+            match start_log_agent(dd_api_key, https_proxy, dd_logs_port) {
+                Some((flusher, handle)) => {
+                    info!("log agent started");
+                    (Some(flusher), Some(handle))
+                }
+                None => {
+                    warn!("log agent failed to start, log flushing disabled");
+                    (None, None)
+                }
+            }
+        } else {
+            info!("log agent disabled");
+            (None, None)
+        };
+
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     flush_interval.tick().await; // discard first tick, which is instantaneous
+
+    // Builders for log batches that failed transiently in the previous flush
+    // cycle. They are redriven on the next cycle before new batches are sent.
+    let mut pending_log_retries: Vec<reqwest::RequestBuilder> = Vec::new();
 
     loop {
         flush_interval.tick().await;
@@ -203,6 +237,22 @@ pub async fn main() {
         if let Some(metrics_flusher) = metrics_flusher.as_ref() {
             debug!("Flushing dogstatsd metrics");
             metrics_flusher.flush().await;
+        }
+
+        if let Some(log_flusher) = log_flusher.as_ref() {
+            debug!("Flushing log agent");
+            let retry_in = std::mem::take(&mut pending_log_retries);
+            let failed = log_flusher.flush(retry_in).await;
+            if !failed.is_empty() {
+                // TODO: surface flush failures into health/metrics telemetry so
+                // operators have a durable signal beyond log lines when logs are
+                // being dropped (e.g. increment a statsd counter or set a gauge).
+                warn!(
+                    "log agent flush failed for {} batch(es); will retry next cycle",
+                    failed.len()
+                );
+                pending_log_retries = failed;
+            }
         }
     }
 }
@@ -311,4 +361,185 @@ fn build_metrics_client(
         builder = builder.proxy(reqwest::Proxy::https(proxy)?);
     }
     Ok(builder.build()?)
+}
+
+fn start_log_agent(
+    dd_api_key: Option<String>,
+    https_proxy: Option<String>,
+    logs_port: u16,
+) -> Option<(LogFlusher, LogAggregatorHandle)> {
+    let Some(api_key) = dd_api_key else {
+        error!("DD_API_KEY not set, log agent disabled");
+        return None;
+    };
+
+    let (service, handle): (LogAggregatorService, LogAggregatorHandle) =
+        LogAggregatorService::new();
+    tokio::spawn(service.run());
+
+    let client = create_reqwest_client_builder()
+        .map_err(|e| error!("failed to create FIPS HTTP client for log agent: {e}"))
+        .ok()
+        .and_then(|b| {
+            let mut builder = b.timeout(DOGSTATSD_TIMEOUT_DURATION);
+            if let Some(ref proxy) = https_proxy {
+                match reqwest::Proxy::https(proxy.as_str()) {
+                    Ok(p) => builder = builder.proxy(p),
+                    Err(e) => error!("invalid HTTPS proxy for log agent: {e}"),
+                }
+            }
+            match builder.build() {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    error!("failed to build HTTP client for log agent: {e}");
+                    None
+                }
+            }
+        });
+
+    let client = client?; // error already logged above
+
+    let config = LogFlusherConfig {
+        api_key,
+        ..LogFlusherConfig::from_env()
+    };
+
+    // Fail fast: OPW mode with an empty URL will always produce a network error at flush time.
+    if let LogDestination::ObservabilityPipelinesWorker { url } = &config.mode
+        && url.is_empty()
+    {
+        error!(
+            "OPW mode enabled but DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL is empty — log agent disabled"
+        );
+        return None;
+    }
+
+    // Start the HTTP intake server so external adapters can POST log entries.
+    let server = LogServer::new(
+        LogServerConfig {
+            host: AGENT_HOST.to_string(),
+            port: logs_port,
+        },
+        handle.clone(),
+    );
+    // TODO: `LogServer::serve` binds the port inside the spawned task, so any
+    // bind failure (e.g. port already in use) is only logged as an error and
+    // silently swallowed — this function still returns `Some(...)` and the
+    // caller logs "log agent started" even though the server never came up.
+    // Fix: split `serve` into a synchronous `bind` step (returning
+    // `Result<BoundLogServer, io::Error>`) and a separate accept-loop step, so
+    // the bind result can be checked here and propagated as a fatal error before
+    // the feature is considered enabled.
+    tokio::spawn(server.serve());
+    info!("log server listening on {AGENT_HOST}:{logs_port}");
+
+    let flusher = LogFlusher::new(config, client, handle.clone());
+    Some((flusher, handle))
+}
+
+#[cfg(test)]
+mod log_agent_integration_tests {
+    use datadog_logs_agent::{AggregatorService, IntakeEntry, LogServer, LogServerConfig};
+
+    #[tokio::test]
+    async fn test_log_agent_full_pipeline_compiles_and_runs() {
+        let (service, handle) = AggregatorService::new();
+        tokio::spawn(service.run());
+
+        handle
+            .insert_batch(vec![IntakeEntry {
+                message: "azure function invoked".to_string(),
+                timestamp: 1_700_000_000_000,
+                hostname: Some("my-azure-fn".to_string()),
+                service: Some("payments".to_string()),
+                ddsource: Some("azure-functions".to_string()),
+                ddtags: Some("env:prod".to_string()),
+                status: Some("info".to_string()),
+                attributes: serde_json::Map::new(),
+            }])
+            .expect("insert_batch");
+
+        let batches = handle.get_batches().await.expect("get_batches");
+        assert_eq!(batches.len(), 1);
+
+        let arr: serde_json::Value = serde_json::from_slice(&batches[0]).expect("json");
+        assert_eq!(arr[0]["ddsource"], "azure-functions");
+        assert_eq!(arr[0]["service"], "payments");
+
+        handle.shutdown().expect("shutdown");
+    }
+
+    /// start_log_agent must return None when OPW mode is enabled but the URL is empty.
+    #[tokio::test]
+    async fn test_opw_empty_url_is_detected() {
+        use super::start_log_agent;
+        // Enable OPW mode with a deliberately empty URL — the production guard
+        // inside start_log_agent must catch this and return None.
+        // SAFETY: test-only, single-threaded setup before any spawned tasks.
+        unsafe {
+            std::env::set_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED", "true");
+            std::env::set_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL", "");
+        }
+        let result = start_log_agent(Some("test-key".to_string()), None, 0);
+        // SAFETY: test-only cleanup.
+        unsafe {
+            std::env::remove_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED");
+            std::env::remove_var("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL");
+        }
+        assert!(
+            result.is_none(),
+            "start_log_agent must return None when OPW URL is empty"
+        );
+    }
+
+    /// Full network intake path: entries posted over HTTP to LogServer must
+    /// reach the AggregatorService and be retrievable via get_batches.
+    /// This mirrors what serverless-compat does when DD_LOGS_ENABLED=true.
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::expect_used)]
+    async fn test_log_server_network_intake_end_to_end() {
+        use tokio::time::{Duration, sleep};
+
+        let (service, handle) = AggregatorService::new();
+        tokio::spawn(service.run());
+
+        // Bind :0 to discover a free port, then hand it to LogServer
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let server = LogServer::new(
+            LogServerConfig {
+                host: "127.0.0.1".into(),
+                port,
+            },
+            handle.clone(),
+        );
+        tokio::spawn(server.serve());
+        sleep(Duration::from_millis(50)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/v1/input"))
+            .json(&serde_json::json!([{
+                "message":  "lambda function invoked",
+                "timestamp": 1_700_000_000_000_i64,
+                "ddsource": "lambda",
+                "service":  "my-fn"
+            }]))
+            .send()
+            .await
+            .expect("POST to log server failed");
+
+        assert_eq!(resp.status(), 200, "server must accept the payload");
+
+        let batches = handle.get_batches().await.expect("get_batches");
+        assert_eq!(batches.len(), 1, "one batch expected");
+        let arr: serde_json::Value = serde_json::from_slice(&batches[0]).expect("json");
+        assert_eq!(arr[0]["message"], "lambda function invoked");
+        assert_eq!(arr[0]["ddsource"], "lambda");
+        assert_eq!(arr[0]["service"], "my-fn");
+
+        handle.shutdown().expect("shutdown");
+    }
 }
