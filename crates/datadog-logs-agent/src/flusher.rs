@@ -95,23 +95,29 @@ impl LogFlusher {
 
         debug!("flushing {} log batch(es)", batches.len());
 
-        let (primary_url, use_compression) = self.resolve_endpoint();
+        let (primary_url, primary_use_compression) = self.resolve_endpoint();
 
         let batch_futures = batches.iter().map(|batch| {
             let primary_url = primary_url.clone();
             async move {
                 // Primary endpoint — failures are tracked for cross-invocation retry.
+                let is_primary_datadog = matches!(self.config.mode, Destination::Datadog);
                 let primary_result = self
-                    .ship_batch(batch, &primary_url, use_compression, &self.config.api_key)
+                    .ship_batch(batch, &primary_url, primary_use_compression, &self.config.api_key, is_primary_datadog)
                     .await;
 
                 // Additional endpoints — best-effort; failures are only logged.
+                // Additional endpoints are always Datadog intakes regardless of the
+                // primary destination, so DD-PROTOCOL: agent-json is always required.
+                // They use config.use_compression independently of the primary: OPW
+                // primaries disable compression for themselves but Datadog extras
+                // should still honour DD_LOGS_CONFIG_USE_COMPRESSION.
                 let extra_futures = self.config.additional_endpoints.iter().map(|endpoint| {
                     let url = endpoint.url.clone();
                     let api_key = endpoint.api_key.clone();
                     async move {
                         if self
-                            .ship_batch(batch, &url, use_compression, &api_key)
+                            .ship_batch(batch, &url, self.config.use_compression, &api_key, true)
                             .await
                             .is_err()
                         {
@@ -155,6 +161,7 @@ impl LogFlusher {
         url: &str,
         compress: bool,
         api_key: &str,
+        is_datadog_intake: bool,
     ) -> Result<(), reqwest::RequestBuilder> {
         let (body, content_encoding) = if compress {
             match compress_zstd(batch, self.config.compression_level) {
@@ -175,7 +182,7 @@ impl LogFlusher {
             .header("DD-API-KEY", api_key)
             .header("Content-Type", "application/json");
 
-        if matches!(self.config.mode, Destination::Datadog) {
+        if is_datadog_intake {
             req = req.header("DD-PROTOCOL", "agent-json");
         }
 
@@ -359,7 +366,7 @@ mod tests {
         let url = format!("{}/api/v2/logs", mock_server.url());
         let batch = b"[{\"message\":\"test\"}]";
         flusher
-            .ship_batch(batch, &url, false, "test-api-key")
+            .ship_batch(batch, &url, false, "test-api-key", true)
             .await
             .expect("ship_batch should succeed");
 
@@ -403,6 +410,60 @@ mod tests {
         let result = flusher.flush(vec![]).await;
         assert!(result.is_empty(), "OPW flush should return empty on 200");
         mock.assert_async().await;
+    }
+
+    /// When the primary destination is OPW, additional endpoints are still Datadog
+    /// intakes and must receive the `DD-PROTOCOL: agent-json` header.
+    #[tokio::test]
+    async fn test_opw_primary_additional_endpoint_receives_dd_protocol_header() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+
+        let mut primary = mockito::Server::new_async().await;
+        let mut extra = mockito::Server::new_async().await;
+
+        // OPW primary must NOT have DD-PROTOCOL header
+        let _primary_mock = primary
+            .mock("POST", "/logs")
+            .match_header("DD-PROTOCOL", Matcher::Missing)
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+
+        // Additional endpoint (Datadog intake) MUST have DD-PROTOCOL header
+        let extra_mock = extra
+            .mock("POST", "/extra")
+            .match_header("DD-PROTOCOL", "agent-json")
+            .with_status(202)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let config = LogFlusherConfig {
+            api_key: "key".to_string(),
+            site: "datadoghq.com".to_string(),
+            mode: Destination::ObservabilityPipelinesWorker {
+                url: format!("{}/logs", primary.url()),
+            },
+            additional_endpoints: vec![LogsAdditionalEndpoint {
+                api_key: "extra-key".to_string(),
+                url: format!("{}/extra", extra.url()),
+                is_reliable: true,
+            }],
+            use_compression: false,
+            compression_level: 3,
+            flush_timeout: Duration::from_secs(5),
+        };
+
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("test")])
+            .expect("insert");
+
+        assert!(flusher.flush(vec![]).await.is_empty());
+        extra_mock.assert_async().await;
     }
 
     #[tokio::test]
@@ -678,6 +739,100 @@ mod tests {
             result.is_empty(),
             "redriven builder should succeed on the next invocation"
         );
+    }
+
+    /// When the primary is OPW (compression disabled for OPW transport) and
+    /// `use_compression` is true, additional Datadog endpoints must still
+    /// receive `Content-Encoding: zstd` — they are Datadog intakes and honour
+    /// `DD_LOGS_CONFIG_USE_COMPRESSION` independently of the primary.
+    #[tokio::test]
+    async fn test_opw_primary_additional_endpoint_compresses_when_enabled() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+
+        let mut primary = mockito::Server::new_async().await;
+        let mut extra = mockito::Server::new_async().await;
+
+        // OPW primary must NOT have Content-Encoding
+        let _primary_mock = primary
+            .mock("POST", "/logs")
+            .match_header("Content-Encoding", Matcher::Missing)
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+
+        // Additional Datadog endpoint MUST receive Content-Encoding: zstd
+        let extra_mock = extra
+            .mock("POST", "/extra")
+            .match_header("Content-Encoding", "zstd")
+            .with_status(202)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let config = LogFlusherConfig {
+            api_key: "key".to_string(),
+            site: "datadoghq.com".to_string(),
+            mode: Destination::ObservabilityPipelinesWorker {
+                url: format!("{}/logs", primary.url()),
+            },
+            additional_endpoints: vec![LogsAdditionalEndpoint {
+                api_key: "extra-key".to_string(),
+                url: format!("{}/extra", extra.url()),
+                is_reliable: true,
+            }],
+            use_compression: true,
+            compression_level: 3,
+            flush_timeout: Duration::from_secs(5),
+        };
+
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("compressed extra")])
+            .expect("insert");
+
+        assert!(flusher.flush(vec![]).await.is_empty());
+        extra_mock.assert_async().await;
+    }
+
+    /// Even when `use_compression: true`, the OPW primary endpoint must never
+    /// receive a `Content-Encoding` header — OPW does not support zstd.
+    #[tokio::test]
+    async fn test_opw_primary_never_compressed_even_when_flag_set() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+
+        let mut mock_server = mockito::Server::new_async().await;
+        let mock = mock_server
+            .mock("POST", "/logs")
+            .match_header("Content-Encoding", Matcher::Missing)
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let config = LogFlusherConfig {
+            api_key: "key".to_string(),
+            site: "datadoghq.com".to_string(),
+            mode: Destination::ObservabilityPipelinesWorker {
+                url: format!("{}/logs", mock_server.url()),
+            },
+            additional_endpoints: vec![],
+            use_compression: true, // flag set but must not reach OPW
+            compression_level: 3,
+            flush_timeout: Duration::from_secs(5),
+        };
+
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("opw no compress")])
+            .expect("insert");
+
+        assert!(flusher.flush(vec![]).await.is_empty());
+        mock.assert_async().await;
     }
 
     /// Additional-endpoint failures are best-effort: their builders are NOT

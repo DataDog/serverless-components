@@ -422,14 +422,17 @@ fn start_log_agent(
         },
         handle.clone(),
     );
-    // TODO: `LogServer::serve` binds the port inside the spawned task, so any
-    // bind failure (e.g. port already in use) is only logged as an error and
-    // silently swallowed — this function still returns `Some(...)` and the
-    // caller logs "log agent started" even though the server never came up.
-    // Fix: split `serve` into a synchronous `bind` step (returning
-    // `Result<BoundLogServer, io::Error>`) and a separate accept-loop step, so
-    // the bind result can be checked here and propagated as a fatal error before
-    // the feature is considered enabled.
+    // TODO(SVLS-bind-fail-fast): `LogServer::serve` binds the port inside the
+    // spawned task, so any bind failure (e.g. port already in use) is only
+    // logged as an error and silently swallowed — this function still returns
+    // `Some(...)` and the caller logs "log agent started" even though the
+    // server never came up.
+    // Fix: split `LogServer` into a `bind() -> Result<BoundLogServer, io::Error>`
+    // step and a `BoundLogServer::serve()` accept-loop step (both in server.rs).
+    // Make this fn `async`, call `server.bind().await`, return `None` on error,
+    // and only spawn `bound.serve()` after a successful bind. Add tests:
+    // `test_bind_returns_err_when_port_already_in_use` (server.rs) and
+    // `test_start_log_agent_returns_none_when_port_already_in_use` (main.rs).
     tokio::spawn(server.serve());
     info!("log server listening on {AGENT_HOST}:{logs_port}");
 

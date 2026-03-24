@@ -149,6 +149,19 @@ async fn handle_request(
             .unwrap_or_default());
     }
 
+    // TODO(SVLS-chunked-body-limit): the 4 MiB cap is only enforced *after*
+    // `collect()` has buffered the entire body. For chunked requests (no
+    // Content-Length) an attacker can stream an arbitrarily large body before
+    // we ever reject with 413.
+    // Fix: replace `req.collect()` with
+    // `Limited::new(req.into_body(), MAX_BODY_BYTES).collect()` from
+    // `http_body_util` (already a dependency). `Limited` aborts mid-stream as
+    // soon as the threshold is exceeded. Match on `LengthLimitError` via
+    // `e.downcast_ref::<LengthLimitError>().is_some()` for the 413 branch, and
+    // remove the now-redundant post-read `bytes.len() > MAX_BODY_BYTES` check.
+    // Add test `test_chunked_oversized_body_returns_413`: send MAX_BODY_BYTES+1
+    // bytes over raw chunked TCP using `TcpStream::into_split()` for concurrent
+    // write/read (needed to avoid deadlock when the OS socket buffer fills up).
     let bytes = match req.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
