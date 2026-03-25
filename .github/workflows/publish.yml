@@ -91,7 +91,7 @@ jobs:
         with:
           node-version: "22.x"
           registry-url: 'https://registry.npmjs.org'
-      - run: npm config set _authToken=$NPM_PUBLISH_TOKEN
+      - run: npm config set //registry.npmjs.org/:_authToken=$NPM_PUBLISH_TOKEN
         env:
           NPM_PUBLISH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
       - name: Publish npm packages
