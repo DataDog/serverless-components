@@ -96,6 +96,6 @@ jobs:
           NPM_PUBLISH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
       - name: Publish npm packages
         run: |
-          npm publish npm/datadog-serverless-compat-linux-x64 --provenance --access public
-          npm publish npm/datadog-serverless-compat-linux-arm64 --provenance --access public
-          npm publish npm/datadog-serverless-compat-win32-x64 --provenance --access public
+          npm publish ./npm/datadog-serverless-compat-linux-x64 --provenance --access public
+          npm publish ./npm/datadog-serverless-compat-linux-arm64 --provenance --access public
+          npm publish ./npm/datadog-serverless-compat-win32-x64 --provenance --access public
