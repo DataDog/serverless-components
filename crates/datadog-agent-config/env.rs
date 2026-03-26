@@ -885,7 +885,7 @@ mod tests {
         // Programmatic guard: count `pub ` fields in the EnvConfig struct from
         // the source file. If a field is added without updating the arrays
         // above, this assertion will fail.
-        let source = include_str!("env.rs");
+        let source = include_str!("env.rs").replace("\r\n", "\n");
         let struct_start = source
             .find("pub struct EnvConfig")
             .expect("EnvConfig not found in source");
