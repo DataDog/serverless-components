@@ -787,40 +787,40 @@ mod tests {
     fn test_all_yaml_fields_wrong_type_fallback_to_default() {
         figment::Jail::expect_with(|jail| {
             jail.clear_env();
-            // Every field is set to an array [1, 2, 3] which is the wrong type
-            // for strings, numbers, bools, and nested structs. This exercises
-            // every deserialize_with handler.
+            // Non-string fields are set to [1, 2, 3] (wrong type) to exercise
+            // graceful fallback. String fields are set to valid non-default
+            // values to prove they survive alongside broken non-string fields.
             jail.create_file(
                 "datadog.yaml",
                 r#"
-# Basic fields
-site: [1, 2, 3]
-api_key: [1, 2, 3]
+# Basic fields — string fields get valid non-default values
+site: "custom-site.example.com"
+api_key: "test-api-key-12345"
 log_level: [1, 2, 3]
 flush_timeout: [1, 2, 3]
 compression_level: [1, 2, 3]
 
 # Proxy (nested)
 proxy:
-  https: [1, 2, 3]
+  https: "https://proxy.example.com"
   no_proxy: 12345
 
 # Endpoints
-dd_url: [1, 2, 3]
-http_protocol: [1, 2, 3]
-tls_cert_file: [1, 2, 3]
+dd_url: "https://custom-metrics.example.com"
+http_protocol: "http1"
+tls_cert_file: "/opt/ca-cert.pem"
 skip_ssl_validation: [1, 2, 3]
 additional_endpoints: [1, 2, 3]
 
 # Unified Service Tagging
-env: [1, 2, 3]
-service: [1, 2, 3]
-version: [1, 2, 3]
+env: "test_env"
+service: "test_service"
+version: "v1.0.0"
 tags: 12345
 
 # Logs (nested)
 logs_config:
-  logs_dd_url: [1, 2, 3]
+  logs_dd_url: "https://custom-logs.example.com"
   processing_rules: 12345
   use_compression: [1, 2, 3]
   compression_level: [1, 2, 3]
@@ -828,7 +828,7 @@ logs_config:
 
 # APM (nested)
 apm_config:
-  apm_dd_url: [1, 2, 3]
+  apm_dd_url: "https://custom-apm.example.com"
   replace_tags: 12345
   obfuscation:
     http:
@@ -856,15 +856,15 @@ dogstatsd_so_rcvbuf: [1, 2, 3]
 dogstatsd_buffer_size: [1, 2, 3]
 dogstatsd_queue_size: [1, 2, 3]
 
-# OTLP (deeply nested)
+# OTLP (deeply nested) — string fields get valid values
 otlp_config:
   receiver:
     protocols:
       http:
-        endpoint: [1, 2, 3]
+        endpoint: "0.0.0.0:4318"
       grpc:
-        endpoint: [1, 2, 3]
-        transport: [1, 2, 3]
+        endpoint: "0.0.0.0:4317"
+        transport: "tcp"
         max_recv_msg_size_mib: [1, 2, 3]
   traces:
     enabled: [1, 2, 3]
@@ -877,23 +877,23 @@ otlp_config:
     enabled: [1, 2, 3]
     resource_attributes_as_tags: [1, 2, 3]
     instrumentation_scope_metadata_as_tags: [1, 2, 3]
-    tag_cardinality: [1, 2, 3]
+    tag_cardinality: "orchestrator"
     delta_ttl: [1, 2, 3]
     histograms:
-      mode: [1, 2, 3]
+      mode: "distributions"
       send_count_sum_metrics: [1, 2, 3]
       send_aggregation_metrics: [1, 2, 3]
     sums:
-      cumulative_monotonic_mode: [1, 2, 3]
-      initial_cumulative_monotonic_value: [1, 2, 3]
+      cumulative_monotonic_mode: "to_delta"
+      initial_cumulative_monotonic_value: "keep"
     summaries:
-      mode: [1, 2, 3]
+      mode: "noquantiles"
   logs:
     enabled: [1, 2, 3]
 
 # AWS Lambda
-api_key_secret_arn: [1, 2, 3]
-kms_api_key: [1, 2, 3]
+api_key_secret_arn: "arn:aws:secretsmanager:us-east-1:123:secret:key"
+kms_api_key: "kms-encrypted-key"
 serverless_logs_enabled: [1, 2, 3]
 logs_enabled: [1, 2, 3]
 serverless_flush_strategy: [1, 2, 3]
@@ -904,7 +904,7 @@ capture_lambda_payload_max_depth: [1, 2, 3]
 compute_trace_stats_on_extension: [1, 2, 3]
 api_key_secret_reload_interval: [1, 2, 3]
 serverless_appsec_enabled: [1, 2, 3]
-appsec_rules: [1, 2, 3]
+appsec_rules: "/opt/custom-rules.json"
 appsec_waf_timeout: [1, 2, 3]
 api_security_enabled: [1, 2, 3]
 api_security_sample_delay: [1, 2, 3]
@@ -920,8 +920,39 @@ api_security_sample_delay: [1, 2, 3]
                 .load(&mut config)
                 .expect("load must not fail when fields have wrong types");
 
-            // Every field should be at its default since all values were invalid
-            assert_eq!(config, Config::default());
+            // Build expected: string fields have their non-default values,
+            // all non-string fields stay at defaults.
+            let mut expected = Config::default();
+            expected.site = "custom-site.example.com".to_string();
+            expected.api_key = "test-api-key-12345".to_string();
+            expected.dd_url = "https://custom-metrics.example.com".to_string();
+            expected.logs_config_logs_dd_url = "https://custom-logs.example.com".to_string();
+            expected.apm_dd_url = "https://custom-apm.example.com".to_string();
+            expected.api_key_secret_arn =
+                "arn:aws:secretsmanager:us-east-1:123:secret:key".to_string();
+            expected.kms_api_key = "kms-encrypted-key".to_string();
+            // Option<String> fields
+            expected.proxy_https = Some("https://proxy.example.com".to_string());
+            expected.http_protocol = Some("http1".to_string());
+            expected.tls_cert_file = Some("/opt/ca-cert.pem".to_string());
+            expected.env = Some("test_env".to_string());
+            expected.service = Some("test_service".to_string());
+            expected.version = Some("v1.0.0".to_string());
+            expected.otlp_config_receiver_protocols_http_endpoint =
+                Some("0.0.0.0:4318".to_string());
+            expected.otlp_config_receiver_protocols_grpc_endpoint =
+                Some("0.0.0.0:4317".to_string());
+            expected.otlp_config_receiver_protocols_grpc_transport = Some("tcp".to_string());
+            expected.otlp_config_metrics_tag_cardinality = Some("orchestrator".to_string());
+            expected.otlp_config_metrics_histograms_mode = Some("distributions".to_string());
+            expected.otlp_config_metrics_sums_cumulative_monotonic_mode =
+                Some("to_delta".to_string());
+            expected.otlp_config_metrics_sums_initial_cumulativ_monotonic_value =
+                Some("keep".to_string());
+            expected.otlp_config_metrics_summaries_mode = Some("noquantiles".to_string());
+            expected.appsec_rules = Some("/opt/custom-rules.json".to_string());
+
+            assert_eq!(config, expected);
             Ok(())
         });
     }
