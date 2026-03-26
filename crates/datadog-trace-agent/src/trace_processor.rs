@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use hyper::{StatusCode, http};
 use libdd_common::http_common;
 use tokio::sync::mpsc::Sender;
-use tracing::debug;
+use tracing::{debug, error};
 
 use libdd_trace_obfuscation::obfuscate::obfuscate_span;
 use libdd_trace_protobuf::pb;
@@ -18,6 +18,7 @@ use libdd_trace_utils::tracer_payload::{TraceChunkProcessor, TracerPayloadCollec
 use crate::{
     config::Config,
     http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
+    stats_generator::StatsGenerator,
 };
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
@@ -65,7 +66,10 @@ impl TraceChunkProcessor for ChunkProcessor {
     }
 }
 #[derive(Clone)]
-pub struct ServerlessTraceProcessor {}
+pub struct ServerlessTraceProcessor {
+    /// The stats generator to use for generating stats and sending them to the stats concentrator.
+    pub stats_generator: Option<Arc<StatsGenerator>>,
+}
 
 #[async_trait]
 impl TraceProcessor for ServerlessTraceProcessor {
@@ -137,6 +141,13 @@ impl TraceProcessor for ServerlessTraceProcessor {
                     function_tags.to_string(),
                 );
             }
+        }
+
+        if let Some(stats_generator) = self.stats_generator.as_ref()
+            && !tracer_header_tags.client_computed_stats
+            && let Err(e) = stats_generator.send(&payload)
+        {
+            error!("Stats generator error: {e}");
         }
 
         let send_data = SendData::new(body_size, payload, tracer_header_tags, &config.trace_intake);
@@ -219,6 +230,8 @@ mod tests {
                 ..Default::default()
             },
             tags: Tags::from_env_string("env:test,service:my-service"),
+            service: Some("test-service".to_string()),
+            env: Some("test-env".to_string()),
         }
     }
 
@@ -254,7 +267,9 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor {};
+        let trace_processor = trace_processor::ServerlessTraceProcessor {
+            stats_generator: None,
+        };
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -326,7 +341,9 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor {};
+        let trace_processor = trace_processor::ServerlessTraceProcessor {
+            stats_generator: None,
+        };
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),

@@ -12,6 +12,7 @@ use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils::{self, MiniAgentMetadata, SendData};
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::oneshot;
 
 /// Mock trace processor that returns 200 OK for all requests
 #[allow(dead_code)]
@@ -86,6 +87,7 @@ impl StatsFlusher for MockStatsFlusher {
         &self,
         _config: Arc<Config>,
         mut stats_rx: Receiver<pb::ClientStatsPayload>,
+        _shutdown_rx: oneshot::Receiver<()>,
     ) {
         // Consume messages from the channel without processing them
         while let Some(_stats) = stats_rx.recv().await {
@@ -93,7 +95,12 @@ impl StatsFlusher for MockStatsFlusher {
         }
     }
 
-    async fn flush_stats(&self, _config: Arc<Config>, _traces: Vec<pb::ClientStatsPayload>) {
+    async fn flush_stats(
+        &self,
+        _config: Arc<Config>,
+        _traces: Vec<pb::ClientStatsPayload>,
+        _force_flush: bool,
+    ) {
         // Do nothing
     }
 }

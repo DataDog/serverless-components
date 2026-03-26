@@ -23,6 +23,7 @@ pub async fn send_tcp_request(
     uri: &str,
     method: &str,
     body: Option<Vec<u8>>,
+    additional_headers: &[(&str, &str)],
 ) -> Result<Response<hyper::body::Incoming>, Box<dyn std::error::Error>> {
     let stream = timeout(
         Duration::from_secs(2),
@@ -41,6 +42,10 @@ pub async fn send_tcp_request(
         .uri(uri)
         .method(method)
         .header("Content-Type", "application/msgpack");
+
+    for (name, value) in additional_headers {
+        request_builder = request_builder.header(*name, *value);
+    }
 
     let response = if let Some(body_data) = body {
         let body_len = body_data.len();

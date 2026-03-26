@@ -4,29 +4,73 @@
 use async_trait::async_trait;
 use libdd_capabilities_impl::DefaultHttpClient;
 use std::{sync::Arc, time};
-use tokio::sync::{Mutex, mpsc::Receiver};
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::oneshot;
 use tracing::{debug, error};
 
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::stats_utils;
 
 use crate::config::Config;
+use crate::stats_concentrator_service::StatsConcentratorHandle;
+
+/// Whether the stats flusher should run `flush_stats`
+fn should_flush_stats_buffer(
+    channel_has_tracer_stats: bool,
+    serverless_stats_enabled: bool,
+) -> bool {
+    channel_has_tracer_stats || serverless_stats_enabled
+}
+
+/// Serializes and sends a single `StatsPayload` to the intake.
+async fn send_stats_payload(config: &Arc<Config>, payload: pb::StatsPayload) {
+    debug!("Stats payload to be sent: {payload:?}");
+    let serialized = match stats_utils::serialize_stats_payload(payload) {
+        Ok(res) => res,
+        Err(err) => {
+            error!("Failed to serialize stats payload, dropping stats: {err}");
+            return;
+        }
+    };
+    #[allow(clippy::unwrap_used)]
+    match stats_utils::send_stats_payload::<DefaultHttpClient>(
+        serialized,
+        &config.trace_stats_intake,
+        config.trace_stats_intake.api_key.as_ref().unwrap(),
+    )
+    .await
+    {
+        Ok(_) => debug!("Successfully flushed stats"),
+        Err(e) => error!("Error sending stats: {e:?}"),
+    }
+}
 
 #[async_trait]
 pub trait StatsFlusher {
     /// Starts a stats flusher that listens for stats payloads sent to the tokio mpsc Receiver,
-    /// implementing flushing logic that calls flush_stats.
+    /// implementing flushing logic that calls flush_stats. Runs until the shutdown signal fires,
+    /// at which point it performs a final force flush and returns.
     async fn start_stats_flusher(
         &self,
         config: Arc<Config>,
-        mut rx: Receiver<pb::ClientStatsPayload>,
+        rx: Receiver<pb::ClientStatsPayload>,
+        shutdown_rx: oneshot::Receiver<()>,
     );
     /// Flushes stats to the Datadog trace stats intake.
-    async fn flush_stats(&self, config: Arc<Config>, traces: Vec<pb::ClientStatsPayload>);
+    /// `force_flush` controls whether in-progress concentrator buckets are flushed (true on
+    /// shutdown, false on normal interval flushes).
+    async fn flush_stats(
+        &self,
+        config: Arc<Config>,
+        client_stats: Vec<pb::ClientStatsPayload>,
+        force_flush: bool,
+    );
 }
 
 #[derive(Clone)]
-pub struct ServerlessStatsFlusher {}
+pub struct ServerlessStatsFlusher {
+    pub stats_concentrator: Option<StatsConcentratorHandle>,
+}
 
 #[async_trait]
 impl StatsFlusher for ServerlessStatsFlusher {
@@ -34,60 +78,82 @@ impl StatsFlusher for ServerlessStatsFlusher {
         &self,
         config: Arc<Config>,
         mut rx: Receiver<pb::ClientStatsPayload>,
+        mut shutdown_rx: oneshot::Receiver<()>,
     ) {
-        let buffer: Arc<Mutex<Vec<pb::ClientStatsPayload>>> = Arc::new(Mutex::new(Vec::new()));
-
-        let buffer_producer = buffer.clone();
-        let buffer_consumer = buffer.clone();
-
-        tokio::spawn(async move {
-            while let Some(stats_payload) = rx.recv().await {
-                let mut buffer = buffer_producer.lock().await;
-                buffer.push(stats_payload);
-            }
-        });
+        let mut interval =
+            tokio::time::interval(time::Duration::from_secs(config.stats_flush_interval_secs));
+        let mut buffer: Vec<pb::ClientStatsPayload> = Vec::new();
 
         loop {
-            tokio::time::sleep(time::Duration::from_secs(config.stats_flush_interval_secs)).await;
+            tokio::select! {
+                // Receive client stats and add them to the buffer
+                Some(stats) = rx.recv() => {
+                    buffer.push(stats);
+                }
 
-            let mut buffer = buffer_consumer.lock().await;
-            if !buffer.is_empty() {
-                self.flush_stats(config.clone(), buffer.to_vec()).await;
-                buffer.clear();
+                // Drain client stats in buffer and stats from concentrator on interval
+                _ = interval.tick() => {
+                    let client_stats = std::mem::take(&mut buffer);
+                    let should_flush = should_flush_stats_buffer(
+                        !client_stats.is_empty(),
+                        self.stats_concentrator.is_some(),
+                    );
+                    if should_flush {
+                        self.flush_stats(config.clone(), client_stats, false).await;
+                    }
+                }
+
+                _ = &mut shutdown_rx => {
+                    // Drain any client stats that arrived before the shutdown signal
+                    while let Ok(stats) = rx.try_recv() {
+                        buffer.push(stats);
+                    }
+                    // Force flush all in progress concentrator stats buckets on shutdown signal
+                    self.flush_stats(config.clone(), std::mem::take(&mut buffer), true).await;
+                    return;
+                }
             }
         }
     }
 
-    async fn flush_stats(&self, config: Arc<Config>, stats: Vec<pb::ClientStatsPayload>) {
-        if stats.is_empty() {
-            return;
+    /// Flushes client computed stats from the tracer and serverless computed stats as separate payloads
+    async fn flush_stats(
+        &self,
+        config: Arc<Config>,
+        client_stats: Vec<pb::ClientStatsPayload>,
+        force_flush: bool,
+    ) {
+        // Flush client computed stats from the tracer
+        if !client_stats.is_empty() {
+            let payload = stats_utils::construct_stats_payload(client_stats);
+            send_stats_payload(&config, payload).await;
         }
-        debug!("Flushing {} stats", stats.len());
 
-        let stats_payload = stats_utils::construct_stats_payload(stats);
-
-        debug!("Stats payload to be sent: {stats_payload:?}");
-
-        let serialized_stats_payload = match stats_utils::serialize_stats_payload(stats_payload) {
-            Ok(res) => res,
-            Err(err) => {
-                error!("Failed to serialize stats payload, dropping stats: {err}");
-                return;
-            }
-        };
-
-        #[allow(clippy::unwrap_used)]
-        match stats_utils::send_stats_payload::<DefaultHttpClient>(
-            serialized_stats_payload,
-            &config.trace_stats_intake,
-            config.trace_stats_intake.api_key.as_ref().unwrap(),
-        )
-        .await
-        {
-            Ok(_) => debug!("Successfully flushed stats"),
-            Err(e) => {
-                error!("Error sending stats: {e:?}")
+        // Flush concentrator stats
+        if let Some(ref concentrator) = self.stats_concentrator {
+            match concentrator.flush(force_flush).await {
+                Ok(Some(agent_stats)) => {
+                    let mut payload = stats_utils::construct_stats_payload(vec![agent_stats]);
+                    payload.client_computed = false;
+                    send_stats_payload(&config, payload).await;
+                }
+                Ok(None) => {}
+                Err(e) => error!("Failed to flush concentrator stats: {e}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_flush_stats_buffer;
+
+    #[test]
+    fn should_flush_stats_buffer_all_cases() {
+        // (stats channel empty, serverless computed stats enabled with concentrator)
+        assert!(!should_flush_stats_buffer(false, false));
+        assert!(should_flush_stats_buffer(true, false));
+        assert!(should_flush_stats_buffer(false, true));
+        assert!(should_flush_stats_buffer(true, true));
     }
 }

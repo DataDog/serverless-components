@@ -4,7 +4,7 @@
 //! Simple mock HTTP server for testing flushers
 
 use http_body_util::BodyExt;
-use hyper::{Request, Response, body::Incoming};
+use hyper::{Request, Response, StatusCode, body::Incoming};
 use hyper_util::rt::TokioIo;
 use libdd_common::http_common;
 use std::net::SocketAddr;
@@ -60,6 +60,7 @@ impl MockServer {
                                     // Capture the request
                                     let method = req.method().to_string();
                                     let path = req.uri().path().to_string();
+                                    let is_stats_intake = path.ends_with("/stats");
                                     let headers: Vec<(String, String)> = req
                                         .headers()
                                         .iter()
@@ -82,11 +83,18 @@ impl MockServer {
                                         body: body_bytes,
                                     });
 
-                                    // Return 200 OK
+                                    // Trace intake accepts 2xx
+                                    // Stats intake accepts 202
+                                    // see `libdd_trace_utils::stats_utils::send_stats_payload_with_client`
+                                    let (status, body) = if is_stats_intake {
+                                        (StatusCode::ACCEPTED, http_common::Body::empty())
+                                    } else {
+                                        (StatusCode::OK, http_common::Body::from(r#"{"ok":true}"#))
+                                    };
                                     Ok::<_, hyper::http::Error>(
                                         Response::builder()
-                                            .status(200)
-                                            .body(http_common::Body::from(r#"{"ok":true}"#))
+                                            .status(status)
+                                            .body(body)
                                             .unwrap(),
                                     )
                                 }

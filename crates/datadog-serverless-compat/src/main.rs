@@ -18,7 +18,8 @@ use zstd::zstd_safe::CompressionLevel;
 
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
-    config, env_verifier, mini_agent, proxy_flusher, stats_flusher, stats_processor,
+    config, env_verifier, mini_agent, proxy_flusher, stats_concentrator_service, stats_flusher,
+    stats_generator, stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
 };
@@ -119,6 +120,12 @@ pub async fn main() {
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(DEFAULT_LOG_INTAKE_PORT);
+
+    let dd_serverless_stats_computation_enabled =
+        env::var("DD_SERVERLESS_STATS_COMPUTATION_ENABLED")
+            .map(|val| val.to_lowercase() != "false")
+            .unwrap_or(true);
+
     debug!("Starting serverless trace mini agent");
 
     let env_filter = format!("h2=off,hyper=off,rustls=off,{}", log_level);
@@ -144,11 +151,6 @@ pub async fn main() {
 
     let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
 
-    let trace_processor = Arc::new(trace_processor::ServerlessTraceProcessor {});
-
-    let stats_flusher = Arc::new(stats_flusher::ServerlessStatsFlusher {});
-    let stats_processor = Arc::new(stats_processor::ServerlessStatsProcessor {});
-
     let config = match config::Config::new() {
         Ok(c) => Arc::new(c),
         Err(e) => {
@@ -156,6 +158,29 @@ pub async fn main() {
             return;
         }
     };
+
+    let (stats_concentrator_handle, stats_generator) = if dd_serverless_stats_computation_enabled {
+        info!("serverless stats computation enabled");
+        let (service, handle) =
+            stats_concentrator_service::StatsConcentratorService::new(config.clone());
+        tokio::spawn(service.run());
+        (
+            Some(handle.clone()),
+            Some(Arc::new(stats_generator::StatsGenerator::new(handle))),
+        )
+    } else {
+        info!("serverless stats computation disabled");
+        (None, None)
+    };
+
+    let trace_processor = Arc::new(trace_processor::ServerlessTraceProcessor {
+        stats_generator: stats_generator.clone(),
+    });
+
+    let stats_flusher = Arc::new(stats_flusher::ServerlessStatsFlusher {
+        stats_concentrator: stats_concentrator_handle.clone(),
+    });
+    let stats_processor = Arc::new(stats_processor::ServerlessStatsProcessor {});
 
     let trace_aggregator = Arc::new(TokioMutex::new(TraceAggregator::default()));
     let trace_flusher = Arc::new(trace_flusher::ServerlessTraceFlusher::new(
@@ -175,8 +200,9 @@ pub async fn main() {
         proxy_flusher,
     });
 
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
-        let res = mini_agent.start_mini_agent().await;
+        let res = mini_agent.start_mini_agent(shutdown_rx).await;
         if let Err(e) = res {
             error!("Error when starting serverless trace mini agent: {e:?}");
         }

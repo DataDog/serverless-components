@@ -568,8 +568,10 @@ dependencies = [
  "libdd-capabilities",
  "libdd-capabilities-impl",
  "libdd-common 3.0.2",
+ "libdd-library-config",
  "libdd-trace-obfuscation",
  "libdd-trace-protobuf 3.0.1",
+ "libdd-trace-stats 2.0.0",
  "libdd-trace-utils 3.0.1",
  "reqwest",
  "rmp-serde",
@@ -578,6 +580,7 @@ dependencies = [
  "serial_test",
  "temp-env",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
 ]
@@ -698,7 +701,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1529,12 +1532,12 @@ dependencies = [
  "http",
  "http-body-util",
  "libdd-common 2.0.1",
- "libdd-ddsketch",
+ "libdd-ddsketch 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "libdd-dogstatsd-client",
  "libdd-telemetry",
  "libdd-tinybytes 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libdd-trace-protobuf 2.0.0",
- "libdd-trace-stats",
+ "libdd-trace-stats 1.0.3",
  "libdd-trace-utils 2.0.2",
  "rmp-serde",
  "serde",
@@ -1556,6 +1559,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "libdd-ddsketch"
+version = "1.0.1"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
+dependencies = [
+ "prost 0.14.3",
+]
+
+[[package]]
 name = "libdd-dogstatsd-client"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1566,6 +1577,37 @@ dependencies = [
  "http",
  "libdd-common 2.0.1",
  "serde",
+ "tracing",
+]
+
+[[package]]
+name = "libdd-library-config"
+version = "1.1.0"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
+dependencies = [
+ "anyhow",
+ "libc",
+ "libdd-trace-protobuf 3.0.1",
+ "memfd",
+ "prost 0.14.3",
+ "rand 0.8.6",
+ "rmp",
+ "rmp-serde",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
+name = "libdd-shared-runtime"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
+dependencies = [
+ "async-trait",
+ "futures",
+ "libdd-capabilities",
+ "libdd-common 3.0.2",
+ "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -1583,7 +1625,7 @@ dependencies = [
  "http-body-util",
  "libc",
  "libdd-common 2.0.1",
- "libdd-ddsketch",
+ "libdd-ddsketch 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "sys-info",
@@ -1675,9 +1717,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea447dc8a5d84c6b5eb6ea877c4fea4149fd29f6b45fcfc5cfd7edf82a18e056"
 dependencies = [
  "hashbrown 0.15.5",
- "libdd-ddsketch",
+ "libdd-ddsketch 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "libdd-trace-protobuf 2.0.0",
  "libdd-trace-utils 2.0.2",
+]
+
+[[package]]
+name = "libdd-trace-stats"
+version = "2.0.0"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hashbrown 0.15.5",
+ "http",
+ "libdd-capabilities",
+ "libdd-capabilities-impl",
+ "libdd-common 3.0.2",
+ "libdd-ddsketch 1.0.1 (git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a)",
+ "libdd-shared-runtime",
+ "libdd-trace-protobuf 3.0.1",
+ "libdd-trace-utils 3.0.1",
+ "rmp-serde",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -1820,6 +1885,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "memfd"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad38eb12aea514a0466ea40a80fd8cc83637065948eb4a426e4aa46261175227"
+dependencies = [
+ "rustix 1.1.4",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1910,7 +1984,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2634,7 +2708,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2971,7 +3045,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3067,7 +3141,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

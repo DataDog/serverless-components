@@ -43,7 +43,10 @@ pub struct MiniAgent {
 }
 
 impl MiniAgent {
-    pub async fn start_mini_agent(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start_mini_agent(
+        &self,
+        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
 
         // verify we are in a serverless function environment. if not, shut down the mini agent.
@@ -86,7 +89,7 @@ impl MiniAgent {
         let stats_config = self.config.clone();
         let stats_flusher_handle = tokio::spawn(async move {
             stats_flusher
-                .start_stats_flusher(stats_config, stats_rx)
+                .start_stats_flusher(stats_config, stats_rx, shutdown_rx)
                 .await;
         });
 
@@ -484,7 +487,7 @@ impl MiniAgent {
                     INFO_ENDPOINT_PATH,
                     PROFILING_ENDPOINT_PATH
                 ],
-                "client_drop_p0s": true,
+                "client_drop_p0s": false,
                 "config": config_json
             }
         );
