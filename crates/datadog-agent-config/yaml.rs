@@ -9,7 +9,7 @@ use crate::{
     deserialize_optional_duration_from_seconds,
     deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
     deserialize_processing_rules, deserialize_string_or_int, deserialize_trace_propagation_style,
-    flush_strategy::FlushStrategy, log_level::LogLevel,
+    deserialize_with_default, flush_strategy::FlushStrategy, log_level::LogLevel,
     logs_additional_endpoints::LogsAdditionalEndpoint, merge_hashmap, merge_option,
     merge_option_to_value, merge_string, merge_vec, service_mapping::deserialize_service_mapping,
 };
@@ -32,6 +32,7 @@ pub struct YamlConfig {
     pub site: Option<String>,
     #[serde(deserialize_with = "deserialize_optional_string")]
     pub api_key: Option<String>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub log_level: Option<LogLevel>,
 
     #[serde(deserialize_with = "deserialize_option_lossless")]
@@ -41,6 +42,7 @@ pub struct YamlConfig {
     pub compression_level: Option<i32>,
 
     // Proxy
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub proxy: ProxyConfig,
     // nit: this should probably be in the endpoints section
     #[serde(deserialize_with = "deserialize_optional_string")]
@@ -68,9 +70,11 @@ pub struct YamlConfig {
     pub tags: HashMap<String, String>,
 
     // Logs
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub logs_config: LogsConfig,
 
     // APM
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub apm_config: ApmConfig,
     #[serde(deserialize_with = "deserialize_service_mapping")]
     pub service_mapping: HashMap<String, String>,
@@ -87,6 +91,7 @@ pub struct YamlConfig {
     pub trace_propagation_http_baggage_enabled: Option<bool>,
 
     // Metrics
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub metrics_config: MetricsConfig,
 
     // DogStatsD
@@ -101,6 +106,7 @@ pub struct YamlConfig {
     pub dogstatsd_queue_size: Option<usize>,
 
     // OTLP
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub otlp_config: Option<OtlpConfig>,
 
     // AWS Lambda
@@ -112,6 +118,7 @@ pub struct YamlConfig {
     pub serverless_logs_enabled: Option<bool>,
     #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
     pub logs_enabled: Option<bool>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub serverless_flush_strategy: Option<FlushStrategy>,
     #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
     pub enhanced_metrics: Option<bool>,
@@ -144,7 +151,9 @@ pub struct YamlConfig {
 #[serde(default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct ProxyConfig {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub https: Option<String>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub no_proxy: Option<Vec<String>>,
 }
 
@@ -155,6 +164,7 @@ pub struct ProxyConfig {
 #[serde(default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct LogsConfig {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub logs_dd_url: Option<String>,
     #[serde(deserialize_with = "deserialize_processing_rules")]
     pub processing_rules: Option<Vec<ProcessingRule>>,
@@ -162,6 +172,7 @@ pub struct LogsConfig {
     pub use_compression: Option<bool>,
     #[serde(deserialize_with = "deserialize_option_lossless")]
     pub compression_level: Option<i32>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub additional_endpoints: Vec<LogsAdditionalEndpoint>,
 }
 
@@ -182,12 +193,15 @@ pub struct MetricsConfig {
 #[serde(default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct ApmConfig {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub apm_dd_url: Option<String>,
     #[serde(deserialize_with = "deserialize_apm_replace_rules")]
     pub replace_tags: Option<Vec<ReplaceRule>>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub obfuscation: Option<ApmObfuscation>,
     #[serde(deserialize_with = "deserialize_option_lossless")]
     pub compression_level: Option<i32>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub features: Vec<String>,
     #[serde(deserialize_with = "deserialize_additional_endpoints")]
     pub additional_endpoints: HashMap<String, Vec<String>>,
@@ -213,6 +227,7 @@ impl ApmConfig {
 #[serde(default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct ApmObfuscation {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub http: ApmHttpObfuscation,
 }
 
@@ -233,11 +248,15 @@ pub struct ApmHttpObfuscation {
 #[serde(default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct OtlpConfig {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub receiver: Option<OtlpReceiverConfig>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub traces: Option<OtlpTracesConfig>,
 
     // NOT SUPPORTED
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub metrics: Option<OtlpMetricsConfig>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub logs: Option<OtlpLogsConfig>,
 }
 
@@ -245,6 +264,7 @@ pub struct OtlpConfig {
 #[serde(default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct OtlpReceiverConfig {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub protocols: Option<OtlpReceiverProtocolsConfig>,
 }
 
@@ -252,9 +272,11 @@ pub struct OtlpReceiverConfig {
 #[serde(default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct OtlpReceiverProtocolsConfig {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub http: Option<OtlpReceiverHttpConfig>,
 
     // NOT SUPPORTED
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub grpc: Option<OtlpReceiverGrpcConfig>,
 }
 
@@ -262,6 +284,7 @@ pub struct OtlpReceiverProtocolsConfig {
 #[serde(default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct OtlpReceiverHttpConfig {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub endpoint: Option<String>,
 }
 
@@ -269,7 +292,9 @@ pub struct OtlpReceiverHttpConfig {
 #[serde(default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct OtlpReceiverGrpcConfig {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub endpoint: Option<String>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub transport: Option<String>,
     #[serde(deserialize_with = "deserialize_option_lossless")]
     pub max_recv_msg_size_mib: Option<i32>,
@@ -283,11 +308,13 @@ pub struct OtlpTracesConfig {
     pub enabled: Option<bool>,
     #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
     pub span_name_as_resource_name: Option<bool>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub span_name_remappings: HashMap<String, String>,
     #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
     pub ignore_missing_datadog_fields: Option<bool>,
 
     // NOT SUPORTED
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub probabilistic_sampler: Option<OtlpTracesProbabilisticSampler>,
 }
 
@@ -306,17 +333,22 @@ pub struct OtlpMetricsConfig {
     pub resource_attributes_as_tags: Option<bool>,
     #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
     pub instrumentation_scope_metadata_as_tags: Option<bool>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub tag_cardinality: Option<String>,
     #[serde(deserialize_with = "deserialize_option_lossless")]
     pub delta_ttl: Option<i32>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub histograms: Option<OtlpMetricsHistograms>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub sums: Option<OtlpMetricsSums>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub summaries: Option<OtlpMetricsSummaries>,
 }
 
 #[derive(Debug, PartialEq, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct OtlpMetricsHistograms {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub mode: Option<String>,
     #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
     pub send_count_sum_metrics: Option<bool>,
@@ -327,13 +359,16 @@ pub struct OtlpMetricsHistograms {
 #[derive(Debug, PartialEq, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct OtlpMetricsSums {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub cumulative_monotonic_mode: Option<String>,
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub initial_cumulative_monotonic_value: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct OtlpMetricsSummaries {
+    #[serde(deserialize_with = "deserialize_with_default")]
     pub mode: Option<String>,
 }
 
@@ -739,9 +774,188 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use crate::{flush_strategy::PeriodicStrategy, processing_rule::Kind};
+    use crate::{flush_strategy::PeriodicStrategy, log_level::LogLevel, processing_rule::Kind};
 
     use super::*;
+
+    /// Comprehensive test: every field in the YAML set to the wrong type.
+    /// The load MUST succeed, and every field must fall back to its default.
+    ///
+    /// When adding a new field to YamlConfig or any nested struct, add an entry
+    /// here with the wrong type to ensure graceful deserialization is in place.
+    #[test]
+    fn test_all_yaml_fields_wrong_type_fallback_to_default() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            // Non-string fields are set to [1, 2, 3] (wrong type) to exercise
+            // graceful fallback. String fields are set to valid non-default
+            // values to prove they survive alongside broken non-string fields.
+            jail.create_file(
+                "datadog.yaml",
+                r#"
+# Basic fields — string fields get valid non-default values
+site: "custom-site.example.com"
+api_key: "test-api-key-12345"
+log_level: [1, 2, 3]
+flush_timeout: [1, 2, 3]
+compression_level: [1, 2, 3]
+
+# Proxy (nested)
+proxy:
+  https: "https://proxy.example.com"
+  no_proxy: 12345
+
+# Endpoints
+dd_url: "https://custom-metrics.example.com"
+http_protocol: "http1"
+tls_cert_file: "/opt/ca-cert.pem"
+skip_ssl_validation: [1, 2, 3]
+additional_endpoints: [1, 2, 3]
+
+# Unified Service Tagging
+env: "test_env"
+service: "test_service"
+version: "v1.0.0"
+tags: 12345
+
+# Logs (nested)
+logs_config:
+  logs_dd_url: "https://custom-logs.example.com"
+  processing_rules: 12345
+  use_compression: [1, 2, 3]
+  compression_level: [1, 2, 3]
+  additional_endpoints: 12345
+
+# APM (nested)
+apm_config:
+  apm_dd_url: "https://custom-apm.example.com"
+  replace_tags: 12345
+  obfuscation:
+    http:
+      remove_query_string: [1, 2, 3]
+      remove_paths_with_digits: [1, 2, 3]
+  compression_level: [1, 2, 3]
+  features: 12345
+  additional_endpoints: [1, 2, 3]
+
+service_mapping: [1, 2, 3]
+trace_aws_service_representation_enabled: [1, 2, 3]
+
+# Trace Propagation
+trace_propagation_style: [1, 2, 3]
+trace_propagation_style_extract: [1, 2, 3]
+trace_propagation_extract_first: [1, 2, 3]
+trace_propagation_http_baggage_enabled: [1, 2, 3]
+
+# Metrics (nested)
+metrics_config:
+  compression_level: [1, 2, 3]
+
+# DogStatsD
+dogstatsd_so_rcvbuf: [1, 2, 3]
+dogstatsd_buffer_size: [1, 2, 3]
+dogstatsd_queue_size: [1, 2, 3]
+
+# OTLP (deeply nested) — string fields get valid values
+otlp_config:
+  receiver:
+    protocols:
+      http:
+        endpoint: "0.0.0.0:4318"
+      grpc:
+        endpoint: "0.0.0.0:4317"
+        transport: "tcp"
+        max_recv_msg_size_mib: [1, 2, 3]
+  traces:
+    enabled: [1, 2, 3]
+    span_name_as_resource_name: [1, 2, 3]
+    span_name_remappings: [1, 2, 3]
+    ignore_missing_datadog_fields: [1, 2, 3]
+    probabilistic_sampler:
+      sampling_percentage: [1, 2, 3]
+  metrics:
+    enabled: [1, 2, 3]
+    resource_attributes_as_tags: [1, 2, 3]
+    instrumentation_scope_metadata_as_tags: [1, 2, 3]
+    tag_cardinality: "orchestrator"
+    delta_ttl: [1, 2, 3]
+    histograms:
+      mode: "distributions"
+      send_count_sum_metrics: [1, 2, 3]
+      send_aggregation_metrics: [1, 2, 3]
+    sums:
+      cumulative_monotonic_mode: "to_delta"
+      initial_cumulative_monotonic_value: "keep"
+    summaries:
+      mode: "noquantiles"
+  logs:
+    enabled: [1, 2, 3]
+
+# AWS Lambda
+api_key_secret_arn: "arn:aws:secretsmanager:us-east-1:123:secret:key"
+kms_api_key: "kms-encrypted-key"
+serverless_logs_enabled: [1, 2, 3]
+logs_enabled: [1, 2, 3]
+serverless_flush_strategy: [1, 2, 3]
+enhanced_metrics: [1, 2, 3]
+lambda_proc_enhanced_metrics: [1, 2, 3]
+capture_lambda_payload: [1, 2, 3]
+capture_lambda_payload_max_depth: [1, 2, 3]
+compute_trace_stats_on_extension: [1, 2, 3]
+api_key_secret_reload_interval: [1, 2, 3]
+serverless_appsec_enabled: [1, 2, 3]
+appsec_rules: "/opt/custom-rules.json"
+appsec_waf_timeout: [1, 2, 3]
+api_security_enabled: [1, 2, 3]
+api_security_sample_delay: [1, 2, 3]
+"#,
+            )?;
+
+            let mut config = Config::default();
+            let source = YamlConfigSource {
+                path: PathBuf::from("datadog.yaml"),
+            };
+            // This MUST succeed — no single field should crash the whole config
+            source
+                .load(&mut config)
+                .expect("load must not fail when fields have wrong types");
+
+            // Build expected: string fields have their non-default values,
+            // all non-string fields stay at defaults.
+            let mut expected = Config::default();
+            expected.site = "custom-site.example.com".to_string();
+            expected.api_key = "test-api-key-12345".to_string();
+            expected.dd_url = "https://custom-metrics.example.com".to_string();
+            expected.logs_config_logs_dd_url = "https://custom-logs.example.com".to_string();
+            expected.apm_dd_url = "https://custom-apm.example.com".to_string();
+            expected.api_key_secret_arn =
+                "arn:aws:secretsmanager:us-east-1:123:secret:key".to_string();
+            expected.kms_api_key = "kms-encrypted-key".to_string();
+            // Option<String> fields
+            expected.proxy_https = Some("https://proxy.example.com".to_string());
+            expected.http_protocol = Some("http1".to_string());
+            expected.tls_cert_file = Some("/opt/ca-cert.pem".to_string());
+            expected.env = Some("test_env".to_string());
+            expected.service = Some("test_service".to_string());
+            expected.version = Some("v1.0.0".to_string());
+            expected.otlp_config_receiver_protocols_http_endpoint =
+                Some("0.0.0.0:4318".to_string());
+            expected.otlp_config_receiver_protocols_grpc_endpoint =
+                Some("0.0.0.0:4317".to_string());
+            expected.otlp_config_receiver_protocols_grpc_transport = Some("tcp".to_string());
+            expected.otlp_config_metrics_tag_cardinality = Some("orchestrator".to_string());
+            expected.otlp_config_metrics_histograms_mode = Some("distributions".to_string());
+            expected.otlp_config_metrics_sums_cumulative_monotonic_mode =
+                Some("to_delta".to_string());
+            expected.otlp_config_metrics_sums_initial_cumulativ_monotonic_value =
+                Some("keep".to_string());
+            expected.otlp_config_metrics_summaries_mode = Some("noquantiles".to_string());
+            expected.appsec_rules = Some("/opt/custom-rules.json".to_string());
+
+            assert_eq!(config, expected);
+            Ok(())
+        });
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]

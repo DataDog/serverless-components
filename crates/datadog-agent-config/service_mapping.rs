@@ -9,7 +9,13 @@ pub fn deserialize_service_mapping<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    let s: String = String::deserialize(deserializer)?;
+    let s: String = match String::deserialize(deserializer) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("Failed to deserialize service mapping: {e}, ignoring");
+            return Ok(HashMap::new());
+        }
+    };
 
     let map = s
         .split(',')
@@ -22,7 +28,7 @@ where
             if let (Some(service), Some(to_map)) = (service, to_map) {
                 Some((service.trim().to_string(), to_map.trim().to_string()))
             } else {
-                tracing::error!("Failed to parse service mapping '{}', expected format 'service:mapped_service', ignoring", pair.trim());
+                tracing::warn!("Failed to parse service mapping '{}', expected format 'service:mapped_service', ignoring", pair.trim());
                 None
             }
         })
