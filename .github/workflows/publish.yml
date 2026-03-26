@@ -12,8 +12,8 @@ on:
           - 'Build'
           - 'Build and Publish'
       version:
-        description: 'NPM package version (x.y.z)'
-        required: true
+        description: 'NPM package version (x.y.z) — required when running on a branch; auto-parsed from tag when running on a datadog-serverless-compat/v<x.y.z> tag'
+        required: false
         type: string
 
 permissions:
@@ -56,9 +56,23 @@ jobs:
           name: windows-amd64
           path: target/windows-amd64
       - run: upx target/windows-amd64/datadog-serverless-compat.exe --lzma
+      - name: Determine version
+        id: determine-version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/datadog-serverless-compat/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/datadog-serverless-compat/v}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            VERSION="$INPUT_VERSION"
+          else
+            echo "Error: version input is required when not running on a datadog-serverless-compat/v<x.y.z> tag"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Package binaries into npm packages
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.determine-version.outputs.version }}
         run: |
           mkdir -p npm/datadog-serverless-compat-linux-x64/bin
           cp target/linux-amd64/datadog-serverless-compat npm/datadog-serverless-compat-linux-x64/bin/
@@ -91,9 +105,6 @@ jobs:
         with:
           node-version: "22.x"
           registry-url: 'https://registry.npmjs.org'
-      - run: npm config set //registry.npmjs.org/:_authToken=$NPM_PUBLISH_TOKEN
-        env:
-          NPM_PUBLISH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
       - name: Publish npm packages
         run: |
           npm publish ./npm/datadog-serverless-compat-linux-x64 --provenance --access public
