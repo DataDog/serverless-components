@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use http_body_util::BodyExt;
 use hyper::{Method, Request};
-use libdd_common::hyper_migration;
+use libdd_common::http_common;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -186,24 +186,24 @@ fn get_region_from_gcp_region_string(str: String) -> String {
 /// tests
 #[async_trait]
 pub(crate) trait GoogleMetadataClient {
-    async fn get_metadata(&self) -> anyhow::Result<hyper_migration::HttpResponse>;
+    async fn get_metadata(&self) -> anyhow::Result<http_common::HttpResponse>;
 }
 
 struct GoogleMetadataClientWrapper {}
 
 #[async_trait]
 impl GoogleMetadataClient for GoogleMetadataClientWrapper {
-    async fn get_metadata(&self) -> anyhow::Result<hyper_migration::HttpResponse> {
+    async fn get_metadata(&self) -> anyhow::Result<http_common::HttpResponse> {
         let req = Request::builder()
             .method(Method::POST)
             .uri(GCP_METADATA_URL)
             .header("Metadata-Flavor", "Google")
-            .body(hyper_migration::Body::empty())
+            .body(http_common::Body::empty())
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
-        let client = hyper_migration::new_default_client();
+        let client = http_common::new_default_client();
         match client.request(req).await {
-            Ok(res) => Ok(hyper_migration::into_response(res)),
+            Ok(res) => Ok(http_common::into_response(res)),
             Err(err) => anyhow::bail!(err.to_string()),
         }
     }
@@ -243,7 +243,7 @@ async fn ensure_gcp_function_environment(
     Ok(gcp_metadata)
 }
 
-async fn get_gcp_metadata_from_body(body: hyper_migration::Body) -> anyhow::Result<GCPMetadata> {
+async fn get_gcp_metadata_from_body(body: http_common::Body) -> anyhow::Result<GCPMetadata> {
     let bytes = body.collect().await?.to_bytes();
     let body_str = String::from_utf8(bytes.to_vec())?;
     let gcp_metadata: GCPMetadata = serde_json::from_str(&body_str)?;
@@ -361,7 +361,7 @@ async fn ensure_azure_function_environment(
 mod tests {
     use async_trait::async_trait;
     use hyper::{Response, StatusCode, body::Bytes};
-    use libdd_common::hyper_migration;
+    use libdd_common::http_common;
     use libdd_trace_utils::trace_utils;
     use serde_json::json;
     use serial_test::serial;
@@ -382,7 +382,7 @@ mod tests {
         struct MockGoogleMetadataClient {}
         #[async_trait]
         impl GoogleMetadataClient for MockGoogleMetadataClient {
-            async fn get_metadata(&self) -> anyhow::Result<hyper_migration::HttpResponse> {
+            async fn get_metadata(&self) -> anyhow::Result<http_common::HttpResponse> {
                 anyhow::bail!("Random Error")
             }
         }
@@ -401,9 +401,9 @@ mod tests {
         struct MockGoogleMetadataClient {}
         #[async_trait]
         impl GoogleMetadataClient for MockGoogleMetadataClient {
-            async fn get_metadata(&self) -> anyhow::Result<hyper_migration::HttpResponse> {
+            async fn get_metadata(&self) -> anyhow::Result<http_common::HttpResponse> {
                 Ok(
-                    hyper_migration::empty_response(Response::builder().status(StatusCode::OK))
+                    http_common::empty_response(Response::builder().status(StatusCode::OK))
                         .unwrap(),
                 )
             }
@@ -423,8 +423,8 @@ mod tests {
         struct MockGoogleMetadataClient {}
         #[async_trait]
         impl GoogleMetadataClient for MockGoogleMetadataClient {
-            async fn get_metadata(&self) -> anyhow::Result<hyper_migration::HttpResponse> {
-                Ok(hyper_migration::empty_response(
+            async fn get_metadata(&self) -> anyhow::Result<http_common::HttpResponse> {
+                Ok(http_common::empty_response(
                     Response::builder()
                         .status(StatusCode::OK)
                         .header("Server", "Metadata Server NOT for Serverless"),
@@ -447,8 +447,8 @@ mod tests {
         struct MockGoogleMetadataClient {}
         #[async_trait]
         impl GoogleMetadataClient for MockGoogleMetadataClient {
-            async fn get_metadata(&self) -> anyhow::Result<hyper_migration::HttpResponse> {
-                Ok(hyper_migration::mock_response(
+            async fn get_metadata(&self) -> anyhow::Result<http_common::HttpResponse> {
+                Ok(http_common::mock_response(
                     Response::builder()
                         .status(StatusCode::OK)
                         .header("Server", "Metadata Server for Serverless"),
@@ -489,11 +489,11 @@ mod tests {
         struct MockGoogleMetadataClient {}
         #[async_trait]
         impl GoogleMetadataClient for MockGoogleMetadataClient {
-            async fn get_metadata(&self) -> anyhow::Result<hyper_migration::HttpResponse> {
+            async fn get_metadata(&self) -> anyhow::Result<http_common::HttpResponse> {
                 // Sleep for 5 seconds to let the timeout trigger
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 Ok(
-                    hyper_migration::empty_response(Response::builder().status(StatusCode::OK))
+                    http_common::empty_response(Response::builder().status(StatusCode::OK))
                         .unwrap(),
                 )
             }

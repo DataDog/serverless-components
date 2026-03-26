@@ -7,7 +7,7 @@ use datadog_trace_agent::{
     config::Config, env_verifier::EnvVerifier, stats_flusher::StatsFlusher,
     stats_processor::StatsProcessor, trace_flusher::TraceFlusher, trace_processor::TraceProcessor,
 };
-use libdd_common::hyper_migration;
+use libdd_common::http_common;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils::{self, MiniAgentMetadata, SendData};
 use std::sync::Arc;
@@ -22,13 +22,13 @@ impl TraceProcessor for MockTraceProcessor {
     async fn process_traces(
         &self,
         _config: Arc<Config>,
-        _req: hyper_migration::HttpRequest,
+        _req: http_common::HttpRequest,
         _trace_tx: Sender<SendData>,
         _mini_agent_metadata: Arc<MiniAgentMetadata>,
-    ) -> Result<hyper_migration::HttpResponse, hyper::http::Error> {
+    ) -> Result<http_common::HttpResponse, hyper::http::Error> {
         hyper::Response::builder()
             .status(200)
-            .body(hyper_migration::Body::from("{}"))
+            .body(http_common::Body::from("{}"))
     }
 }
 
@@ -68,12 +68,12 @@ impl StatsProcessor for MockStatsProcessor {
     async fn process_stats(
         &self,
         _config: Arc<Config>,
-        _req: hyper_migration::HttpRequest,
+        _req: http_common::HttpRequest,
         _stats_tx: Sender<pb::ClientStatsPayload>,
-    ) -> Result<hyper_migration::HttpResponse, hyper::http::Error> {
+    ) -> Result<http_common::HttpResponse, hyper::http::Error> {
         hyper::Response::builder()
             .status(200)
-            .body(hyper_migration::Body::from("{}"))
+            .body(http_common::Body::from("{}"))
     }
 }
 

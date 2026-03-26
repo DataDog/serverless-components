@@ -5,7 +5,7 @@
 
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
-use libdd_common::hyper_migration;
+use libdd_common::http_common;
 use libdd_trace_utils::test_utils::create_test_json_span;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::time::timeout;
@@ -45,10 +45,10 @@ pub async fn send_tcp_request(
     let response = if let Some(body_data) = body {
         let body_len = body_data.len();
         request_builder = request_builder.header("Content-Length", body_len.to_string());
-        let request = request_builder.body(hyper_migration::Body::from(body_data))?;
+        let request = request_builder.body(http_common::Body::from(body_data))?;
         timeout(Duration::from_secs(2), sender.send_request(request)).await??
     } else {
-        let request = request_builder.body(hyper_migration::Body::empty())?;
+        let request = request_builder.body(http_common::Body::empty())?;
         timeout(Duration::from_secs(2), sender.send_request(request)).await??
     };
 
@@ -83,10 +83,10 @@ pub async fn send_named_pipe_request(
     let response = if let Some(body_data) = body {
         let body_len = body_data.len();
         request_builder = request_builder.header("Content-Length", body_len.to_string());
-        let request = request_builder.body(hyper_migration::Body::from(body_data))?;
+        let request = request_builder.body(http_common::Body::from(body_data))?;
         timeout(Duration::from_secs(2), sender.send_request(request)).await??
     } else {
-        let request = request_builder.body(hyper_migration::Body::empty())?;
+        let request = request_builder.body(http_common::Body::empty())?;
         timeout(Duration::from_secs(2), sender.send_request(request)).await??
     };
 
