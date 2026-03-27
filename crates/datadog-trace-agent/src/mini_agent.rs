@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
 use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
@@ -31,6 +31,13 @@ const PROFILING_ENDPOINT_PATH: &str = "/profiling/v1/input";
 const TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const STATS_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
+/// Sentinel file written on startup in Lambda Lite mode.
+/// dd-trace (Node.js) checks this path via DATADOG_MINI_AGENT_PATH in constants.js
+/// (datadog/dd-trace-js) to decide whether to switch from LogExporter (stdout) to
+/// AgentExporter (HTTP :8126).
+/// The parent directory `/tmp/datadog/` is created by the serverless-compat JS layer
+/// before this binary is spawned.
+const LAMBDA_LITE_SENTINEL_PATH: &str = "/tmp/datadog/mini_agent_ready";
 
 pub struct MiniAgent {
     pub config: Arc<config::Config>,
@@ -172,6 +179,36 @@ impl MiniAgent {
             // TCP transport
             let addr = SocketAddr::from(([127, 0, 0, 1], self.config.dd_apm_receiver_port));
             let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+            // Write the sentinel file after the listener is bound so that dd-trace
+            // (Node.js) only switches from LogExporter (stdout) to AgentExporter
+            // (HTTP :8126) once the port is actually ready to accept connections.
+            // Only written for Lambda Lite; standard Lambda invocations use the
+            // Extension path (/opt/extensions/datadog-agent) instead.
+            // /opt is read-only in Lambda Lite, so we use /tmp/datadog/ (created
+            // by the serverless-compat JS layer before spawning this binary).
+            if crate::http_utils::is_lambda_lite() {
+                let sentinel = std::path::Path::new(LAMBDA_LITE_SENTINEL_PATH);
+                // SAFETY: LAMBDA_LITE_SENTINEL_PATH is a hard-coded absolute path,
+                // so .parent() always returns Some.
+                if let Some(parent) = sentinel.parent() {
+                    if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                        error!(
+                            "Could not create parent directory for Lambda Lite sentinel \
+                             file at {}: {}.",
+                            LAMBDA_LITE_SENTINEL_PATH, e
+                        );
+                    }
+                }
+                if let Err(e) = tokio::fs::write(sentinel, b"").await {
+                    error!(
+                        "Could not write Lambda Lite sentinel file at {}: {}. \
+                         dd-trace (Node.js) will fall back to LogExporter (stdout), \
+                         traces may not reach Datadog.",
+                        LAMBDA_LITE_SENTINEL_PATH, e
+                    );
+                }
+            }
 
             Self::serve_tcp(
                 listener,
