@@ -4,7 +4,7 @@
 use http_body_util::BodyExt;
 use hyper::service::service_fn;
 use hyper::{Method, Response, StatusCode, http};
-use libdd_common::hyper_migration;
+use libdd_common::http_common;
 use serde_json::json;
 use std::io;
 use std::net::SocketAddr;
@@ -125,7 +125,7 @@ impl MiniAgent {
 
             MiniAgent::trace_endpoint_handler(
                 endpoint_config,
-                req.map(hyper_migration::Body::incoming),
+                req.map(http_common::Body::incoming),
                 trace_processor,
                 trace_tx,
                 stats_processor,
@@ -231,7 +231,7 @@ impl MiniAgent {
     where
         S: hyper::service::Service<
                 hyper::Request<hyper::body::Incoming>,
-                Response = hyper::Response<hyper_migration::Body>,
+                Response = hyper::Response<http_common::Body>,
             > + Clone
             + Send
             + 'static,
@@ -302,7 +302,7 @@ impl MiniAgent {
     where
         S: hyper::service::Service<
                 hyper::Request<hyper::body::Incoming>,
-                Response = hyper::Response<hyper_migration::Body>,
+                Response = hyper::Response<http_common::Body>,
             > + Clone
             + Send
             + 'static,
@@ -385,14 +385,14 @@ impl MiniAgent {
     #[allow(clippy::too_many_arguments)]
     async fn trace_endpoint_handler(
         config: Arc<config::Config>,
-        req: hyper_migration::HttpRequest,
+        req: http_common::HttpRequest,
         trace_processor: Arc<dyn trace_processor::TraceProcessor + Send + Sync>,
         trace_tx: Sender<SendData>,
         stats_processor: Arc<dyn stats_processor::StatsProcessor + Send + Sync>,
         stats_tx: Sender<pb::ClientStatsPayload>,
         mini_agent_metadata: Arc<trace_utils::MiniAgentMetadata>,
         proxy_tx: Sender<ProxyRequest>,
-    ) -> http::Result<hyper_migration::HttpResponse> {
+    ) -> http::Result<http_common::HttpResponse> {
         match (req.method(), req.uri().path()) {
             (&Method::PUT | &Method::POST, TRACE_ENDPOINT_PATH) => {
                 match trace_processor
@@ -449,9 +449,9 @@ impl MiniAgent {
     /// Handles incoming proxy requests for profiling - can be abstracted into a generic proxy handler for other proxy requests in the future
     async fn profiling_proxy_handler(
         config: Arc<config::Config>,
-        request: hyper_migration::HttpRequest,
+        request: http_common::HttpRequest,
         proxy_tx: Sender<ProxyRequest>,
-    ) -> http::Result<hyper_migration::HttpResponse> {
+    ) -> http::Result<http_common::HttpResponse> {
         debug!("Received profiling request");
 
         // Extract headers and body
@@ -503,7 +503,7 @@ impl MiniAgent {
         dd_apm_receiver_port: u16,
         dd_apm_windows_pipe_name: Option<&str>,
         dd_dogstatsd_port: u16,
-    ) -> http::Result<hyper_migration::HttpResponse> {
+    ) -> http::Result<http_common::HttpResponse> {
         // pipe_name already includes \\.\pipe\ prefix from config
         let receiver_socket = dd_apm_windows_pipe_name.unwrap_or("");
 
@@ -527,6 +527,6 @@ impl MiniAgent {
         );
         Response::builder()
             .status(200)
-            .body(hyper_migration::Body::from(response_json.to_string()))
+            .body(http_common::Body::from(response_json.to_string()))
     }
 }

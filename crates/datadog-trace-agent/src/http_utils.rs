@@ -7,7 +7,7 @@ use hyper::{
     Response, StatusCode, header,
     http::{self, HeaderMap},
 };
-use libdd_common::hyper_migration;
+use libdd_common::http_common;
 use serde_json::json;
 use std::error::Error;
 use tracing::{debug, error};
@@ -24,7 +24,7 @@ use tracing::{debug, error};
 pub fn log_and_create_http_response(
     message: &str,
     status: StatusCode,
-) -> http::Result<Response<hyper_migration::Body>> {
+) -> http::Result<Response<http_common::Body>> {
     if status.is_success() {
         debug!("{message}");
     } else {
@@ -33,7 +33,7 @@ pub fn log_and_create_http_response(
     let body = json!({ "message": message }).to_string();
     Response::builder()
         .status(status)
-        .body(hyper_migration::Body::from(body))
+        .body(http_common::Body::from(body))
 }
 
 /// Does two things:
@@ -50,12 +50,12 @@ pub fn log_and_create_http_response(
 pub fn log_and_create_traces_success_http_response(
     message: &str,
     status: StatusCode,
-) -> http::Result<hyper_migration::HttpResponse> {
+) -> http::Result<http_common::HttpResponse> {
     debug!("{message}");
     let body = json!({"rate_by_service":{"service:,env:":1}}).to_string();
     Response::builder()
         .status(status)
-        .body(hyper_migration::Body::from(body))
+        .body(http_common::Body::from(body))
 }
 
 /// Takes a request's header map, and verifies that the "content-length" and/or "Transfer-Encoding" header
@@ -67,7 +67,7 @@ pub fn verify_request_content_length(
     header_map: &HeaderMap,
     max_content_length: usize,
     error_message_prefix: &str,
-) -> Option<http::Result<hyper_migration::HttpResponse>> {
+) -> Option<http::Result<http_common::HttpResponse>> {
     let content_length_header = match header_map.get(header::CONTENT_LENGTH) {
         Some(res) => res,
         None => {
@@ -151,7 +151,7 @@ mod tests {
     use hyper::HeaderMap;
     use hyper::StatusCode;
     use hyper::header;
-    use libdd_common::hyper_migration;
+    use libdd_common::http_common;
 
     use super::is_lambda_lite_from_env;
     use super::verify_request_content_length;
@@ -182,7 +182,7 @@ mod tests {
         map
     }
 
-    async fn get_response_body_as_string(response: hyper_migration::HttpResponse) -> String {
+    async fn get_response_body_as_string(response: http_common::HttpResponse) -> String {
         let body = response.into_body();
         let bytes = body.collect().await.unwrap().to_bytes();
         String::from_utf8(bytes.into_iter().collect()).unwrap()
