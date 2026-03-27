@@ -6,7 +6,7 @@
 use http_body_util::BodyExt;
 use hyper::{Request, Response, body::Incoming};
 use hyper_util::rt::TokioIo;
-use libdd_common::hyper_migration;
+use libdd_common::http_common;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
@@ -86,7 +86,7 @@ impl MockServer {
                                     Ok::<_, hyper::http::Error>(
                                         Response::builder()
                                             .status(200)
-                                            .body(hyper_migration::Body::from(r#"{"ok":true}"#))
+                                            .body(http_common::Body::from(r#"{"ok":true}"#))
                                             .unwrap(),
                                     )
                                 }

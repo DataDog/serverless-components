@@ -6,7 +6,7 @@ use std::{error::Error, sync::Arc, time};
 use tokio::sync::{Mutex, mpsc::Receiver};
 use tracing::{debug, error};
 
-use libdd_common::{GenericHttpClient, hyper_migration};
+use libdd_common::{GenericHttpClient, http_common};
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
@@ -111,12 +111,12 @@ impl ServerlessTraceFlusher {
                 libdd_common::connector::Connector::default(),
                 proxy,
             )?;
-            Ok(hyper_migration::client_builder().build(proxy_connector))
+            Ok(http_common::client_builder().build(proxy_connector))
         } else {
             let proxy_connector = hyper_http_proxy::ProxyConnector::new(
                 libdd_common::connector::Connector::default(),
             )?;
-            Ok(hyper_migration::client_builder().build(proxy_connector))
+            Ok(http_common::client_builder().build(proxy_connector))
         }
     }
 }

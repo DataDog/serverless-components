@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyper::{StatusCode, http};
-use libdd_common::hyper_migration;
+use libdd_common::http_common;
 use tokio::sync::mpsc::Sender;
 use tracing::debug;
 
@@ -29,10 +29,10 @@ pub trait TraceProcessor {
     async fn process_traces(
         &self,
         config: Arc<Config>,
-        req: hyper_migration::HttpRequest,
+        req: http_common::HttpRequest,
         tx: Sender<trace_utils::SendData>,
         mini_agent_metadata: Arc<trace_utils::MiniAgentMetadata>,
-    ) -> http::Result<hyper_migration::HttpResponse>;
+    ) -> http::Result<http_common::HttpResponse>;
 }
 
 struct ChunkProcessor {
@@ -72,10 +72,10 @@ impl TraceProcessor for ServerlessTraceProcessor {
     async fn process_traces(
         &self,
         config: Arc<Config>,
-        req: hyper_migration::HttpRequest,
+        req: http_common::HttpRequest,
         tx: Sender<trace_utils::SendData>,
         mini_agent_metadata: Arc<trace_utils::MiniAgentMetadata>,
-    ) -> http::Result<hyper_migration::HttpResponse> {
+    ) -> http::Result<http_common::HttpResponse> {
         debug!("Received traces to process");
         let (parts, body) = req.into_parts();
 
@@ -170,7 +170,7 @@ mod tests {
         config::{Config, Tags},
         trace_processor::{self, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY, TraceProcessor},
     };
-    use libdd_common::{Endpoint, hyper_migration};
+    use libdd_common::{Endpoint, http_common};
     use libdd_trace_protobuf::pb;
     use libdd_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
     use libdd_trace_utils::trace_utils::MiniAgentMetadata;
@@ -251,7 +251,7 @@ mod tests {
             .header("datadog-meta-lang-interpreter", "v8")
             .header("datadog-container-id", "33")
             .header("content-length", "100")
-            .body(hyper_migration::Body::from(bytes))
+            .body(http_common::Body::from(bytes))
             .unwrap();
 
         let trace_processor = trace_processor::ServerlessTraceProcessor {};
@@ -323,7 +323,7 @@ mod tests {
             .header("datadog-meta-lang-interpreter", "v8")
             .header("datadog-container-id", "33")
             .header("content-length", "100")
-            .body(hyper_migration::Body::from(bytes))
+            .body(http_common::Body::from(bytes))
             .unwrap();
 
         let trace_processor = trace_processor::ServerlessTraceProcessor {};
