@@ -1,0 +1,22 @@
+{
+  "name": "@datadog/serverless-compat-win32-ia32",
+  "version": "0.0.0",
+  "description": "Windows ia32 binary for the Datadog Serverless Compatibility Layer",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "ia32"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DataDog/serverless-components"
+  }
+}
