@@ -1,12 +1,13 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-//! CPU metrics collector for Azure Functions
+//! CPU metrics collector for Azure Functions (Windows)
 //!
-//! This module provides functionality to read raw CPU statistics
-//! and compute the CPU usage and limit in Windows environments.
+//! NOTE: Windows CPU enhanced metrics are not yet supported.
+//! WindowsCpuStatsReader currently always returns None, so no CPU
+//! usage or limit information is reported in Windows environments.
 //!
-//! All CPU metrics are reported in nanocores (1 core = 1,000,000,000 nanocores).
+//! All CPU metrics will be reported in nanocores (1 core = 1,000,000,000 nanocores).
 
 use crate::cpu::{CpuStats, CpuStatsReader};
 
