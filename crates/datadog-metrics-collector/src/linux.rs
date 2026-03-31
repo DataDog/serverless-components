@@ -110,24 +110,39 @@ fn read_cpu_count_from_file(path: &str) -> Result<u64, io::Error> {
 
     for part in cpuset_str.split(',') {
         let range: Vec<&str> = part.split('-').collect();
-        if range.len() == 2 {
-            // Range like "0-3"
-            let start: u64 = range[0].parse().map_err(|e| {
-                io::Error::new(
+        match range.len() {
+            2 => {
+                // Range like "0-3"
+                let start: u64 = range[0].parse().map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to parse u64 from range {range:?}: {e}"),
+                    )
+                })?;
+                let end: u64 = range[1].parse().map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to parse u64 from range {range:?}: {e}"),
+                    )
+                })?;
+                cpu_count += end - start + 1;
+            }
+            1 => {
+                // Single CPU like "2"
+                part.parse::<u64>().map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to parse u64 from cpu index {part:?}: {e}"),
+                    )
+                })?;
+                cpu_count += 1;
+            }
+            _ => {
+                return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("Failed to parse u64 from range {range:?}: {e}"),
-                )
-            })?;
-            let end: u64 = range[1].parse().map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Failed to parse u64 from range {range:?}: {e}"),
-                )
-            })?;
-            cpu_count += end - start + 1;
-        } else {
-            // Single CPU like "2"
-            cpu_count += 1;
+                    format!("Malformed cpuset segment: {part:?}"),
+                ));
+            }
         }
     }
     Ok(cpu_count)
@@ -244,6 +259,22 @@ mod tests {
         std::fs::write(&path, "0-2,16\n").unwrap();
         let count = read_cpu_count_from_file(path.to_str().unwrap()).unwrap();
         assert_eq!(count, 4); // 0,1,2 + 16
+    }
+
+    #[test]
+    fn test_read_cpu_count_malformed_segment() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("cpuset_malformed.txt");
+        std::fs::write(&path, "0-3-5\n").unwrap();
+        assert!(read_cpu_count_from_file(path.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_read_cpu_count_invalid_index() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("cpuset_invalid.txt");
+        std::fs::write(&path, "foo\n").unwrap();
+        assert!(read_cpu_count_from_file(path.to_str().unwrap()).is_err());
     }
 
     #[test]
