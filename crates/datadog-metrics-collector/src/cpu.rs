@@ -83,6 +83,10 @@ impl CpuMetricsCollector {
                 .duration_since(self.last_collection_time)
                 .as_secs_f64();
             self.last_collection_time = now_instant;
+            if elapsed_secs <= 0.0 {
+                debug!("Elapsed time is less than or equal to 0, skipping interval");
+                return;
+            }
 
             // Divide nanoseconds delta by elapsed time to get usage rate in nanocores
             let usage_rate_nc = delta_ns / elapsed_secs;
