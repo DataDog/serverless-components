@@ -1,7 +1,7 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-//! CPU metrics collector for Azure Functions
+//! CPU metrics collector for Azure Functions (Linux)
 //!
 //! This module provides functionality to read raw CPU statistics from cgroup v1 files
 //! and compute the CPU usage and limit in Linux environments.
