@@ -50,13 +50,22 @@ pub async fn main() {
         .map(|val| val.to_lowercase())
         .unwrap_or("info".to_string());
 
-    let (_, env_type) = match read_cloud_env() {
+    let (_, mut env_type) = match read_cloud_env() {
         Some(value) => value,
         None => {
             error!("Unable to identify environment. Shutting down Mini Agent.");
             return;
         }
     };
+
+    if let Ok(res) = env::var("DD_ENV_TYPE") {
+        match res.to_lowercase().as_str() {
+            "cloudfunction" => env_type = EnvironmentType::CloudFunction,
+            "azurefunction" => env_type = EnvironmentType::AzureFunction,
+            "azurespringapp" => env_type = EnvironmentType::AzureSpringApp,
+            _ => {}
+        }
+    }
 
     let dogstatsd_tags = match env_type {
         EnvironmentType::CloudFunction => "origin:cloudfunction,dd.origin:cloudfunction",
