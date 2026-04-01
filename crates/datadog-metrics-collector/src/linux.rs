@@ -69,19 +69,30 @@ fn read_cgroup_stats() -> CgroupStats {
         debug!("Could not read scheduler period from {CGROUP_CPU_PERIOD_PATH}");
     }
 
-    let scheduler_quota = fs::read_to_string(CGROUP_CPU_QUOTA_PATH)
-        .ok()
-        .and_then(|contents| {
-            contents.trim().parse::<i64>().ok().and_then(|quota| {
-                // Convert from microseconds to nanoseconds
-                if quota == -1 {
-                    debug!("CFS scheduler quota is -1, setting to None");
-                    None
-                } else {
-                    Some((quota * 1000) as u64)
+    let scheduler_quota = match fs::read_to_string(CGROUP_CPU_QUOTA_PATH) {
+        Ok(contents) => {
+            let trimmed = contents.trim();
+            match trimmed.parse::<i64>() {
+                Ok(quota) => {
+                    // Convert from microseconds to nanoseconds
+                    if quota == -1 {
+                        debug!("CFS scheduler quota is -1, setting to None");
+                        None
+                    } else {
+                        Some((quota * 1000) as u64)
+                    }
                 }
-            })
-        });
+                Err(e) => {
+                    debug!("Could not parse scheduler quota from {CGROUP_CPU_QUOTA_PATH}: {e}");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            debug!("Could not read scheduler quota from {CGROUP_CPU_QUOTA_PATH}: {e}");
+            None
+        }
+    };
 
     CgroupStats {
         total,
