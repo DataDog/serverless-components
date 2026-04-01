@@ -42,7 +42,7 @@ fn build_cpu_stats(cgroup_stats: &CgroupStats) -> Option<CpuStats> {
     let (limit_nc, defaulted) = compute_cpu_limit_nc(cgroup_stats);
 
     Some(CpuStats {
-        total: total,
+        total,
         limit: Some(limit_nc),
         defaulted_limit: defaulted,
     })
@@ -136,6 +136,12 @@ fn read_cpu_count_from_file(path: &str) -> Result<u64, io::Error> {
                         format!("Failed to parse u64 from range {range:?}: {e}"),
                     )
                 })?;
+                if end < start {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Invalid CPU range: {range:?}"),
+                    ));
+                }
                 cpu_count += end - start + 1;
             }
             1 => {
@@ -255,9 +261,18 @@ mod tests {
     }
 
     #[test]
-    fn test_read_cpu_count_single() {
+    fn test_read_cpu_count_single_cpu() {
         let dir = std::env::temp_dir();
-        let path = dir.join("cpuset_single.txt");
+        let path = dir.join("cpuset_single_cpu.txt");
+        std::fs::write(&path, "4\n").unwrap();
+        let count = read_cpu_count_from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_read_cpu_count_range() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("cpuset_range.txt");
         std::fs::write(&path, "0-3\n").unwrap();
         let count = read_cpu_count_from_file(path.to_str().unwrap()).unwrap();
         assert_eq!(count, 4);
@@ -270,6 +285,14 @@ mod tests {
         std::fs::write(&path, "0-2,16\n").unwrap();
         let count = read_cpu_count_from_file(path.to_str().unwrap()).unwrap();
         assert_eq!(count, 4); // 0,1,2 + 16
+    }
+
+    #[test]
+    fn test_read_cpu_count_invalid_range() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("cpuset_invalid_range.txt");
+        std::fs::write(&path, "3-1\n").unwrap();
+        assert!(read_cpu_count_from_file(path.to_str().unwrap()).is_err());
     }
 
     #[test]

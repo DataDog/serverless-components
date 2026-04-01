@@ -59,7 +59,6 @@ impl CpuMetricsCollector {
 
     pub fn collect_and_submit(&mut self) {
         if let Some(cpu_stats) = self.reader.read() {
-            // Submit metrics
             let current_usage_ns = cpu_stats.total;
             let now_instant = std::time::Instant::now();
 
@@ -77,6 +76,7 @@ impl CpuMetricsCollector {
                 self.last_collection_time = now_instant;
                 return;
             }
+
             let delta_ns = (current_usage_ns - last_usage_ns) as f64;
             self.last_usage_ns = Some(current_usage_ns);
             let elapsed_secs = now_instant
@@ -133,10 +133,9 @@ impl CpuMetricsCollector {
 
 pub fn build_cpu_metrics_tags() -> Option<SortedTags> {
     let mut tag_parts = Vec::new();
-    // Azure tags from ddcommon
+    // Azure tags from libdd_common
     if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
         let aas_tags = [
-            ("resource_id", aas_metadata.get_resource_id()),
             ("resource_group", aas_metadata.get_resource_group()),
             ("subscription_id", aas_metadata.get_subscription_id()),
             ("name", aas_metadata.get_site_name()),
@@ -148,7 +147,7 @@ pub fn build_cpu_metrics_tags() -> Option<SortedTags> {
         }
     }
 
-    // Tags from env vars (not in ddcommon) - origin tag is added by DogStatsD
+    // Tags from env vars (not in libdd_common) - origin tag is added by DogStatsD
     for (tag_name, env_var) in [
         ("region", "REGION_NAME"),
         ("plan_tier", "WEBSITE_SKU"),
