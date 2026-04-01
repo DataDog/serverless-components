@@ -157,10 +157,10 @@ pub fn build_cpu_metrics_tags() -> Option<SortedTags> {
         ("version", "DD_VERSION"),
         ("serverless_compat_version", "DD_SERVERLESS_COMPAT_VERSION"),
     ] {
-        if let Ok(val) = env::var(env_var) {
-            if !val.is_empty() {
-                tag_parts.push(format!("{}:{}", tag_name, val));
-            }
+        if let Ok(val) = env::var(env_var)
+            && !val.is_empty()
+        {
+            tag_parts.push(format!("{}:{}", tag_name, val));
         }
     }
 
