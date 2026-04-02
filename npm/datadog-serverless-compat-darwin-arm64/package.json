@@ -1,0 +1,25 @@
+{
+  "name": "@datadog/serverless-compat-darwin-arm64",
+  "version": "0.0.0",
+  "description": "macOS arm64 binary for the Datadog Serverless Compatibility Layer",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "executableFiles": [
+      "./bin/datadog-serverless-compat"
+    ]
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DataDog/serverless-components"
+  }
+}
