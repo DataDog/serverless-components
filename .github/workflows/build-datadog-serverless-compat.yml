@@ -63,3 +63,25 @@ jobs:
           name: windows-amd64
           path: target/release/datadog-serverless-compat.exe
           retention-days: 3
+      - if: ${{ inputs.runner == 'windows-2022' }}
+        shell: bash
+        run: |
+          rustup target add i686-pc-windows-msvc
+          cargo build --release -p datadog-serverless-compat \
+            --target i686-pc-windows-msvc \
+            --features windows-pipes
+      - if: ${{ inputs.runner == 'windows-2022' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # 4.6.2
+        with:
+          name: windows-ia32
+          path: target/i686-pc-windows-msvc/release/datadog-serverless-compat.exe
+          retention-days: 3
+      - if: ${{ inputs.runner == 'macos-14' }}
+        shell: bash
+        run: cargo build --release -p datadog-serverless-compat
+      - if: ${{ inputs.runner == 'macos-14' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # 4.6.2
+        with:
+          name: darwin-arm64
+          path: target/release/datadog-serverless-compat
+          retention-days: 3
