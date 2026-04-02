@@ -4,8 +4,8 @@ pub mod sources;
 // Re-export submodules at the crate root so existing imports like
 // `crate::flush_strategy::FlushStrategy` and `crate::env::EnvConfigSource` keep working.
 pub use deserializers::{
-    additional_endpoints, apm_replace_rule, flush_strategy, log_level,
-    logs_additional_endpoints, processing_rule, service_mapping,
+    additional_endpoints, apm_replace_rule, flush_strategy, log_level, logs_additional_endpoints,
+    processing_rule, service_mapping,
 };
 pub use sources::{env, yaml};
 
@@ -19,8 +19,8 @@ use libdd_trace_utils::config_utils::{trace_intake_url, trace_intake_url_prefixe
 
 use serde::Deserialize;
 
-use std::path::Path;
 use std::collections::HashMap;
+use std::path::Path;
 use tracing::{debug, error};
 
 use crate::{
@@ -32,297 +32,9 @@ use crate::{
     yaml::YamlConfigSource,
 };
 
-/// Helper macro to merge Option<String> fields to String fields
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_string {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if let Some(value) = &$source.$source_field {
-            $config.$config_field.clone_from(value);
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if let Some(value) = &$source.$field {
-            $config.$field.clone_from(value);
-        }
-    };
-}
-
-/// Helper macro to merge Option<T> fields where T implements Clone
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_option {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if $source.$source_field.is_some() {
-            $config.$config_field.clone_from(&$source.$source_field);
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if $source.$field.is_some() {
-            $config.$field.clone_from(&$source.$field);
-        }
-    };
-}
-
-/// Helper macro to merge Option<T> fields to T fields when Option<T> is Some
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_option_to_value {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if let Some(value) = &$source.$source_field {
-            $config.$config_field = value.clone();
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if let Some(value) = &$source.$field {
-            $config.$field = value.clone();
-        }
-    };
-}
-
-/// Helper macro to merge `Vec` fields when `Vec` is not empty
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_vec {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if !$source.$source_field.is_empty() {
-            $config.$config_field.clone_from(&$source.$source_field);
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if !$source.$field.is_empty() {
-            $config.$field.clone_from(&$source.$field);
-        }
-    };
-}
-
-// nit: these will replace one map with the other, not merge the maps togehter, right?
-/// Helper macro to merge `HashMap` fields when `HashMap` is not empty
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_hashmap {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if !$source.$source_field.is_empty() {
-            $config.$config_field.clone_from(&$source.$source_field);
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if !$source.$field.is_empty() {
-            $config.$field.clone_from(&$source.$field);
-        }
-    };
-}
-
-/// Trait that extension configs must implement to add additional configuration
-/// fields beyond what the core provides.
-///
-/// Extensions allow consumers to define their own external configuration fields
-/// that are deserialized from environment variables and YAML files alongside
-/// core fields via dual extraction.
-///
-/// # Source type requirements
-///
-/// The `Source` type must use `#[serde(default)]` on the struct and graceful
-/// deserializers (e.g., `deserialize_optional_bool_from_anything`) on each field
-/// to ensure that a single bad value doesn't fail the entire extraction.
-///
-/// # Flat fields only
-///
-/// A single `Source` type is used for both environment variable and YAML
-/// extraction. This works when all extension fields are top-level (flat) in
-/// the YAML file, which is the common case for extension configs:
-///
-/// ```yaml
-/// # Works: flat fields map naturally to both DD_* env vars and YAML keys
-/// enhanced_metrics: true
-/// capture_lambda_payload: false
-/// ```
-///
-/// If you need nested YAML structures (e.g., `lambda: { enhanced_metrics: true }`)
-/// that differ from the flat env var layout, implement `merge_from` with a
-/// nested source struct and handle the mapping manually instead of using
-/// `merge_fields!`.
-pub trait ConfigExtension: Clone + Default + std::fmt::Debug + PartialEq {
-    /// Intermediate type for deserializing extension fields.
-    /// Used for both environment variable and YAML extraction.
-    type Source: Default + serde::de::DeserializeOwned + Clone + std::fmt::Debug;
-
-    /// Merge parsed source fields into self.
-    fn merge_from(&mut self, source: &Self::Source);
-}
-
-/// Batch-merge extension fields from a source struct.
-///
-/// Groups fields by merge strategy so you don't have to write individual
-/// `merge_string!` / `merge_option_to_value!` / `merge_option!` calls.
-///
-/// ```ignore
-/// merge_fields!(self, source,
-///     string: [api_key_secret_arn, kms_api_key],
-///     value:  [enhanced_metrics, capture_lambda_payload],
-///     option: [span_dedup_timeout, appsec_rules],
-/// );
-/// ```
-#[macro_export]
-macro_rules! merge_fields {
-    // Internal rules dispatched by keyword
-    (@string $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
-        $( $crate::merge_string!($config, $source, $field); )*
-    };
-    (@value $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
-        $( $crate::merge_option_to_value!($config, $source, $field); )*
-    };
-    (@option $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
-        $( $crate::merge_option!($config, $source, $field); )*
-    };
-    // Public entry point: accepts any combination of groups in any order
-    ($config:expr, $source:expr, $($kind:ident: [$($field:ident),* $(,)?]),* $(,)?) => {
-        $( $crate::merge_fields!(@$kind $config, $source, [$($field),*]); )*
-    };
-}
-
-/// A no-op extension for consumers that don't need extra fields.
-#[derive(Clone, Default, Debug, PartialEq)]
-pub struct NoExtension;
-
-/// A no-op source for deserialization that accepts (and ignores) any input.
-#[derive(Clone, Default, Debug, Deserialize)]
-pub struct NoExtensionSource;
-
-impl ConfigExtension for NoExtension {
-    type Source = NoExtensionSource;
-    fn merge_from(&mut self, _source: &Self::Source) {}
-}
-
-#[derive(Debug, PartialEq)]
-#[allow(clippy::module_name_repetitions)]
-pub enum ConfigError {
-    ParseError(String),
-    UnsupportedField(String),
-}
-
-#[allow(clippy::module_name_repetitions)]
-pub trait ConfigSource<E: ConfigExtension> {
-    fn load(&self, config: &mut Config<E>) -> Result<(), ConfigError>;
-}
-
-#[allow(clippy::module_name_repetitions)]
-pub struct ConfigBuilder<E: ConfigExtension = NoExtension> {
-    sources: Vec<Box<dyn ConfigSource<E>>>,
-    config: Config<E>,
-}
-
-impl<E: ConfigExtension> Default for ConfigBuilder<E> {
-    fn default() -> Self {
-        Self {
-            sources: Vec::new(),
-            config: Config::default(),
-        }
-    }
-}
-
-#[allow(clippy::module_name_repetitions)]
-impl<E: ConfigExtension> ConfigBuilder<E> {
-    #[must_use]
-    pub fn add_source(mut self, source: Box<dyn ConfigSource<E>>) -> Self {
-        self.sources.push(source);
-        self
-    }
-
-    pub fn build(&mut self) -> Config<E> {
-        let mut failed_sources = 0;
-        for source in &self.sources {
-            match source.load(&mut self.config) {
-                Ok(()) => (),
-                Err(e) => {
-                    error!("Failed to load config: {:?}", e);
-                    failed_sources += 1;
-                }
-            }
-        }
-
-        if !self.sources.is_empty() && failed_sources == self.sources.len() {
-            debug!("All sources failed to load config, using default config.");
-        }
-
-        if self.config.site.is_empty() {
-            self.config.site = "datadoghq.com".to_string();
-        }
-
-        // If `proxy_https` is not set, set it from `HTTPS_PROXY` environment variable
-        // if it exists
-        if let Ok(https_proxy) = std::env::var("HTTPS_PROXY")
-            && self.config.proxy_https.is_none()
-        {
-            self.config.proxy_https = Some(https_proxy);
-        }
-
-        // If `proxy_https` is set, check if the site is in `NO_PROXY` environment variable
-        // or in the `proxy_no_proxy` config field.
-        if self.config.proxy_https.is_some() {
-            let site_in_no_proxy = std::env::var("NO_PROXY")
-                .is_ok_and(|no_proxy| no_proxy.contains(&self.config.site))
-                || self
-                    .config
-                    .proxy_no_proxy
-                    .iter()
-                    .any(|no_proxy| no_proxy.contains(&self.config.site));
-            if site_in_no_proxy {
-                self.config.proxy_https = None;
-            }
-        }
-
-        // If extraction is not set, set it to the same as the propagation style
-        if self.config.trace_propagation_style_extract.is_empty() {
-            self.config
-                .trace_propagation_style_extract
-                .clone_from(&self.config.trace_propagation_style);
-        }
-
-        // If Logs URL is not set, set it to the default
-        if self.config.logs_config_logs_dd_url.trim().is_empty() {
-            self.config.logs_config_logs_dd_url = build_fqdn_logs(self.config.site.clone());
-        } else {
-            self.config.logs_config_logs_dd_url =
-                logs_intake_url(self.config.logs_config_logs_dd_url.as_str());
-        }
-
-        // If APM URL is not set, set it to the default
-        if self.config.apm_dd_url.is_empty() {
-            self.config.apm_dd_url = trace_intake_url(self.config.site.clone().as_str());
-        } else {
-            // If APM URL is set, add the site to the URL
-            self.config.apm_dd_url = trace_intake_url_prefixed(self.config.apm_dd_url.as_str());
-        }
-
-        self.config.clone()
-    }
-}
+// ---------------------------------------------------------------------------
+// Config — the resolved configuration struct
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Clone)]
 #[allow(clippy::module_name_repetitions)]
@@ -542,6 +254,10 @@ impl<E: ConfigExtension> Default for Config<E> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Loading — entry points for building a Config
+// ---------------------------------------------------------------------------
+
 #[allow(clippy::module_name_repetitions)]
 #[inline]
 #[must_use]
@@ -551,8 +267,8 @@ pub fn get_config(config_directory: &Path) -> Config {
 
 /// Load configuration with a custom extension type.
 ///
-/// Consumers that need agent-specific fields (e.g., Lambda, Cloud Run) should
-/// call this with their extension type instead of `get_config`.
+/// Consumers that need additional fields should call this with their
+/// extension type instead of `get_config`.
 #[allow(clippy::module_name_repetitions)]
 #[inline]
 #[must_use]
@@ -562,6 +278,170 @@ pub fn get_config_with_extension<E: ConfigExtension>(config_directory: &Path) ->
         .add_source(Box::new(YamlConfigSource { path }))
         .add_source(Box::new(EnvConfigSource))
         .build()
+}
+
+// ---------------------------------------------------------------------------
+// ConfigExtension — trait for additional configuration fields
+// ---------------------------------------------------------------------------
+
+/// Trait that extension configs must implement to add additional configuration
+/// fields beyond what the core provides.
+///
+/// Extensions allow consumers to define their own external configuration fields
+/// that are deserialized from environment variables and YAML files alongside
+/// core fields via dual extraction.
+///
+/// # Source type requirements
+///
+/// The `Source` type must use `#[serde(default)]` on the struct and graceful
+/// deserializers (e.g., `deserialize_optional_bool_from_anything`) on each field
+/// to ensure that a single bad value doesn't fail the entire extraction.
+///
+/// # Flat fields only
+///
+/// A single `Source` type is used for both environment variable and YAML
+/// extraction. This works when all extension fields are top-level (flat) in
+/// the YAML file, which is the common case for extension configs:
+///
+/// ```yaml
+/// # Works: flat fields map naturally to both DD_* env vars and YAML keys
+/// enhanced_metrics: true
+/// capture_lambda_payload: false
+/// ```
+///
+/// If you need nested YAML structures (e.g., `lambda: { enhanced_metrics: true }`)
+/// that differ from the flat env var layout, implement `merge_from` with a
+/// nested source struct and handle the mapping manually instead of using
+/// `merge_fields!`.
+pub trait ConfigExtension: Clone + Default + std::fmt::Debug + PartialEq {
+    /// Intermediate type for deserializing extension fields.
+    /// Used for both environment variable and YAML extraction.
+    type Source: Default + serde::de::DeserializeOwned + Clone + std::fmt::Debug;
+
+    /// Merge parsed source fields into self.
+    fn merge_from(&mut self, source: &Self::Source);
+}
+
+/// A no-op extension for consumers that don't need extra fields.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct NoExtension;
+
+/// A no-op source for deserialization that accepts (and ignores) any input.
+#[derive(Clone, Default, Debug, Deserialize)]
+pub struct NoExtensionSource;
+
+impl ConfigExtension for NoExtension {
+    type Source = NoExtensionSource;
+    fn merge_from(&mut self, _source: &Self::Source) {}
+}
+
+// ---------------------------------------------------------------------------
+// ConfigBuilder — orchestrates loading from multiple sources
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq)]
+#[allow(clippy::module_name_repetitions)]
+pub enum ConfigError {
+    ParseError(String),
+    UnsupportedField(String),
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub trait ConfigSource<E: ConfigExtension> {
+    fn load(&self, config: &mut Config<E>) -> Result<(), ConfigError>;
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub struct ConfigBuilder<E: ConfigExtension = NoExtension> {
+    sources: Vec<Box<dyn ConfigSource<E>>>,
+    config: Config<E>,
+}
+
+impl<E: ConfigExtension> Default for ConfigBuilder<E> {
+    fn default() -> Self {
+        Self {
+            sources: Vec::new(),
+            config: Config::default(),
+        }
+    }
+}
+
+#[allow(clippy::module_name_repetitions)]
+impl<E: ConfigExtension> ConfigBuilder<E> {
+    #[must_use]
+    pub fn add_source(mut self, source: Box<dyn ConfigSource<E>>) -> Self {
+        self.sources.push(source);
+        self
+    }
+
+    pub fn build(&mut self) -> Config<E> {
+        let mut failed_sources = 0;
+        for source in &self.sources {
+            match source.load(&mut self.config) {
+                Ok(()) => (),
+                Err(e) => {
+                    error!("Failed to load config: {:?}", e);
+                    failed_sources += 1;
+                }
+            }
+        }
+
+        if !self.sources.is_empty() && failed_sources == self.sources.len() {
+            debug!("All sources failed to load config, using default config.");
+        }
+
+        if self.config.site.is_empty() {
+            self.config.site = "datadoghq.com".to_string();
+        }
+
+        // If `proxy_https` is not set, set it from `HTTPS_PROXY` environment variable
+        // if it exists
+        if let Ok(https_proxy) = std::env::var("HTTPS_PROXY")
+            && self.config.proxy_https.is_none()
+        {
+            self.config.proxy_https = Some(https_proxy);
+        }
+
+        // If `proxy_https` is set, check if the site is in `NO_PROXY` environment variable
+        // or in the `proxy_no_proxy` config field.
+        if self.config.proxy_https.is_some() {
+            let site_in_no_proxy = std::env::var("NO_PROXY")
+                .is_ok_and(|no_proxy| no_proxy.contains(&self.config.site))
+                || self
+                    .config
+                    .proxy_no_proxy
+                    .iter()
+                    .any(|no_proxy| no_proxy.contains(&self.config.site));
+            if site_in_no_proxy {
+                self.config.proxy_https = None;
+            }
+        }
+
+        // If extraction is not set, set it to the same as the propagation style
+        if self.config.trace_propagation_style_extract.is_empty() {
+            self.config
+                .trace_propagation_style_extract
+                .clone_from(&self.config.trace_propagation_style);
+        }
+
+        // If Logs URL is not set, set it to the default
+        if self.config.logs_config_logs_dd_url.trim().is_empty() {
+            self.config.logs_config_logs_dd_url = build_fqdn_logs(self.config.site.clone());
+        } else {
+            self.config.logs_config_logs_dd_url =
+                logs_intake_url(self.config.logs_config_logs_dd_url.as_str());
+        }
+
+        // If APM URL is not set, set it to the default
+        if self.config.apm_dd_url.is_empty() {
+            self.config.apm_dd_url = trace_intake_url(self.config.site.clone().as_str());
+        } else {
+            // If APM URL is set, add the site to the URL
+            self.config.apm_dd_url = trace_intake_url_prefixed(self.config.apm_dd_url.as_str());
+        }
+
+        self.config.clone()
+    }
 }
 
 #[inline]
@@ -581,6 +461,145 @@ fn logs_intake_url(url: &str) -> String {
         return url.to_string();
     }
     format!("https://{url}")
+}
+
+// ---------------------------------------------------------------------------
+// Merge macros — used by sources and extension implementations
+// ---------------------------------------------------------------------------
+
+/// Helper macro to merge Option<String> fields to String fields
+///
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_string {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if let Some(value) = &$source.$source_field {
+            $config.$config_field.clone_from(value);
+        }
+    };
+    ($config:expr, $source:expr, $field:ident) => {
+        if let Some(value) = &$source.$field {
+            $config.$field.clone_from(value);
+        }
+    };
+}
+
+/// Helper macro to merge Option<T> fields where T implements Clone
+///
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_option {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if $source.$source_field.is_some() {
+            $config.$config_field.clone_from(&$source.$source_field);
+        }
+    };
+    ($config:expr, $source:expr, $field:ident) => {
+        if $source.$field.is_some() {
+            $config.$field.clone_from(&$source.$field);
+        }
+    };
+}
+
+/// Helper macro to merge Option<T> fields to T fields when Option<T> is Some
+///
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_option_to_value {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if let Some(value) = &$source.$source_field {
+            $config.$config_field = value.clone();
+        }
+    };
+    ($config:expr, $source:expr, $field:ident) => {
+        if let Some(value) = &$source.$field {
+            $config.$field = value.clone();
+        }
+    };
+}
+
+/// Helper macro to merge `Vec` fields when `Vec` is not empty
+///
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_vec {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if !$source.$source_field.is_empty() {
+            $config.$config_field.clone_from(&$source.$source_field);
+        }
+    };
+    ($config:expr, $source:expr, $field:ident) => {
+        if !$source.$field.is_empty() {
+            $config.$field.clone_from(&$source.$field);
+        }
+    };
+}
+
+/// Helper macro to merge `HashMap` fields when `HashMap` is not empty
+///
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_hashmap {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if !$source.$source_field.is_empty() {
+            $config.$config_field.clone_from(&$source.$source_field);
+        }
+    };
+    ($config:expr, $source:expr, $field:ident) => {
+        if !$source.$field.is_empty() {
+            $config.$field.clone_from(&$source.$field);
+        }
+    };
+}
+
+/// Batch-merge extension fields from a source struct.
+///
+/// Groups fields by merge strategy so you don't have to write individual
+/// `merge_string!` / `merge_option_to_value!` / `merge_option!` calls.
+///
+/// ```ignore
+/// merge_fields!(self, source,
+///     string: [api_key_secret_arn, kms_api_key],
+///     value:  [enhanced_metrics, capture_lambda_payload],
+///     option: [span_dedup_timeout, appsec_rules],
+/// );
+/// ```
+#[macro_export]
+macro_rules! merge_fields {
+    // Internal rules dispatched by keyword
+    (@string $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
+        $( $crate::merge_string!($config, $source, $field); )*
+    };
+    (@value $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
+        $( $crate::merge_option_to_value!($config, $source, $field); )*
+    };
+    (@option $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
+        $( $crate::merge_option!($config, $source, $field); )*
+    };
+    // Public entry point: accepts any combination of groups in any order
+    ($config:expr, $source:expr, $($kind:ident: [$($field:ident),* $(,)?]),* $(,)?) => {
+        $( $crate::merge_fields!(@$kind $config, $source, [$($field),*]); )*
+    };
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))] // Test modules skew coverage metrics
