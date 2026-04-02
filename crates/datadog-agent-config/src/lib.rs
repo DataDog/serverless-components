@@ -1,12 +1,13 @@
-pub mod additional_endpoints;
-pub mod apm_replace_rule;
-pub mod env;
-pub mod flush_strategy;
-pub mod log_level;
-pub mod logs_additional_endpoints;
-pub mod processing_rule;
-pub mod service_mapping;
-pub mod yaml;
+pub mod deserializers;
+pub mod sources;
+
+// Re-export submodules at the crate root so existing imports like
+// `crate::flush_strategy::FlushStrategy` and `crate::env::EnvConfigSource` keep working.
+pub use deserializers::{
+    additional_endpoints, apm_replace_rule, flush_strategy, log_level,
+    logs_additional_endpoints, processing_rule, service_mapping,
+};
+pub use sources::{env, yaml};
 
 pub use datadog_opentelemetry::configuration::TracePropagationStyle;
 
