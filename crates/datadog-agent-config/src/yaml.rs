@@ -1,15 +1,12 @@
-use std::time::Duration;
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::{
-    Config, ConfigError, ConfigSource, ProcessingRule, TracePropagationStyle,
+    Config, ConfigError, ConfigExtension, ConfigSource, ProcessingRule, TracePropagationStyle,
     additional_endpoints::deserialize_additional_endpoints, deserialize_apm_replace_rules,
     deserialize_key_value_pair_array_to_hashmap, deserialize_option_lossless,
-    deserialize_optional_bool_from_anything, deserialize_optional_duration_from_microseconds,
-    deserialize_optional_duration_from_seconds,
-    deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
+    deserialize_optional_bool_from_anything, deserialize_optional_string,
     deserialize_processing_rules, deserialize_string_or_int, deserialize_trace_propagation_style,
-    deserialize_with_default, flush_strategy::FlushStrategy, log_level::LogLevel,
+    deserialize_with_default, log_level::LogLevel,
     logs_additional_endpoints::LogsAdditionalEndpoint, merge_hashmap, merge_option,
     merge_option_to_value, merge_string, merge_vec, service_mapping::deserialize_service_mapping,
 };
@@ -108,40 +105,6 @@ pub struct YamlConfig {
     // OTLP
     #[serde(deserialize_with = "deserialize_with_default")]
     pub otlp_config: Option<OtlpConfig>,
-
-    // AWS Lambda
-    #[serde(deserialize_with = "deserialize_optional_string")]
-    pub api_key_secret_arn: Option<String>,
-    #[serde(deserialize_with = "deserialize_optional_string")]
-    pub kms_api_key: Option<String>,
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub serverless_logs_enabled: Option<bool>,
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub logs_enabled: Option<bool>,
-    #[serde(deserialize_with = "deserialize_with_default")]
-    pub serverless_flush_strategy: Option<FlushStrategy>,
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub enhanced_metrics: Option<bool>,
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub lambda_proc_enhanced_metrics: Option<bool>,
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub capture_lambda_payload: Option<bool>,
-    #[serde(deserialize_with = "deserialize_option_lossless")]
-    pub capture_lambda_payload_max_depth: Option<u32>,
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub compute_trace_stats_on_extension: Option<bool>,
-    #[serde(deserialize_with = "deserialize_optional_duration_from_seconds_ignore_zero")]
-    pub api_key_secret_reload_interval: Option<Duration>,
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub serverless_appsec_enabled: Option<bool>,
-    #[serde(deserialize_with = "deserialize_optional_string")]
-    pub appsec_rules: Option<String>,
-    #[serde(deserialize_with = "deserialize_optional_duration_from_microseconds")]
-    pub appsec_waf_timeout: Option<Duration>,
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub api_security_enabled: Option<bool>,
-    #[serde(deserialize_with = "deserialize_optional_duration_from_seconds")]
-    pub api_security_sample_delay: Option<Duration>,
 }
 
 /// Proxy Config
@@ -443,7 +406,7 @@ impl OtlpConfig {
 }
 
 #[allow(clippy::too_many_lines)]
-fn merge_config(config: &mut Config, yaml_config: &YamlConfig) {
+fn merge_config<E: ConfigExtension>(config: &mut Config<E>, yaml_config: &YamlConfig) {
     // Basic fields
     merge_string!(config, yaml_config, site);
     merge_string!(config, yaml_config, api_key);
@@ -720,29 +683,6 @@ fn merge_config(config: &mut Config, yaml_config: &YamlConfig) {
             merge_option_to_value!(config, otlp_config_logs_enabled, logs, enabled);
         }
     }
-
-    // AWS Lambda
-    merge_string!(config, yaml_config, api_key_secret_arn);
-    merge_string!(config, yaml_config, kms_api_key);
-
-    // Handle serverless_logs_enabled with OR logic: if either logs_enabled or serverless_logs_enabled is true, enable logs
-    if yaml_config.serverless_logs_enabled.is_some() || yaml_config.logs_enabled.is_some() {
-        config.serverless_logs_enabled = yaml_config.serverless_logs_enabled.unwrap_or(false)
-            || yaml_config.logs_enabled.unwrap_or(false);
-    }
-
-    merge_option_to_value!(config, yaml_config, serverless_flush_strategy);
-    merge_option_to_value!(config, yaml_config, enhanced_metrics);
-    merge_option_to_value!(config, yaml_config, lambda_proc_enhanced_metrics);
-    merge_option_to_value!(config, yaml_config, capture_lambda_payload);
-    merge_option_to_value!(config, yaml_config, capture_lambda_payload_max_depth);
-    merge_option_to_value!(config, yaml_config, compute_trace_stats_on_extension);
-    merge_option!(config, yaml_config, api_key_secret_reload_interval);
-    merge_option_to_value!(config, yaml_config, serverless_appsec_enabled);
-    merge_option!(config, yaml_config, appsec_rules);
-    merge_option_to_value!(config, yaml_config, appsec_waf_timeout);
-    merge_option_to_value!(config, yaml_config, api_security_enabled);
-    merge_option_to_value!(config, yaml_config, api_security_sample_delay);
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -751,8 +691,8 @@ pub struct YamlConfigSource {
     pub path: PathBuf,
 }
 
-impl ConfigSource for YamlConfigSource {
-    fn load(&self, config: &mut Config) -> Result<(), ConfigError> {
+impl<E: ConfigExtension> ConfigSource<E> for YamlConfigSource {
+    fn load(&self, config: &mut Config<E>) -> Result<(), ConfigError> {
         let figment = Figment::new().merge(Yaml::file(self.path.clone()));
 
         match figment.extract::<YamlConfig>() {
@@ -761,6 +701,16 @@ impl ConfigSource for YamlConfigSource {
                 return Err(ConfigError::ParseError(format!(
                     "Failed to parse config from yaml file: {e}, using default config."
                 )));
+            }
+        }
+
+        // Extract extension fields via dual extraction
+        match figment.extract::<E::Source>() {
+            Ok(ext_source) => config.ext.merge_from(&ext_source),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to parse extension config from yaml file: {e}, using default extension config."
+                );
             }
         }
 
@@ -773,9 +723,8 @@ impl ConfigSource for YamlConfigSource {
 #[allow(clippy::result_large_err)]
 mod tests {
     use std::path::Path;
-    use std::time::Duration;
 
-    use crate::{flush_strategy::PeriodicStrategy, log_level::LogLevel, processing_rule::Kind};
+    use crate::{log_level::LogLevel, processing_rule::Kind};
 
     use super::*;
 
@@ -785,6 +734,7 @@ mod tests {
     /// When adding a new field to YamlConfig or any nested struct, add an entry
     /// here with the wrong type to ensure graceful deserialization is in place.
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn test_all_yaml_fields_wrong_type_fallback_to_default() {
         figment::Jail::expect_with(|jail| {
             jail.clear_env();
@@ -891,28 +841,10 @@ otlp_config:
       mode: "noquantiles"
   logs:
     enabled: [1, 2, 3]
-
-# AWS Lambda
-api_key_secret_arn: "arn:aws:secretsmanager:us-east-1:123:secret:key"
-kms_api_key: "kms-encrypted-key"
-serverless_logs_enabled: [1, 2, 3]
-logs_enabled: [1, 2, 3]
-serverless_flush_strategy: [1, 2, 3]
-enhanced_metrics: [1, 2, 3]
-lambda_proc_enhanced_metrics: [1, 2, 3]
-capture_lambda_payload: [1, 2, 3]
-capture_lambda_payload_max_depth: [1, 2, 3]
-compute_trace_stats_on_extension: [1, 2, 3]
-api_key_secret_reload_interval: [1, 2, 3]
-serverless_appsec_enabled: [1, 2, 3]
-appsec_rules: "/opt/custom-rules.json"
-appsec_waf_timeout: [1, 2, 3]
-api_security_enabled: [1, 2, 3]
-api_security_sample_delay: [1, 2, 3]
 "#,
             )?;
 
-            let mut config = Config::default();
+            let mut config: Config = Config::default();
             let source = YamlConfigSource {
                 path: PathBuf::from("datadog.yaml"),
             };
@@ -923,15 +855,12 @@ api_security_sample_delay: [1, 2, 3]
 
             // Build expected: string fields have their non-default values,
             // all non-string fields stay at defaults.
-            let mut expected = Config::default();
+            let mut expected: Config = Config::default();
             expected.site = "custom-site.example.com".to_string();
             expected.api_key = "test-api-key-12345".to_string();
             expected.dd_url = "https://custom-metrics.example.com".to_string();
             expected.logs_config_logs_dd_url = "https://custom-logs.example.com".to_string();
             expected.apm_dd_url = "https://custom-apm.example.com".to_string();
-            expected.api_key_secret_arn =
-                "arn:aws:secretsmanager:us-east-1:123:secret:key".to_string();
-            expected.kms_api_key = "kms-encrypted-key".to_string();
             // Option<String> fields
             expected.proxy_https = Some("https://proxy.example.com".to_string());
             expected.http_protocol = Some("http1".to_string());
@@ -951,7 +880,6 @@ api_security_sample_delay: [1, 2, 3]
             expected.otlp_config_metrics_sums_initial_cumulativ_monotonic_value =
                 Some("keep".to_string());
             expected.otlp_config_metrics_summaries_mode = Some("noquantiles".to_string());
-            expected.appsec_rules = Some("/opt/custom-rules.json".to_string());
 
             assert_eq!(config, expected);
             Ok(())
@@ -1082,27 +1010,10 @@ otlp_config:
       mode: "quantiles"
   logs:
     enabled: true
-
-# AWS Lambda
-api_key_secret_arn: "arn:aws:secretsmanager:region:account:secret:datadog-api-key"
-kms_api_key: "test-kms-key"
-serverless_logs_enabled: false
-serverless_flush_strategy: "periodically,60000"
-enhanced_metrics: false
-lambda_proc_enhanced_metrics: false
-capture_lambda_payload: true
-capture_lambda_payload_max_depth: 5
-compute_trace_stats_on_extension: true
-api_key_secret_reload_interval: 0
-serverless_appsec_enabled: true
-appsec_rules: "/path/to/rules.json"
-appsec_waf_timeout: 1000000 # Microseconds
-api_security_enabled: false
-api_security_sample_delay: 60 # Seconds
 "#,
             )?;
 
-            let mut config = Config::default();
+            let mut config: Config = Config::default();
             let yaml_config_source = YamlConfigSource {
                 path: Path::new("datadog.yaml").to_path_buf(),
             };
@@ -1216,28 +1127,6 @@ api_security_sample_delay: 60 # Seconds
                 otlp_config_metrics_summaries_mode: Some("quantiles".to_string()),
                 otlp_config_traces_probabilistic_sampler_sampling_percentage: Some(50),
                 otlp_config_logs_enabled: true,
-                api_key_secret_arn: "arn:aws:secretsmanager:region:account:secret:datadog-api-key"
-                    .to_string(),
-                kms_api_key: "test-kms-key".to_string(),
-                api_key_ssm_arn: String::default(),
-                serverless_logs_enabled: false,
-                serverless_flush_strategy: FlushStrategy::Periodically(PeriodicStrategy {
-                    interval: 60000,
-                }),
-                enhanced_metrics: false,
-                lambda_proc_enhanced_metrics: false,
-                capture_lambda_payload: true,
-                capture_lambda_payload_max_depth: 5,
-                compute_trace_stats_on_extension: true,
-                span_dedup_timeout: None,
-                api_key_secret_reload_interval: None,
-
-                serverless_appsec_enabled: true,
-                appsec_rules: Some("/path/to/rules.json".to_string()),
-                appsec_waf_timeout: Duration::from_secs(1),
-                api_security_enabled: false,
-                api_security_sample_delay: Duration::from_secs(60),
-
                 apm_filter_tags_require: None,
                 apm_filter_tags_reject: None,
                 apm_filter_tags_regex_require: None,
@@ -1246,6 +1135,7 @@ api_security_sample_delay: 60 # Seconds
                 dogstatsd_so_rcvbuf: Some(1_048_576),
                 dogstatsd_buffer_size: Some(65507),
                 dogstatsd_queue_size: Some(2048),
+                ext: crate::NoExtension,
             };
 
             // Assert that
@@ -1267,7 +1157,7 @@ dogstatsd_buffer_size: 16384
 dogstatsd_queue_size: 512
 ",
             )?;
-            let mut config = Config::default();
+            let mut config: Config = Config::default();
             let yaml_config_source = YamlConfigSource {
                 path: Path::new("datadog.yaml").to_path_buf(),
             };
@@ -1287,7 +1177,7 @@ dogstatsd_queue_size: 512
         figment::Jail::expect_with(|jail| {
             jail.clear_env();
             jail.create_file("datadog.yaml", "")?;
-            let mut config = Config::default();
+            let mut config: Config = Config::default();
             let yaml_config_source = YamlConfigSource {
                 path: Path::new("datadog.yaml").to_path_buf(),
             };

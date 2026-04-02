@@ -25,7 +25,6 @@ use tracing::{debug, error, warn};
 use crate::{
     apm_replace_rule::deserialize_apm_replace_rules,
     env::EnvConfigSource,
-    flush_strategy::FlushStrategy,
     log_level::LogLevel,
     logs_additional_endpoints::LogsAdditionalEndpoint,
     processing_rule::{ProcessingRule, deserialize_processing_rules},
@@ -138,6 +137,87 @@ macro_rules! merge_hashmap {
     };
 }
 
+/// Trait that extension configs must implement to add additional configuration
+/// fields beyond what the core provides.
+///
+/// Extensions allow consumers to define their own external configuration fields
+/// that are deserialized from environment variables and YAML files alongside
+/// core fields via dual extraction.
+///
+/// # Source type requirements
+///
+/// The `Source` type must use `#[serde(default)]` on the struct and graceful
+/// deserializers (e.g., `deserialize_optional_bool_from_anything`) on each field
+/// to ensure that a single bad value doesn't fail the entire extraction.
+///
+/// # Flat fields only
+///
+/// A single `Source` type is used for both environment variable and YAML
+/// extraction. This works when all extension fields are top-level (flat) in
+/// the YAML file, which is the common case for extension configs:
+///
+/// ```yaml
+/// # Works: flat fields map naturally to both DD_* env vars and YAML keys
+/// enhanced_metrics: true
+/// capture_lambda_payload: false
+/// ```
+///
+/// If you need nested YAML structures (e.g., `lambda: { enhanced_metrics: true }`)
+/// that differ from the flat env var layout, implement `merge_from` with a
+/// nested source struct and handle the mapping manually instead of using
+/// `merge_fields!`.
+pub trait ConfigExtension: Clone + Default + std::fmt::Debug + PartialEq {
+    /// Intermediate type for deserializing extension fields.
+    /// Used for both environment variable and YAML extraction.
+    type Source: Default + serde::de::DeserializeOwned + Clone + std::fmt::Debug;
+
+    /// Merge parsed source fields into self.
+    fn merge_from(&mut self, source: &Self::Source);
+}
+
+/// Batch-merge extension fields from a source struct.
+///
+/// Groups fields by merge strategy so you don't have to write individual
+/// `merge_string!` / `merge_option_to_value!` / `merge_option!` calls.
+///
+/// ```ignore
+/// merge_fields!(self, source,
+///     string: [api_key_secret_arn, kms_api_key],
+///     value:  [enhanced_metrics, capture_lambda_payload],
+///     option: [span_dedup_timeout, appsec_rules],
+/// );
+/// ```
+#[macro_export]
+macro_rules! merge_fields {
+    // Internal rules dispatched by keyword
+    (@string $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
+        $( $crate::merge_string!($config, $source, $field); )*
+    };
+    (@value $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
+        $( $crate::merge_option_to_value!($config, $source, $field); )*
+    };
+    (@option $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
+        $( $crate::merge_option!($config, $source, $field); )*
+    };
+    // Public entry point: accepts any combination of groups in any order
+    ($config:expr, $source:expr, $($kind:ident: [$($field:ident),* $(,)?]),* $(,)?) => {
+        $( $crate::merge_fields!(@$kind $config, $source, [$($field),*]); )*
+    };
+}
+
+/// A no-op extension for consumers that don't need extra fields.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct NoExtension;
+
+/// A no-op source for deserialization that accepts (and ignores) any input.
+#[derive(Clone, Default, Debug, Deserialize)]
+pub struct NoExtensionSource;
+
+impl ConfigExtension for NoExtension {
+    type Source = NoExtensionSource;
+    fn merge_from(&mut self, _source: &Self::Source) {}
+}
+
 #[derive(Debug, PartialEq)]
 #[allow(clippy::module_name_repetitions)]
 pub enum ConfigError {
@@ -146,26 +226,34 @@ pub enum ConfigError {
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub trait ConfigSource {
-    fn load(&self, config: &mut Config) -> Result<(), ConfigError>;
-}
-
-#[derive(Default)]
-#[allow(clippy::module_name_repetitions)]
-pub struct ConfigBuilder {
-    sources: Vec<Box<dyn ConfigSource>>,
-    config: Config,
+pub trait ConfigSource<E: ConfigExtension> {
+    fn load(&self, config: &mut Config<E>) -> Result<(), ConfigError>;
 }
 
 #[allow(clippy::module_name_repetitions)]
-impl ConfigBuilder {
+pub struct ConfigBuilder<E: ConfigExtension = NoExtension> {
+    sources: Vec<Box<dyn ConfigSource<E>>>,
+    config: Config<E>,
+}
+
+impl<E: ConfigExtension> Default for ConfigBuilder<E> {
+    fn default() -> Self {
+        Self {
+            sources: Vec::new(),
+            config: Config::default(),
+        }
+    }
+}
+
+#[allow(clippy::module_name_repetitions)]
+impl<E: ConfigExtension> ConfigBuilder<E> {
     #[must_use]
-    pub fn add_source(mut self, source: Box<dyn ConfigSource>) -> Self {
+    pub fn add_source(mut self, source: Box<dyn ConfigSource<E>>) -> Self {
         self.sources.push(source);
         self
     }
 
-    pub fn build(&mut self) -> Config {
+    pub fn build(&mut self) -> Config<E> {
         let mut failed_sources = 0;
         for source in &self.sources {
             match source.load(&mut self.config) {
@@ -238,7 +326,7 @@ impl ConfigBuilder {
 #[derive(Debug, PartialEq, Clone)]
 #[allow(clippy::module_name_repetitions)]
 #[allow(clippy::struct_excessive_bools)]
-pub struct Config {
+pub struct Config<E: ConfigExtension = NoExtension> {
     pub site: String,
     pub api_key: String,
     pub log_level: LogLevel,
@@ -349,28 +437,12 @@ pub struct Config {
     // - Logs
     pub otlp_config_logs_enabled: bool,
 
-    // AWS Lambda
-    pub api_key_secret_arn: String,
-    pub kms_api_key: String,
-    pub api_key_ssm_arn: String,
-    pub serverless_logs_enabled: bool,
-    pub serverless_flush_strategy: FlushStrategy,
-    pub enhanced_metrics: bool,
-    pub lambda_proc_enhanced_metrics: bool,
-    pub capture_lambda_payload: bool,
-    pub capture_lambda_payload_max_depth: u32,
-    pub compute_trace_stats_on_extension: bool,
-    pub span_dedup_timeout: Option<Duration>,
-    pub api_key_secret_reload_interval: Option<Duration>,
-
-    pub serverless_appsec_enabled: bool,
-    pub appsec_rules: Option<String>,
-    pub appsec_waf_timeout: Duration,
-    pub api_security_enabled: bool,
-    pub api_security_sample_delay: Duration,
+    /// Agent-specific extension fields defined by the consumer.
+    /// Use `NoExtension` (the default) when no extra fields are needed.
+    pub ext: E,
 }
 
-impl Default for Config {
+impl<E: ConfigExtension> Default for Config<E> {
     fn default() -> Self {
         Self {
             site: String::default(),
@@ -464,25 +536,7 @@ impl Default for Config {
             otlp_config_traces_probabilistic_sampler_sampling_percentage: None,
             otlp_config_logs_enabled: false,
 
-            // AWS Lambda
-            api_key_secret_arn: String::default(),
-            kms_api_key: String::default(),
-            api_key_ssm_arn: String::default(),
-            serverless_logs_enabled: true,
-            serverless_flush_strategy: FlushStrategy::Default,
-            enhanced_metrics: true,
-            lambda_proc_enhanced_metrics: true,
-            capture_lambda_payload: false,
-            capture_lambda_payload_max_depth: 10,
-            compute_trace_stats_on_extension: false,
-            span_dedup_timeout: None,
-            api_key_secret_reload_interval: None,
-
-            serverless_appsec_enabled: false,
-            appsec_rules: None,
-            appsec_waf_timeout: Duration::from_millis(5),
-            api_security_enabled: true,
-            api_security_sample_delay: Duration::from_secs(30),
+            ext: E::default(),
         }
     }
 }
@@ -491,6 +545,17 @@ impl Default for Config {
 #[inline]
 #[must_use]
 pub fn get_config(config_directory: &Path) -> Config {
+    get_config_with_extension(config_directory)
+}
+
+/// Load configuration with a custom extension type.
+///
+/// Consumers that need agent-specific fields (e.g., Lambda, Cloud Run) should
+/// call this with their extension type instead of `get_config`.
+#[allow(clippy::module_name_repetitions)]
+#[inline]
+#[must_use]
+pub fn get_config_with_extension<E: ConfigExtension>(config_directory: &Path) -> Config<E> {
     let path: std::path::PathBuf = config_directory.join("datadog.yaml");
     ConfigBuilder::default()
         .add_source(Box::new(YamlConfigSource { path }))
@@ -887,12 +952,7 @@ pub mod tests {
 
     use super::*;
 
-    use crate::{
-        TracePropagationStyle,
-        flush_strategy::{FlushStrategy, PeriodicStrategy},
-        log_level::LogLevel,
-        processing_rule::ProcessingRule,
-    };
+    use crate::{TracePropagationStyle, log_level::LogLevel, processing_rule::ProcessingRule};
 
     #[test]
     fn test_default_logs_intake_url() {
@@ -1155,56 +1215,6 @@ pub mod tests {
             // Assertion to ensure config.site runs before proxy
             // because we chenck that noproxy contains the site
             assert_eq!(config.site, "datadoghq.com");
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_parse_flush_strategy_end() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_SERVERLESS_FLUSH_STRATEGY", "end");
-            let config = get_config(Path::new(""));
-            assert_eq!(config.serverless_flush_strategy, FlushStrategy::End);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_parse_flush_strategy_periodically() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_SERVERLESS_FLUSH_STRATEGY", "periodically,100000");
-            let config = get_config(Path::new(""));
-            assert_eq!(
-                config.serverless_flush_strategy,
-                FlushStrategy::Periodically(PeriodicStrategy { interval: 100_000 })
-            );
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_parse_flush_strategy_invalid() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_SERVERLESS_FLUSH_STRATEGY", "invalid_strategy");
-            let config = get_config(Path::new(""));
-            assert_eq!(config.serverless_flush_strategy, FlushStrategy::Default);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_parse_flush_strategy_invalid_periodic() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env(
-                "DD_SERVERLESS_FLUSH_STRATEGY",
-                "periodically,invalid_interval",
-            );
-            let config = get_config(Path::new(""));
-            assert_eq!(config.serverless_flush_strategy, FlushStrategy::Default);
             Ok(())
         });
     }
@@ -1477,15 +1487,11 @@ pub mod tests {
     fn test_parse_bool_from_anything() {
         figment::Jail::expect_with(|jail| {
             jail.clear_env();
-            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "true");
-            jail.set_env("DD_ENHANCED_METRICS", "1");
             jail.set_env("DD_LOGS_CONFIG_USE_COMPRESSION", "TRUE");
-            jail.set_env("DD_CAPTURE_LAMBDA_PAYLOAD", "0");
+            jail.set_env("DD_SKIP_SSL_VALIDATION", "1");
             let config = get_config(Path::new(""));
-            assert!(config.serverless_logs_enabled);
-            assert!(config.enhanced_metrics);
             assert!(config.logs_config_use_compression);
-            assert!(!config.capture_lambda_payload);
+            assert!(config.skip_ssl_validation);
             Ok(())
         });
     }
@@ -1708,5 +1714,145 @@ pub mod tests {
         let result =
             serde_json::from_str::<TestStruct>(r#"{"tags": []}"#).expect("failed to parse JSON");
         assert_eq!(result.tags, HashMap::new());
+    }
+
+    // -- ConfigExtension tests --
+
+    /// A test extension with a few fields, mimicking what a consumer like Lambda would define.
+    #[derive(Clone, Default, Debug, PartialEq)]
+    struct TestExtension {
+        custom_flag: bool,
+        custom_name: String,
+    }
+
+    #[derive(Clone, Default, Debug, Deserialize)]
+    #[serde(default)]
+    struct TestExtSource {
+        #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
+        custom_flag: Option<bool>,
+        #[serde(deserialize_with = "deserialize_optional_string")]
+        custom_name: Option<String>,
+    }
+
+    impl ConfigExtension for TestExtension {
+        type Source = TestExtSource;
+
+        fn merge_from(&mut self, source: &TestExtSource) {
+            merge_fields!(self, source,
+                string: [custom_name],
+                value:  [custom_flag],
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_extension_config_works() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_SITE", "datad0g.com");
+            let config = get_config(Path::new(""));
+            assert_eq!(config.site, "datad0g.com");
+            assert_eq!(config.ext, NoExtension);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_receives_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_SITE", "datad0g.com");
+            jail.set_env("DD_CUSTOM_FLAG", "true");
+            jail.set_env("DD_CUSTOM_NAME", "my-extension");
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            // Core fields work
+            assert_eq!(config.site, "datad0g.com");
+            // Extension fields are populated
+            assert!(config.ext.custom_flag);
+            assert_eq!(config.ext.custom_name, "my-extension");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_receives_yaml_fields() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.create_file(
+                "datadog.yaml",
+                r#"
+site: "datad0g.com"
+custom_flag: true
+custom_name: "yaml-ext"
+"#,
+            )?;
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            assert_eq!(config.site, "datad0g.com");
+            assert!(config.ext.custom_flag);
+            assert_eq!(config.ext.custom_name, "yaml-ext");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_env_overrides_yaml() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.create_file(
+                "datadog.yaml",
+                r#"
+custom_name: "yaml-value"
+custom_flag: false
+"#,
+            )?;
+            jail.set_env("DD_CUSTOM_NAME", "env-value");
+            jail.set_env("DD_CUSTOM_FLAG", "true");
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            // Env should override YAML (env source loaded after yaml)
+            assert!(config.ext.custom_flag);
+            assert_eq!(config.ext.custom_name, "env-value");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_defaults_when_not_set() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            // Extension fields should be at their defaults
+            assert!(!config.ext.custom_flag);
+            assert_eq!(config.ext.custom_name, "");
+            // Core fields should have post-processing defaults
+            assert_eq!(config.site, "datadoghq.com");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_does_not_interfere_with_core() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_SITE", "us5.datadoghq.com");
+            jail.set_env("DD_API_KEY", "test-key");
+            jail.set_env("DD_CUSTOM_FLAG", "true");
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            // Core fields are not affected by extension env vars
+            assert_eq!(config.site, "us5.datadoghq.com");
+            assert_eq!(config.api_key, "test-key");
+            // Extension fields work alongside core
+            assert!(config.ext.custom_flag);
+            Ok(())
+        });
     }
 }

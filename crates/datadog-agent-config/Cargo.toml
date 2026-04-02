@@ -4,9 +4,6 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-[lib]
-path = "mod.rs"
-
 [dependencies]
 figment = { version = "0.10", default-features = false, features = ["yaml", "env"] }
 libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "8c88979985154d6d97c0fc2ca9039682981eacad" }
