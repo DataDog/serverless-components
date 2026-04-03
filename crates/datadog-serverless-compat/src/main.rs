@@ -63,7 +63,9 @@ pub async fn main() {
             "cloudfunction" => env_type = EnvironmentType::CloudFunction,
             "azurefunction" => env_type = EnvironmentType::AzureFunction,
             "azurespringapp" => env_type = EnvironmentType::AzureSpringApp,
-            _ => {}
+            _ => {
+                debug!("DD_ENV_TYPE value not recognized, env_type not overwritten");
+            }
         }
     }
 
