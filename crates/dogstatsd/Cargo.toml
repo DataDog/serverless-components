@@ -8,8 +8,8 @@ license.workspace = true
 bench = false
 
 [dependencies]
-datadog-protos = { version = "0.1.0", default-features = false, git = "https://github.com/DataDog/saluki/", rev = "f863626dbfe3c59bb390985fa6530b0621c2a0a2" }
-ddsketch-agent = { version = "0.1.0", default-features = false, git = "https://github.com/DataDog/saluki/", rev = "f863626dbfe3c59bb390985fa6530b0621c2a0a2" }
+datadog-protos = { version = "0.1.0", default-features = false, git = "https://github.com/DataDog/saluki/", rev = "e8ff26721ccac37d370188f13fc06f3a9a97d181" }
+ddsketch = { version = "0.1.0", default-features = false, git = "https://github.com/DataDog/saluki/", rev = "e8ff26721ccac37d370188f13fc06f3a9a97d181" }
 derive_more = { version = "1.0.0", features = ["display", "into"] }
 hashbrown = { version = "0.15.0", default-features = false, features = ["inline-more"] }
 protobuf = { version = "3.5.0", default-features = false }

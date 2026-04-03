@@ -503,15 +503,20 @@ dependencies = [
 [[package]]
 name = "datadog-protos"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/saluki/?rev=f863626dbfe3c59bb390985fa6530b0621c2a0a2#f863626dbfe3c59bb390985fa6530b0621c2a0a2"
+source = "git+https://github.com/DataDog/saluki/?rev=e8ff26721ccac37d370188f13fc06f3a9a97d181#e8ff26721ccac37d370188f13fc06f3a9a97d181"
 dependencies = [
  "bytes",
- "prost 0.13.5",
+ "piecemeal",
+ "piecemeal-build",
+ "prost",
  "prost-types",
  "protobuf",
  "protobuf-codegen",
+ "serde",
+ "serde_bytes",
  "tonic",
- "tonic-build",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]
@@ -559,13 +564,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "ddsketch-agent"
+name = "ddsketch"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/saluki/?rev=f863626dbfe3c59bb390985fa6530b0621c2a0a2#f863626dbfe3c59bb390985fa6530b0621c2a0a2"
+source = "git+https://github.com/DataDog/saluki/?rev=e8ff26721ccac37d370188f13fc06f3a9a97d181#e8ff26721ccac37d370188f13fc06f3a9a97d181"
 dependencies = [
  "datadog-protos",
  "float-cmp",
- "ordered-float 4.6.0",
+ "ordered-float 5.3.0",
+ "protobuf",
  "smallvec",
 ]
 
@@ -616,7 +622,7 @@ name = "dogstatsd"
 version = "0.1.0"
 dependencies = [
  "datadog-protos",
- "ddsketch-agent",
+ "ddsketch",
  "derive_more",
  "fnv",
  "hashbrown 0.15.5",
@@ -1510,7 +1516,7 @@ version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b31b2435e2e8eaba0e35a96df3e1407b68f8ef76055383ceb2ba5a09e5a1bb5"
 dependencies = [
- "prost 0.14.3",
+ "prost",
 ]
 
 [[package]]
@@ -1611,7 +1617,7 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d0a54921e03174f3ff7ad8506ff9e13637e546ef0b1f369ae463eacebda8e88"
 dependencies = [
- "prost 0.14.3",
+ "prost",
  "serde",
  "serde_bytes",
 ]
@@ -1621,7 +1627,7 @@ name = "libdd-trace-protobuf"
 version = "3.0.0"
 source = "git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad#8c88979985154d6d97c0fc2ca9039682981eacad"
 dependencies = [
- "prost 0.14.3",
+ "prost",
  "serde",
  "serde_bytes",
 ]
@@ -1655,7 +1661,7 @@ dependencies = [
  "libdd-tinybytes 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libdd-trace-normalization 1.0.2",
  "libdd-trace-protobuf 2.0.0",
- "prost 0.14.3",
+ "prost",
  "rand 0.8.5",
  "rmp",
  "rmp-serde",
@@ -1687,7 +1693,7 @@ dependencies = [
  "libdd-tinybytes 1.1.0 (git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad)",
  "libdd-trace-normalization 1.0.3",
  "libdd-trace-protobuf 3.0.0",
- "prost 0.14.3",
+ "prost",
  "rand 0.8.5",
  "rmp",
  "rmp-serde",
@@ -1933,9 +1939,9 @@ dependencies = [
 
 [[package]]
 name = "ordered-float"
-version = "4.6.0"
+version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
+checksum = "b7d950ca161dc355eaf28f82b11345ed76c6e1f6eb1f4f4479e0323b9e2fbd0e"
 dependencies = [
  "num-traits",
 ]
@@ -2009,12 +2015,31 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "petgraph"
-version = "0.7.1"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3672b37090dbd86368a4145bc067582552b29c27377cad4e0a306c97f9bd7772"
+checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
 dependencies = [
  "fixedbitset",
+ "hashbrown 0.15.5",
  "indexmap",
+]
+
+[[package]]
+name = "piecemeal"
+version = "0.1.0"
+source = "git+https://github.com/tobz/piecemeal#828e8632116ba7b323991796e6ae842fcabe6291"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
+name = "piecemeal-build"
+version = "0.1.0"
+source = "git+https://github.com/tobz/piecemeal#828e8632116ba7b323991796e6ae842fcabe6291"
+dependencies = [
+ "nom",
+ "piecemeal",
+ "tracing",
 ]
 
 [[package]]
@@ -2150,55 +2175,31 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
-dependencies = [
- "bytes",
- "prost-derive 0.13.5",
-]
-
-[[package]]
-name = "prost"
 version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2ea70524a2f82d518bce41317d0fae74151505651af45faf1ffbd6fd33f0568"
 dependencies = [
  "bytes",
- "prost-derive 0.14.3",
+ "prost-derive",
 ]
 
 [[package]]
 name = "prost-build"
-version = "0.13.5"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
+checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
- "heck 0.5.0",
- "itertools 0.14.0",
+ "heck 0.4.1",
+ "itertools 0.13.0",
  "log",
  "multimap",
- "once_cell",
  "petgraph",
  "prettyplease",
- "prost 0.13.5",
+ "prost",
  "prost-types",
  "regex",
  "syn 2.0.117",
  "tempfile",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
-dependencies = [
- "anyhow",
- "itertools 0.14.0",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -2216,11 +2217,11 @@ dependencies = [
 
 [[package]]
 name = "prost-types"
-version = "0.13.5"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
+checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
 dependencies = [
- "prost 0.13.5",
+ "prost",
 ]
 
 [[package]]
@@ -3195,9 +3196,9 @@ dependencies = [
 
 [[package]]
 name = "tonic"
-version = "0.13.1"
+version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e581ba15a835f4d9ea06c55ab1bd4dce26fc53752c69a04aac00703bfb49ba9"
+checksum = "fec7c61a0695dc1887c1b53952990f3ad2e3a31453e1f49f10e75424943a93ec"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3207,7 +3208,7 @@ dependencies = [
  "http-body-util",
  "percent-encoding",
  "pin-project",
- "prost 0.13.5",
+ "sync_wrapper",
  "tokio-stream",
  "tower-layer",
  "tower-service",
@@ -3216,9 +3217,32 @@ dependencies = [
 
 [[package]]
 name = "tonic-build"
-version = "0.13.1"
+version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eac6f67be712d12f0b41328db3137e0d0757645d8904b4cb7d51cd9c2279e847"
+checksum = "1882ac3bf5ef12877d7ed57aad87e75154c11931c2ba7e6cde5e22d63522c734"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "tonic-prost"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a55376a0bbaa4975a3f10d009ad763d8f4108f067c7c2e74f3001fb49778d309"
+dependencies = [
+ "bytes",
+ "prost",
+ "tonic",
+]
+
+[[package]]
+name = "tonic-prost-build"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3144df636917574672e93d0f56d7edec49f90305749c668df5101751bb8f95a"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -3226,6 +3250,8 @@ dependencies = [
  "prost-types",
  "quote",
  "syn 2.0.117",
+ "tempfile",
+ "tonic-build",
 ]
 
 [[package]]

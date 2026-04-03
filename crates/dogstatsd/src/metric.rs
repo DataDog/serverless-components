@@ -3,9 +3,8 @@
 
 use crate::errors::ParseError;
 use crate::{constants, datadog};
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use fnv::FnvHasher;
-use protobuf::Chars;
 use std::hash::{Hash, Hasher};
 use ustr::Ustr;
 
@@ -96,20 +95,20 @@ impl SortedTags {
         })
     }
 
-    pub fn to_chars(&self) -> Vec<Chars> {
-        let mut tags_as_chars = Vec::new();
+    pub fn to_chars(&self) -> Vec<String> {
+        let mut tags = Vec::new();
         for (k, v) in &self.values {
             if v.is_empty() {
-                tags_as_chars.push(Chars::from(k.to_string()));
+                tags.push(k.to_string());
             } else {
                 let mut a_tag = String::with_capacity(k.len() + v.len() + 1);
                 a_tag.push_str(k);
                 a_tag.push(':');
                 a_tag.push_str(v);
-                tags_as_chars.push(a_tag.into());
+                tags.push(a_tag);
             }
         }
-        tags_as_chars
+        tags
     }
 
     pub fn to_strings(&self) -> Vec<String> {

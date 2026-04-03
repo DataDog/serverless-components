@@ -11,7 +11,7 @@ use crate::errors;
 use crate::metric::{self, Metric, MetricValue, SortedTags};
 
 use datadog_protos::metrics::{Dogsketch, Metadata, Sketch, SketchPayload};
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use hashbrown::hash_table;
 use protobuf::{Message, MessageField, SpecialFields};
 use tracing::{error, warn};
