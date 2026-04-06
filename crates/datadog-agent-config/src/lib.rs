@@ -327,8 +327,10 @@ pub trait ConfigExtension: Clone + Default + std::fmt::Debug + PartialEq {
 pub struct NoExtension;
 
 /// A no-op source for deserialization that accepts (and ignores) any input.
+/// Uses a regular struct (not unit struct) so serde deserializes it from
+/// map-shaped data that figment provides, rather than expecting null/unit.
 #[derive(Clone, Default, Debug, Deserialize)]
-pub struct NoExtensionSource;
+pub struct NoExtensionSource {}
 
 impl ConfigExtension for NoExtension {
     type Source = NoExtensionSource;
