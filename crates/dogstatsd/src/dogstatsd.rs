@@ -470,10 +470,14 @@ async fn process_loop(
                 }
             }
             _ = cancel.cancelled() => {
+                let mut drained = 0usize;
+                debug!("=== dogstatsd process_loop: cancel received, draining remaining channel packets");
                 while let Ok(packet) = rx.try_recv() {
                     process_packet(packet.data(), &packet.source, aggregator, namespace);
                     let _ = pool.send(packet.buf);
+                    drained += 1;
                 }
+                debug!("=== dogstatsd process_loop: drain complete, {} packets processed after cancel", drained);
                 break;
             }
         }

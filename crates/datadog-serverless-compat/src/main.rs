@@ -197,44 +197,11 @@ pub async fn main() {
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     flush_interval.tick().await; // discard first tick, which is instantaneous
 
-    #[cfg(unix)]
-    let mut sigterm = {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("Failed to install SIGTERM handler: {e}");
-                return;
-            }
-        }
-    };
-
     loop {
-        #[cfg(unix)]
-        {
-            tokio::select! {
-                _ = flush_interval.tick() => {
-                    if let Some(metrics_flusher) = metrics_flusher.as_ref() {
-                        debug!("Flushing dogstatsd metrics");
-                        metrics_flusher.flush().await;
-                    }
-                }
-                _ = sigterm.recv() => {
-                    info!("Received SIGTERM, performing final metrics flush");
-                    if let Some(metrics_flusher) = metrics_flusher.as_ref() {
-                        metrics_flusher.flush().await;
-                    }
-                    return;
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            flush_interval.tick().await;
-            if let Some(metrics_flusher) = metrics_flusher.as_ref() {
-                debug!("Flushing dogstatsd metrics");
-                metrics_flusher.flush().await;
-            }
+        flush_interval.tick().await;
+        if let Some(metrics_flusher) = metrics_flusher.as_ref() {
+            debug!("Flushing dogstatsd metrics");
+            metrics_flusher.flush().await;
         }
     }
 }
