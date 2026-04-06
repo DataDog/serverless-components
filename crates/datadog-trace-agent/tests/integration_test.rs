@@ -295,11 +295,11 @@ async fn test_mini_agent_tcp_with_real_flushers() {
     let mut server_ready = false;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None).await {
-            if response.status().is_success() {
-                server_ready = true;
-                break;
-            }
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
         }
     }
     assert!(
