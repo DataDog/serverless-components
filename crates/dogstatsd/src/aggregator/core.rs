@@ -118,6 +118,11 @@ impl Aggregator {
     }
 
     #[must_use]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[must_use]
     pub fn distributions_to_protobuf(&self) -> SketchPayload {
         let mut sketch_payload = SketchPayload::new();
 

@@ -105,7 +105,7 @@ impl AggregatorService {
             match command {
                 AggregatorCommand::InsertBatch(metrics) => {
                     let batch_size = metrics.len();
-                    debug!("=== aggregator: InsertBatch received ({} metrics), map size before={}", batch_size, self.aggregator.map.len());
+                    debug!("=== aggregator: InsertBatch received ({} metrics), map size before={}", batch_size, self.aggregator.len());
                     let mut insert_errors = 0;
                     for metric in metrics {
                         let metric_name = metric.name;
@@ -118,11 +118,11 @@ impl AggregatorService {
                     if insert_errors > 0 {
                         warn!("Total of {} metrics failed to insert", insert_errors);
                     }
-                    debug!("=== aggregator: InsertBatch done, map size after={}", self.aggregator.map.len());
+                    debug!("=== aggregator: InsertBatch done, map size after={}", self.aggregator.len());
                 }
 
                 AggregatorCommand::Flush(response_tx) => {
-                    debug!("=== aggregator: Flush command received, map size={}", self.aggregator.map.len());
+                    debug!("=== aggregator: Flush command received, map size={}", self.aggregator.len());
                     let series = self.aggregator.consume_metrics();
                     let distributions = self.aggregator.consume_distributions();
                     let series_points: usize = series.iter().map(|s| s.series.len()).sum();
