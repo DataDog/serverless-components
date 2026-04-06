@@ -368,6 +368,8 @@ pub struct Config {
     pub appsec_waf_timeout: Duration,
     pub api_security_enabled: bool,
     pub api_security_sample_delay: Duration,
+
+    pub dd_org_uuid: String,
 }
 
 impl Default for Config {
@@ -483,6 +485,8 @@ impl Default for Config {
             appsec_waf_timeout: Duration::from_millis(5),
             api_security_enabled: true,
             api_security_sample_delay: Duration::from_secs(30),
+
+            dd_org_uuid: String::default(),
         }
     }
 }

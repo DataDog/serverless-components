@@ -478,6 +478,11 @@ pub struct EnvConfig {
     /// The delay between two samples of the API Security schema collection, in seconds.
     #[serde(deserialize_with = "deserialize_optional_duration_from_seconds")]
     pub api_security_sample_delay: Option<Duration>,
+    /// @env `DD_ORG_UUID`
+    ///
+    /// The Datadog organization UUID. When set, delegated AWS auth is auto-enabled.
+    #[serde(deserialize_with = "deserialize_optional_string")]
+    pub org_uuid: Option<String>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -680,6 +685,7 @@ fn merge_config(config: &mut Config, env_config: &EnvConfig) {
     merge_option_to_value!(config, env_config, appsec_waf_timeout);
     merge_option_to_value!(config, env_config, api_security_enabled);
     merge_option_to_value!(config, env_config, api_security_sample_delay);
+    merge_string!(config, dd_org_uuid, env_config, org_uuid);
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -881,6 +887,7 @@ mod tests {
                 "arn:aws:ssm:us-east-1:123:parameter/key",
             ),
             ("DD_APPSEC_RULES", "/opt/custom-rules.json"),
+            ("DD_ORG_UUID", "test-org-uuid"),
         ];
 
         // Programmatic guard: count `pub ` fields in the EnvConfig struct from
@@ -956,6 +963,7 @@ mod tests {
                 Some("keep".to_string());
             expected.otlp_config_metrics_summaries_mode = Some("noquantiles".to_string());
             expected.appsec_rules = Some("/opt/custom-rules.json".to_string());
+            expected.dd_org_uuid = "test-org-uuid".to_string();
 
             assert_eq!(config, expected);
             Ok(())
@@ -1283,6 +1291,7 @@ mod tests {
                 appsec_waf_timeout: Duration::from_secs(1),
                 api_security_enabled: false,
                 api_security_sample_delay: Duration::from_secs(60),
+                dd_org_uuid: String::default(),
             };
 
             assert_eq!(config, expected_config);
