@@ -10,6 +10,7 @@ default = []
 windows-pipes = ["datadog-trace-agent/windows-pipes", "dogstatsd/windows-pipes"]
 
 [dependencies]
+datadog-logs-agent = { path = "../datadog-logs-agent" }
 datadog-trace-agent = { path = "../datadog-trace-agent" }
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "8c88979985154d6d97c0fc2ca9039682981eacad" }
 datadog-fips = { path = "../datadog-fips", default-features = false }
@@ -26,6 +27,11 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "tracing-log",
 ] }
 zstd = { version = "0.13.3", default-features = false }
+
+[dev-dependencies]
+reqwest = { version = "0.12.4", features = ["json"], default-features = false }
+serde_json = { version = "1.0.116", default-features = false, features = ["alloc"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [[bin]]
 name = "datadog-serverless-compat"
