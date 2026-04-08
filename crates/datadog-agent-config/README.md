@@ -45,8 +45,11 @@ impl Default for MyExtension {
     }
 }
 
-/// Source struct for deserialization. Must use #[serde(default)] and
-/// graceful deserializers so one bad field doesn't fail the whole extraction.
+/// Source struct for deserialization.
+///
+/// REQUIRED: `#[serde(default)]` on the struct + graceful deserializers on each
+/// field. Without these, a missing or malformed value fails the entire extension
+/// extraction — fields silently fall back to defaults with a warning log.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MySource {
@@ -90,7 +93,11 @@ Extension fields are populated from both `DD_*` environment variables and `datad
 
 ### Flat fields only
 
-The single `Source` type is used for both env var and YAML extraction. This works when extension fields are top-level (flat) in the YAML file, which is the common case. If you need nested YAML structures that differ from the flat env var layout, implement `merge_from` with a nested source struct and handle the mapping manually.
+The single `Source` type is used for both env var and YAML extraction. This works because Figment uses a single key-value namespace per provider, so flat fields map naturally to both `DD_*` env vars and top-level YAML keys. If you need nested YAML structures (e.g., `lambda: { enhanced_metrics: true }`) that differ from the flat env var layout, you'd need separate source structs — implement `merge_from` with a nested source struct and handle the mapping manually.
+
+### Field name collisions
+
+Extension fields are extracted independently from the same figment as core fields. If an extension defines a field with the same name as a core field (e.g., `api_key`), both get their own copy — they don't interfere, but the extension copy does **not** override the core value. Avoid shadowing core field names to prevent confusion.
 
 ### merge_fields! macro
 

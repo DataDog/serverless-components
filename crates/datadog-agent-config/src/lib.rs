@@ -293,9 +293,11 @@ pub fn get_config_with_extension<E: ConfigExtension>(config_directory: &Path) ->
 ///
 /// # Source type requirements
 ///
-/// The `Source` type must use `#[serde(default)]` on the struct and graceful
-/// deserializers (e.g., `deserialize_optional_bool_from_anything`) on each field
-/// to ensure that a single bad value doesn't fail the entire extraction.
+/// The `Source` type **must** use `#[serde(default)]` on the struct and graceful
+/// deserializers (e.g., `deserialize_optional_bool_from_anything`) on each field.
+/// Without these, a missing or malformed value will cause the entire extension
+/// extraction to fail — the extension silently falls back to `E::default()` with
+/// a `tracing::warn!` log. See [`ConfigExtension::Source`] for details.
 ///
 /// # Flat fields only
 ///
@@ -313,9 +315,32 @@ pub fn get_config_with_extension<E: ConfigExtension>(config_directory: &Path) ->
 /// that differ from the flat env var layout, implement `merge_from` with a
 /// nested source struct and handle the mapping manually instead of using
 /// `merge_fields!`.
+///
+/// # Field name collisions with core config
+///
+/// Extension fields are extracted independently from the same figment as core
+/// fields. If an extension defines a field with the same name as a core field
+/// (e.g., `api_key`), both will deserialize their own copy — they do not
+/// interfere with each other, but the extension copy will **not** override the
+/// core value. Avoid shadowing core field names to prevent confusion.
 pub trait ConfigExtension: Clone + Default + std::fmt::Debug + PartialEq {
-    /// Intermediate type for deserializing extension fields.
-    /// Used for both environment variable and YAML extraction.
+    /// Intermediate deserialization type for extension fields, used for both
+    /// environment variable and YAML extraction.
+    ///
+    /// # Requirements
+    ///
+    /// The struct **must** have:
+    ///
+    /// 1. `#[serde(default)]` on the struct — so missing fields get defaults
+    ///    instead of failing the whole extraction.
+    /// 2. Graceful per-field deserializers (e.g.,
+    ///    `#[serde(deserialize_with = "deserialize_optional_bool_from_anything")]`)
+    ///    — so one malformed value doesn't fail the whole extraction.
+    ///
+    /// **If either is missing**, `figment::extract::<Source>()` will fail at
+    /// runtime when a field is absent or malformed. The extension falls back to
+    /// `E::default()` and a `tracing::warn!` is emitted — no panic, but all
+    /// extension fields silently get their default values.
     type Source: Default + serde::de::DeserializeOwned + Clone + std::fmt::Debug;
 
     /// Merge parsed source fields into self.
