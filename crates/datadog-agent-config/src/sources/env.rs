@@ -1,22 +1,18 @@
 use figment::{Figment, providers::Env};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::time::Duration;
 
 use dogstatsd::util::parse_metric_namespace;
 use libdd_trace_obfuscation::replacer::ReplaceRule;
 
 use crate::{
-    Config, ConfigError, ConfigSource, TracePropagationStyle,
+    Config, ConfigError, ConfigExtension, ConfigSource, TracePropagationStyle,
     additional_endpoints::deserialize_additional_endpoints,
     apm_replace_rule::deserialize_apm_replace_rules,
     deserialize_apm_filter_tags, deserialize_array_from_comma_separated_string,
     deserialize_key_value_pairs, deserialize_option_lossless,
-    deserialize_optional_bool_from_anything, deserialize_optional_duration_from_microseconds,
-    deserialize_optional_duration_from_seconds,
-    deserialize_optional_duration_from_seconds_ignore_zero, deserialize_optional_string,
+    deserialize_optional_bool_from_anything, deserialize_optional_string,
     deserialize_string_or_int, deserialize_trace_propagation_style, deserialize_with_default,
-    flush_strategy::FlushStrategy,
     log_level::LogLevel,
     logs_additional_endpoints::{LogsAdditionalEndpoint, deserialize_logs_additional_endpoints},
     merge_hashmap, merge_option, merge_option_to_value, merge_string, merge_vec,
@@ -369,119 +365,10 @@ pub struct EnvConfig {
     /// @env `DD_OTLP_CONFIG_LOGS_ENABLED`
     #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
     pub otlp_config_logs_enabled: Option<bool>,
-
-    // AWS Lambda
-    /// @env `DD_API_KEY_SECRET_ARN`
-    ///
-    /// The AWS ARN of the secret containing the Datadog API key.
-    #[serde(deserialize_with = "deserialize_optional_string")]
-    pub api_key_secret_arn: Option<String>,
-    /// @env `DD_KMS_API_KEY`
-    ///
-    /// The AWS KMS API key to use for the Datadog Agent.
-    #[serde(deserialize_with = "deserialize_optional_string")]
-    pub kms_api_key: Option<String>,
-    /// @env `DD_API_KEY_SSM_ARN`
-    ///
-    /// The AWS Systems Manager Parameter Store parameter ARN containing the Datadog API key.
-    #[serde(deserialize_with = "deserialize_optional_string")]
-    pub api_key_ssm_arn: Option<String>,
-    /// @env `DD_SERVERLESS_LOGS_ENABLED`
-    ///
-    /// Enable logs for AWS Lambda. Default is `true`.
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub serverless_logs_enabled: Option<bool>,
-    /// @env `DD_LOGS_ENABLED`
-    ///
-    /// Enable logs for AWS Lambda. Alias for `DD_SERVERLESS_LOGS_ENABLED`. Default is `true`.
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub logs_enabled: Option<bool>,
-    /// @env `DD_SERVERLESS_FLUSH_STRATEGY`
-    ///
-    /// The flush strategy to use for AWS Lambda.
-    #[serde(deserialize_with = "deserialize_with_default")]
-    pub serverless_flush_strategy: Option<FlushStrategy>,
-    /// @env `DD_ENHANCED_METRICS`
-    ///
-    /// Enable enhanced metrics for AWS Lambda. Default is `true`.
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub enhanced_metrics: Option<bool>,
-    /// @env `DD_LAMBDA_PROC_ENHANCED_METRICS`
-    ///
-    /// Enable Lambda process metrics for AWS Lambda. Default is `true`.
-    ///
-    /// This is for metrics like:
-    /// - CPU usage
-    /// - Network usage
-    /// - File descriptor count
-    /// - Thread count
-    /// - Temp directory usage
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub lambda_proc_enhanced_metrics: Option<bool>,
-    /// @env `DD_CAPTURE_LAMBDA_PAYLOAD`
-    ///
-    /// Enable capture of the Lambda request and response payloads.
-    /// Default is `false`.
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub capture_lambda_payload: Option<bool>,
-    /// @env `DD_CAPTURE_LAMBDA_PAYLOAD_MAX_DEPTH`
-    ///
-    /// The maximum depth of the Lambda payload to capture.
-    /// Default is `10`. Requires `capture_lambda_payload` to be `true`.
-    #[serde(deserialize_with = "deserialize_option_lossless")]
-    pub capture_lambda_payload_max_depth: Option<u32>,
-    /// @env `DD_COMPUTE_TRACE_STATS_ON_EXTENSION`
-    ///
-    /// If true, enable computation of trace stats on the extension side.
-    /// If false, trace stats will be computed on the backend side.
-    /// Default is `false`.
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub compute_trace_stats_on_extension: Option<bool>,
-    /// @env `DD_SPAN_DEDUP_TIMEOUT`
-    ///
-    /// The timeout for the span deduplication service to check if a span key exists, in seconds.
-    /// For now, this is a temporary field added to debug the failure of `check_and_add()` in span dedup service.
-    /// Do not use this field extensively in production.
-    #[serde(deserialize_with = "deserialize_optional_duration_from_seconds_ignore_zero")]
-    pub span_dedup_timeout: Option<Duration>,
-    /// @env `DD_API_KEY_SECRET_RELOAD_INTERVAL`
-    ///
-    /// The interval at which the Datadog API key is reloaded, in seconds.
-    /// If None, the API key will not be reloaded.
-    /// Default is `None`.
-    #[serde(deserialize_with = "deserialize_optional_duration_from_seconds_ignore_zero")]
-    pub api_key_secret_reload_interval: Option<Duration>,
-    /// @env `DD_SERVERLESS_APPSEC_ENABLED`
-    ///
-    /// Enable Application and API Protection (AAP), previously known as AppSec/ASM, for AWS Lambda.
-    /// Default is `false`.
-    ///
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub serverless_appsec_enabled: Option<bool>,
-    /// @env `DD_APPSEC_RULES`
-    ///
-    /// The path to a user-configured App & API Protection ruleset (in JSON format).
-    #[serde(deserialize_with = "deserialize_optional_string")]
-    pub appsec_rules: Option<String>,
-    /// @env `DD_APPSEC_WAF_TIMEOUT`
-    ///
-    /// The timeout for the WAF to process a request, in microseconds.
-    #[serde(deserialize_with = "deserialize_optional_duration_from_microseconds")]
-    pub appsec_waf_timeout: Option<Duration>,
-    /// @env `DD_API_SECURITY_ENABLED`
-    ///
-    /// Enable API Security for AWS Lambda.
-    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
-    pub api_security_enabled: Option<bool>,
-    /// @env `DD_API_SECURITY_SAMPLE_DELAY`
-    ///
-    /// The delay between two samples of the API Security schema collection, in seconds.
-    #[serde(deserialize_with = "deserialize_optional_duration_from_seconds")]
-    pub api_security_sample_delay: Option<Duration>,
 }
 
 #[allow(clippy::too_many_lines)]
-fn merge_config(config: &mut Config, env_config: &EnvConfig) {
+fn merge_config<E: ConfigExtension>(config: &mut Config<E>, env_config: &EnvConfig) {
     // Basic fields
     merge_string!(config, env_config, site);
     merge_string!(config, env_config, api_key);
@@ -654,50 +541,35 @@ fn merge_config(config: &mut Config, env_config: &EnvConfig) {
         otlp_config_traces_probabilistic_sampler_sampling_percentage
     );
     merge_option_to_value!(config, env_config, otlp_config_logs_enabled);
-
-    // AWS Lambda
-    merge_string!(config, env_config, api_key_secret_arn);
-    merge_string!(config, env_config, kms_api_key);
-    merge_string!(config, env_config, api_key_ssm_arn);
-    merge_option_to_value!(config, env_config, serverless_logs_enabled);
-
-    // Handle serverless_logs_enabled with OR logic: if either DD_LOGS_ENABLED or DD_SERVERLESS_LOGS_ENABLED is true, enable logs
-    if env_config.serverless_logs_enabled.is_some() || env_config.logs_enabled.is_some() {
-        config.serverless_logs_enabled = env_config.serverless_logs_enabled.unwrap_or(false)
-            || env_config.logs_enabled.unwrap_or(false);
-    }
-
-    merge_option_to_value!(config, env_config, serverless_flush_strategy);
-    merge_option_to_value!(config, env_config, enhanced_metrics);
-    merge_option_to_value!(config, env_config, lambda_proc_enhanced_metrics);
-    merge_option_to_value!(config, env_config, capture_lambda_payload);
-    merge_option_to_value!(config, env_config, capture_lambda_payload_max_depth);
-    merge_option_to_value!(config, env_config, compute_trace_stats_on_extension);
-    merge_option!(config, env_config, span_dedup_timeout);
-    merge_option!(config, env_config, api_key_secret_reload_interval);
-    merge_option_to_value!(config, env_config, serverless_appsec_enabled);
-    merge_option!(config, env_config, appsec_rules);
-    merge_option_to_value!(config, env_config, appsec_waf_timeout);
-    merge_option_to_value!(config, env_config, api_security_enabled);
-    merge_option_to_value!(config, env_config, api_security_sample_delay);
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 #[allow(clippy::module_name_repetitions)]
 pub struct EnvConfigSource;
 
-impl ConfigSource for EnvConfigSource {
-    fn load(&self, config: &mut Config) -> Result<(), ConfigError> {
+impl<E: ConfigExtension> ConfigSource<E> for EnvConfigSource {
+    fn load(&self, config: &mut Config<E>) -> Result<(), ConfigError> {
         let figment = Figment::new()
             .merge(Env::prefixed("DATADOG_"))
             .merge(Env::prefixed("DD_"));
 
+        // Extract core config fields
         match figment.extract::<EnvConfig>() {
             Ok(env_config) => merge_config(config, &env_config),
             Err(e) => {
                 return Err(ConfigError::ParseError(format!(
                     "Failed to parse config from environment variables: {e}, using default config.",
                 )));
+            }
+        }
+
+        // Extract extension fields via dual extraction
+        match figment.extract::<E::Source>() {
+            Ok(ext_source) => config.ext.merge_from(&ext_source),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to parse extension config from environment variables: {e}, using default extension config."
+                );
             }
         }
 
@@ -709,12 +581,9 @@ impl ConfigSource for EnvConfigSource {
 #[cfg(test)]
 #[allow(clippy::result_large_err)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use crate::{
         Config, TracePropagationStyle,
-        flush_strategy::{FlushStrategy, PeriodicStrategy},
         log_level::LogLevel,
         processing_rule::{Kind, ProcessingRule},
     };
@@ -728,6 +597,7 @@ mod tests {
     /// corresponding entry in the arrays below.
     #[test]
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::field_reassign_with_default)]
     fn test_all_env_fields_wrong_type_fallback_to_default() {
         // Non-string fields → invalid values that exercise graceful fallback.
         let invalid_non_string_env_vars: &[(&str, &str)] = &[
@@ -737,7 +607,6 @@ mod tests {
             ("DD_LOGS_CONFIG_COMPRESSION_LEVEL", "not_a_number"),
             ("DD_APM_CONFIG_COMPRESSION_LEVEL", "not_a_number"),
             ("DD_METRICS_CONFIG_COMPRESSION_LEVEL", "not_a_number"),
-            ("DD_CAPTURE_LAMBDA_PAYLOAD_MAX_DEPTH", "not_a_number"),
             ("DD_DOGSTATSD_SO_RCVBUF", "not_a_number"),
             ("DD_DOGSTATSD_BUFFER_SIZE", "not_a_number"),
             ("DD_DOGSTATSD_QUEUE_SIZE", "not_a_number"),
@@ -764,12 +633,6 @@ mod tests {
             ("DD_TRACE_PROPAGATION_EXTRACT_FIRST", "not_a_bool"),
             ("DD_TRACE_PROPAGATION_HTTP_BAGGAGE_ENABLED", "not_a_bool"),
             ("DD_TRACE_AWS_SERVICE_REPRESENTATION_ENABLED", "not_a_bool"),
-            ("DD_ENHANCED_METRICS", "not_a_bool"),
-            ("DD_LAMBDA_PROC_ENHANCED_METRICS", "not_a_bool"),
-            ("DD_CAPTURE_LAMBDA_PAYLOAD", "not_a_bool"),
-            ("DD_COMPUTE_TRACE_STATS_ON_EXTENSION", "not_a_bool"),
-            ("DD_SERVERLESS_APPSEC_ENABLED", "not_a_bool"),
-            ("DD_API_SECURITY_ENABLED", "not_a_bool"),
             ("DD_OTLP_CONFIG_TRACES_ENABLED", "not_a_bool"),
             (
                 "DD_OTLP_CONFIG_TRACES_SPAN_NAME_AS_RESOURCE_NAME",
@@ -798,16 +661,8 @@ mod tests {
                 "DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED",
                 "not_a_bool",
             ),
-            ("DD_SERVERLESS_LOGS_ENABLED", "not_a_bool"),
-            ("DD_LOGS_ENABLED", "not_a_bool"),
             // Enum
             ("DD_LOG_LEVEL", "invalid_level_999"),
-            ("DD_SERVERLESS_FLUSH_STRATEGY", "[[[invalid"),
-            // Duration
-            ("DD_SPAN_DEDUP_TIMEOUT", "not_a_number"),
-            ("DD_API_KEY_SECRET_RELOAD_INTERVAL", "not_a_number"),
-            ("DD_APPSEC_WAF_TIMEOUT", "not_a_number"),
-            ("DD_API_SECURITY_SAMPLE_DELAY", "not_a_number"),
             // JSON
             ("DD_ADDITIONAL_ENDPOINTS", "not_json{{"),
             ("DD_APM_ADDITIONAL_ENDPOINTS", "not_json{{"),
@@ -871,16 +726,6 @@ mod tests {
                 "keep",
             ),
             ("DD_OTLP_CONFIG_METRICS_SUMMARIES_MODE", "noquantiles"),
-            (
-                "DD_API_KEY_SECRET_ARN",
-                "arn:aws:secretsmanager:us-east-1:123:secret:key",
-            ),
-            ("DD_KMS_API_KEY", "kms-encrypted-key"),
-            (
-                "DD_API_KEY_SSM_ARN",
-                "arn:aws:ssm:us-east-1:123:parameter/key",
-            ),
-            ("DD_APPSEC_RULES", "/opt/custom-rules.json"),
         ];
 
         // Programmatic guard: count `pub ` fields in the EnvConfig struct from
@@ -913,7 +758,7 @@ mod tests {
                 jail.set_env(key, value);
             }
 
-            let mut config = Config::default();
+            let mut config: Config = Config::default();
             // This MUST succeed — no single field should crash the whole config
             EnvConfigSource
                 .load(&mut config)
@@ -921,7 +766,7 @@ mod tests {
 
             // Build expected: string fields have their non-default values,
             // all non-string fields stay at defaults.
-            let mut expected = Config::default();
+            let mut expected: Config = Config::default();
             // String fields (merge_string! → Config String)
             expected.site = "custom-site.example.com".to_string();
             expected.api_key = "test-api-key-12345".to_string();
@@ -931,10 +776,6 @@ mod tests {
             expected.observability_pipelines_worker_logs_url =
                 "https://opw.example.com".to_string();
             expected.apm_dd_url = "https://custom-apm.example.com".to_string();
-            expected.api_key_secret_arn =
-                "arn:aws:secretsmanager:us-east-1:123:secret:key".to_string();
-            expected.kms_api_key = "kms-encrypted-key".to_string();
-            expected.api_key_ssm_arn = "arn:aws:ssm:us-east-1:123:parameter/key".to_string();
             // Option<String> fields (merge_option! → Config Option<String>)
             expected.proxy_https = Some("https://proxy.example.com".to_string());
             expected.http_protocol = Some("http1".to_string());
@@ -955,7 +796,6 @@ mod tests {
             expected.otlp_config_metrics_sums_initial_cumulativ_monotonic_value =
                 Some("keep".to_string());
             expected.otlp_config_metrics_summaries_mode = Some("noquantiles".to_string());
-            expected.appsec_rules = Some("/opt/custom-rules.json".to_string());
 
             assert_eq!(config, expected);
             Ok(())
@@ -1105,28 +945,7 @@ mod tests {
             jail.set_env("DD_DOGSTATSD_BUFFER_SIZE", "65507");
             jail.set_env("DD_DOGSTATSD_QUEUE_SIZE", "2048");
 
-            // AWS Lambda
-            jail.set_env(
-                "DD_API_KEY_SECRET_ARN",
-                "arn:aws:secretsmanager:region:account:secret:datadog-api-key",
-            );
-            jail.set_env("DD_KMS_API_KEY", "test-kms-key");
-            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "false");
-            jail.set_env("DD_SERVERLESS_FLUSH_STRATEGY", "periodically,60000");
-            jail.set_env("DD_ENHANCED_METRICS", "false");
-            jail.set_env("DD_LAMBDA_PROC_ENHANCED_METRICS", "false");
-            jail.set_env("DD_CAPTURE_LAMBDA_PAYLOAD", "true");
-            jail.set_env("DD_CAPTURE_LAMBDA_PAYLOAD_MAX_DEPTH", "5");
-            jail.set_env("DD_COMPUTE_TRACE_STATS_ON_EXTENSION", "true");
-            jail.set_env("DD_SPAN_DEDUP_TIMEOUT", "5");
-            jail.set_env("DD_API_KEY_SECRET_RELOAD_INTERVAL", "10");
-            jail.set_env("DD_SERVERLESS_APPSEC_ENABLED", "true");
-            jail.set_env("DD_APPSEC_RULES", "/path/to/rules.json");
-            jail.set_env("DD_APPSEC_WAF_TIMEOUT", "1000000"); // Microseconds
-            jail.set_env("DD_API_SECURITY_ENABLED", "0"); // Seconds
-            jail.set_env("DD_API_SECURITY_SAMPLE_DELAY", "60"); // Seconds
-
-            let mut config = Config::default();
+            let mut config: Config = Config::default();
             let env_config_source = EnvConfigSource;
             env_config_source
                 .load(&mut config)
@@ -1263,189 +1082,11 @@ mod tests {
                 dogstatsd_so_rcvbuf: Some(1_048_576),
                 dogstatsd_buffer_size: Some(65507),
                 dogstatsd_queue_size: Some(2048),
-                api_key_secret_arn: "arn:aws:secretsmanager:region:account:secret:datadog-api-key"
-                    .to_string(),
-                kms_api_key: "test-kms-key".to_string(),
-                api_key_ssm_arn: String::default(),
-                serverless_logs_enabled: false,
-                serverless_flush_strategy: FlushStrategy::Periodically(PeriodicStrategy {
-                    interval: 60000,
-                }),
-                enhanced_metrics: false,
-                lambda_proc_enhanced_metrics: false,
-                capture_lambda_payload: true,
-                capture_lambda_payload_max_depth: 5,
-                compute_trace_stats_on_extension: true,
-                span_dedup_timeout: Some(Duration::from_secs(5)),
-                api_key_secret_reload_interval: Some(Duration::from_secs(10)),
-                serverless_appsec_enabled: true,
-                appsec_rules: Some("/path/to/rules.json".to_string()),
-                appsec_waf_timeout: Duration::from_secs(1),
-                api_security_enabled: false,
-                api_security_sample_delay: Duration::from_secs(60),
+                ext: crate::NoExtension,
             };
 
             assert_eq!(config, expected_config);
 
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_dd_logs_enabled_true() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_LOGS_ENABLED", "true");
-
-            let mut config = Config::default();
-            let env_config_source = EnvConfigSource;
-            env_config_source
-                .load(&mut config)
-                .expect("Failed to load config");
-
-            assert!(config.serverless_logs_enabled);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_dd_logs_enabled_false() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_LOGS_ENABLED", "false");
-
-            let mut config = Config::default();
-            let env_config_source = EnvConfigSource;
-            env_config_source
-                .load(&mut config)
-                .expect("Failed to load config");
-
-            assert!(!config.serverless_logs_enabled);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_dd_serverless_logs_enabled_true() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "true");
-
-            let mut config = Config::default();
-            let env_config_source = EnvConfigSource;
-            env_config_source
-                .load(&mut config)
-                .expect("Failed to load config");
-
-            assert!(config.serverless_logs_enabled);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_dd_serverless_logs_enabled_false() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "false");
-
-            let mut config = Config::default();
-            let env_config_source = EnvConfigSource;
-            env_config_source
-                .load(&mut config)
-                .expect("Failed to load config");
-
-            assert!(!config.serverless_logs_enabled);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_both_logs_enabled_true() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_LOGS_ENABLED", "true");
-            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "true");
-
-            let mut config = Config::default();
-            let env_config_source = EnvConfigSource;
-            env_config_source
-                .load(&mut config)
-                .expect("Failed to load config");
-
-            assert!(config.serverless_logs_enabled);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_both_logs_enabled_false() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_LOGS_ENABLED", "false");
-            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "false");
-
-            let mut config = Config::default();
-            let env_config_source = EnvConfigSource;
-            env_config_source
-                .load(&mut config)
-                .expect("Failed to load config");
-
-            assert!(!config.serverless_logs_enabled);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_logs_enabled_true_serverless_logs_enabled_false() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_LOGS_ENABLED", "true");
-            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "false");
-
-            let mut config = Config::default();
-            let env_config_source = EnvConfigSource;
-            env_config_source
-                .load(&mut config)
-                .expect("Failed to load config");
-
-            // OR logic: if either is true, logs are enabled
-            assert!(config.serverless_logs_enabled);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_logs_enabled_false_serverless_logs_enabled_true() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_LOGS_ENABLED", "false");
-            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "true");
-
-            let mut config = Config::default();
-            let env_config_source = EnvConfigSource;
-            env_config_source
-                .load(&mut config)
-                .expect("Failed to load config");
-
-            // OR logic: if either is true, logs are enabled
-            assert!(config.serverless_logs_enabled);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_neither_logs_enabled_set_uses_default() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-
-            let mut config = Config::default();
-            let env_config_source = EnvConfigSource;
-            env_config_source
-                .load(&mut config)
-                .expect("Failed to load config");
-
-            // Default value is true
-            assert!(config.serverless_logs_enabled);
             Ok(())
         });
     }
@@ -1458,7 +1099,7 @@ mod tests {
             jail.set_env("DD_DOGSTATSD_BUFFER_SIZE", "65507");
             jail.set_env("DD_DOGSTATSD_QUEUE_SIZE", "2048");
 
-            let mut config = Config::default();
+            let mut config: Config = Config::default();
             let env_config_source = EnvConfigSource;
             env_config_source
                 .load(&mut config)
@@ -1476,7 +1117,7 @@ mod tests {
         figment::Jail::expect_with(|jail| {
             jail.clear_env();
 
-            let mut config = Config::default();
+            let mut config: Config = Config::default();
             let env_config_source = EnvConfigSource;
             env_config_source
                 .load(&mut config)

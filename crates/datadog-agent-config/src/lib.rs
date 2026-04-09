@@ -1,244 +1,45 @@
-pub mod additional_endpoints;
-pub mod apm_replace_rule;
-pub mod env;
-pub mod flush_strategy;
-pub mod log_level;
-pub mod logs_additional_endpoints;
-pub mod processing_rule;
-pub mod service_mapping;
-pub mod yaml;
+pub mod deserializers;
+pub mod sources;
+
+// Re-export submodules at the crate root so existing imports like
+// `crate::flush_strategy::FlushStrategy` and `crate::env::EnvConfigSource` keep working.
+pub use deserializers::{
+    additional_endpoints, apm_replace_rule, flush_strategy, log_level, logs_additional_endpoints,
+    processing_rule, service_mapping,
+};
+pub use sources::{env, yaml};
 
 pub use datadog_opentelemetry::configuration::TracePropagationStyle;
+// Re-export all helper deserializers so consumers and internal modules can
+// use `crate::deserialize_optional_string` etc. without reaching into submodules.
+pub use deserializers::helpers::*;
 
 use libdd_trace_obfuscation::replacer::ReplaceRule;
 use libdd_trace_utils::config_utils::{trace_intake_url, trace_intake_url_prefixed};
 
-use serde::{Deserialize, Deserializer};
-use serde_aux::prelude::deserialize_bool_from_anything;
-use serde_json::Value;
+use serde::Deserialize;
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
-use std::{collections::HashMap, fmt};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::{
     apm_replace_rule::deserialize_apm_replace_rules,
     env::EnvConfigSource,
-    flush_strategy::FlushStrategy,
     log_level::LogLevel,
     logs_additional_endpoints::LogsAdditionalEndpoint,
     processing_rule::{ProcessingRule, deserialize_processing_rules},
     yaml::YamlConfigSource,
 };
 
-/// Helper macro to merge Option<String> fields to String fields
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_string {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if let Some(value) = &$source.$source_field {
-            $config.$config_field.clone_from(value);
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if let Some(value) = &$source.$field {
-            $config.$field.clone_from(value);
-        }
-    };
-}
-
-/// Helper macro to merge Option<T> fields where T implements Clone
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_option {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if $source.$source_field.is_some() {
-            $config.$config_field.clone_from(&$source.$source_field);
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if $source.$field.is_some() {
-            $config.$field.clone_from(&$source.$field);
-        }
-    };
-}
-
-/// Helper macro to merge Option<T> fields to T fields when Option<T> is Some
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_option_to_value {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if let Some(value) = &$source.$source_field {
-            $config.$config_field = value.clone();
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if let Some(value) = &$source.$field {
-            $config.$field = value.clone();
-        }
-    };
-}
-
-/// Helper macro to merge `Vec` fields when `Vec` is not empty
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_vec {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if !$source.$source_field.is_empty() {
-            $config.$config_field.clone_from(&$source.$source_field);
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if !$source.$field.is_empty() {
-            $config.$field.clone_from(&$source.$field);
-        }
-    };
-}
-
-// nit: these will replace one map with the other, not merge the maps togehter, right?
-/// Helper macro to merge `HashMap` fields when `HashMap` is not empty
-///
-/// Providing one field argument will merge the value from the source config field into the config
-/// field.
-///
-/// Providing two field arguments will merge the value from the source config field into the config
-/// field if the value is not empty.
-#[macro_export]
-macro_rules! merge_hashmap {
-    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
-        if !$source.$source_field.is_empty() {
-            $config.$config_field.clone_from(&$source.$source_field);
-        }
-    };
-    ($config:expr, $source:expr, $field:ident) => {
-        if !$source.$field.is_empty() {
-            $config.$field.clone_from(&$source.$field);
-        }
-    };
-}
-
-#[derive(Debug, PartialEq)]
-#[allow(clippy::module_name_repetitions)]
-pub enum ConfigError {
-    ParseError(String),
-    UnsupportedField(String),
-}
-
-#[allow(clippy::module_name_repetitions)]
-pub trait ConfigSource {
-    fn load(&self, config: &mut Config) -> Result<(), ConfigError>;
-}
-
-#[derive(Default)]
-#[allow(clippy::module_name_repetitions)]
-pub struct ConfigBuilder {
-    sources: Vec<Box<dyn ConfigSource>>,
-    config: Config,
-}
-
-#[allow(clippy::module_name_repetitions)]
-impl ConfigBuilder {
-    #[must_use]
-    pub fn add_source(mut self, source: Box<dyn ConfigSource>) -> Self {
-        self.sources.push(source);
-        self
-    }
-
-    pub fn build(&mut self) -> Config {
-        let mut failed_sources = 0;
-        for source in &self.sources {
-            match source.load(&mut self.config) {
-                Ok(()) => (),
-                Err(e) => {
-                    error!("Failed to load config: {:?}", e);
-                    failed_sources += 1;
-                }
-            }
-        }
-
-        if !self.sources.is_empty() && failed_sources == self.sources.len() {
-            debug!("All sources failed to load config, using default config.");
-        }
-
-        if self.config.site.is_empty() {
-            self.config.site = "datadoghq.com".to_string();
-        }
-
-        // If `proxy_https` is not set, set it from `HTTPS_PROXY` environment variable
-        // if it exists
-        if let Ok(https_proxy) = std::env::var("HTTPS_PROXY")
-            && self.config.proxy_https.is_none()
-        {
-            self.config.proxy_https = Some(https_proxy);
-        }
-
-        // If `proxy_https` is set, check if the site is in `NO_PROXY` environment variable
-        // or in the `proxy_no_proxy` config field.
-        if self.config.proxy_https.is_some() {
-            let site_in_no_proxy = std::env::var("NO_PROXY")
-                .is_ok_and(|no_proxy| no_proxy.contains(&self.config.site))
-                || self
-                    .config
-                    .proxy_no_proxy
-                    .iter()
-                    .any(|no_proxy| no_proxy.contains(&self.config.site));
-            if site_in_no_proxy {
-                self.config.proxy_https = None;
-            }
-        }
-
-        // If extraction is not set, set it to the same as the propagation style
-        if self.config.trace_propagation_style_extract.is_empty() {
-            self.config
-                .trace_propagation_style_extract
-                .clone_from(&self.config.trace_propagation_style);
-        }
-
-        // If Logs URL is not set, set it to the default
-        if self.config.logs_config_logs_dd_url.trim().is_empty() {
-            self.config.logs_config_logs_dd_url = build_fqdn_logs(self.config.site.clone());
-        } else {
-            self.config.logs_config_logs_dd_url =
-                logs_intake_url(self.config.logs_config_logs_dd_url.as_str());
-        }
-
-        // If APM URL is not set, set it to the default
-        if self.config.apm_dd_url.is_empty() {
-            self.config.apm_dd_url = trace_intake_url(self.config.site.clone().as_str());
-        } else {
-            // If APM URL is set, add the site to the URL
-            self.config.apm_dd_url = trace_intake_url_prefixed(self.config.apm_dd_url.as_str());
-        }
-
-        self.config.clone()
-    }
-}
+// ---------------------------------------------------------------------------
+// Config — the resolved configuration struct
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Clone)]
 #[allow(clippy::module_name_repetitions)]
 #[allow(clippy::struct_excessive_bools)]
-pub struct Config {
+pub struct Config<E: ConfigExtension = NoExtension> {
     pub site: String,
     pub api_key: String,
     pub log_level: LogLevel,
@@ -349,28 +150,12 @@ pub struct Config {
     // - Logs
     pub otlp_config_logs_enabled: bool,
 
-    // AWS Lambda
-    pub api_key_secret_arn: String,
-    pub kms_api_key: String,
-    pub api_key_ssm_arn: String,
-    pub serverless_logs_enabled: bool,
-    pub serverless_flush_strategy: FlushStrategy,
-    pub enhanced_metrics: bool,
-    pub lambda_proc_enhanced_metrics: bool,
-    pub capture_lambda_payload: bool,
-    pub capture_lambda_payload_max_depth: u32,
-    pub compute_trace_stats_on_extension: bool,
-    pub span_dedup_timeout: Option<Duration>,
-    pub api_key_secret_reload_interval: Option<Duration>,
-
-    pub serverless_appsec_enabled: bool,
-    pub appsec_rules: Option<String>,
-    pub appsec_waf_timeout: Duration,
-    pub api_security_enabled: bool,
-    pub api_security_sample_delay: Duration,
+    /// Agent-specific extension fields defined by the consumer.
+    /// Use `NoExtension` (the default) when no extra fields are needed.
+    pub ext: E,
 }
 
-impl Default for Config {
+impl<E: ConfigExtension> Default for Config<E> {
     fn default() -> Self {
         Self {
             site: String::default(),
@@ -464,38 +249,226 @@ impl Default for Config {
             otlp_config_traces_probabilistic_sampler_sampling_percentage: None,
             otlp_config_logs_enabled: false,
 
-            // AWS Lambda
-            api_key_secret_arn: String::default(),
-            kms_api_key: String::default(),
-            api_key_ssm_arn: String::default(),
-            serverless_logs_enabled: true,
-            serverless_flush_strategy: FlushStrategy::Default,
-            enhanced_metrics: true,
-            lambda_proc_enhanced_metrics: true,
-            capture_lambda_payload: false,
-            capture_lambda_payload_max_depth: 10,
-            compute_trace_stats_on_extension: false,
-            span_dedup_timeout: None,
-            api_key_secret_reload_interval: None,
-
-            serverless_appsec_enabled: false,
-            appsec_rules: None,
-            appsec_waf_timeout: Duration::from_millis(5),
-            api_security_enabled: true,
-            api_security_sample_delay: Duration::from_secs(30),
+            ext: E::default(),
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Loading — entry points for building a Config
+// ---------------------------------------------------------------------------
 
 #[allow(clippy::module_name_repetitions)]
 #[inline]
 #[must_use]
 pub fn get_config(config_directory: &Path) -> Config {
+    get_config_with_extension(config_directory)
+}
+
+/// Load configuration with a custom extension type.
+///
+/// Consumers that need additional fields should call this with their
+/// extension type instead of `get_config`.
+#[allow(clippy::module_name_repetitions)]
+#[inline]
+#[must_use]
+pub fn get_config_with_extension<E: ConfigExtension>(config_directory: &Path) -> Config<E> {
     let path: std::path::PathBuf = config_directory.join("datadog.yaml");
     ConfigBuilder::default()
         .add_source(Box::new(YamlConfigSource { path }))
         .add_source(Box::new(EnvConfigSource))
         .build()
+}
+
+// ---------------------------------------------------------------------------
+// ConfigExtension — trait for additional configuration fields
+// ---------------------------------------------------------------------------
+
+/// Trait that extension configs must implement to add additional configuration
+/// fields beyond what the core provides.
+///
+/// Extensions allow consumers to define their own external configuration fields
+/// that are deserialized from environment variables and YAML files alongside
+/// core fields via dual extraction.
+///
+/// # Source type requirements
+///
+/// The `Source` type **must** use `#[serde(default)]` on the struct and graceful
+/// deserializers (e.g., `deserialize_optional_bool_from_anything`) on each field.
+/// Without these, a missing or malformed value will cause the entire extension
+/// extraction to fail — the extension silently falls back to `E::default()` with
+/// a `tracing::warn!` log. See [`ConfigExtension::Source`] for details.
+///
+/// # Flat fields only
+///
+/// A single `Source` type is used for both environment variable and YAML
+/// extraction. This works when all extension fields are top-level (flat) in
+/// the YAML file, which is the common case for extension configs:
+///
+/// ```yaml
+/// # Works: flat fields map naturally to both DD_* env vars and YAML keys
+/// enhanced_metrics: true
+/// capture_lambda_payload: false
+/// ```
+///
+/// If you need nested YAML structures (e.g., `lambda: { enhanced_metrics: true }`)
+/// that differ from the flat env var layout, implement `merge_from` with a
+/// nested source struct and handle the mapping manually instead of using
+/// `merge_fields!`.
+///
+/// # Field name collisions with core config
+///
+/// Extension fields are extracted independently from the same figment as core
+/// fields. If an extension defines a field with the same name as a core field
+/// (e.g., `api_key`), both will deserialize their own copy — they do not
+/// interfere with each other, but the extension copy will **not** override the
+/// core value. Avoid shadowing core field names to prevent confusion.
+pub trait ConfigExtension: Clone + Default + std::fmt::Debug + PartialEq {
+    /// Intermediate deserialization type for extension fields, used for both
+    /// environment variable and YAML extraction.
+    ///
+    /// # Requirements
+    ///
+    /// The struct **must** have:
+    ///
+    /// 1. `#[serde(default)]` on the struct — so missing fields get defaults
+    ///    instead of failing the whole extraction.
+    /// 2. Graceful per-field deserializers (e.g.,
+    ///    `#[serde(deserialize_with = "deserialize_optional_bool_from_anything")]`)
+    ///    — so one malformed value doesn't fail the whole extraction.
+    ///
+    /// **If either is missing**, `figment::extract::<Source>()` will fail at
+    /// runtime when a field is absent or malformed. The extension falls back to
+    /// `E::default()` and a `tracing::warn!` is emitted — no panic, but all
+    /// extension fields silently get their default values.
+    type Source: Default + serde::de::DeserializeOwned + Clone + std::fmt::Debug;
+
+    /// Merge parsed source fields into self.
+    fn merge_from(&mut self, source: &Self::Source);
+}
+
+/// A no-op extension for consumers that don't need extra fields.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct NoExtension;
+
+/// A no-op source for deserialization that accepts (and ignores) any input.
+/// Uses a regular struct (not unit struct) so serde deserializes it from
+/// map-shaped data that figment provides, rather than expecting null/unit.
+#[derive(Clone, Default, Debug, Deserialize)]
+pub struct NoExtensionSource {}
+
+impl ConfigExtension for NoExtension {
+    type Source = NoExtensionSource;
+    fn merge_from(&mut self, _source: &Self::Source) {}
+}
+
+// ---------------------------------------------------------------------------
+// ConfigBuilder — orchestrates loading from multiple sources
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq)]
+#[allow(clippy::module_name_repetitions)]
+pub enum ConfigError {
+    ParseError(String),
+    UnsupportedField(String),
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub trait ConfigSource<E: ConfigExtension> {
+    fn load(&self, config: &mut Config<E>) -> Result<(), ConfigError>;
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub struct ConfigBuilder<E: ConfigExtension = NoExtension> {
+    sources: Vec<Box<dyn ConfigSource<E>>>,
+    config: Config<E>,
+}
+
+impl<E: ConfigExtension> Default for ConfigBuilder<E> {
+    fn default() -> Self {
+        Self {
+            sources: Vec::new(),
+            config: Config::default(),
+        }
+    }
+}
+
+#[allow(clippy::module_name_repetitions)]
+impl<E: ConfigExtension> ConfigBuilder<E> {
+    #[must_use]
+    pub fn add_source(mut self, source: Box<dyn ConfigSource<E>>) -> Self {
+        self.sources.push(source);
+        self
+    }
+
+    pub fn build(&mut self) -> Config<E> {
+        let mut failed_sources = 0;
+        for source in &self.sources {
+            match source.load(&mut self.config) {
+                Ok(()) => (),
+                Err(e) => {
+                    error!("Failed to load config: {:?}", e);
+                    failed_sources += 1;
+                }
+            }
+        }
+
+        if !self.sources.is_empty() && failed_sources == self.sources.len() {
+            debug!("All sources failed to load config, using default config.");
+        }
+
+        if self.config.site.is_empty() {
+            self.config.site = "datadoghq.com".to_string();
+        }
+
+        // If `proxy_https` is not set, set it from `HTTPS_PROXY` environment variable
+        // if it exists
+        if let Ok(https_proxy) = std::env::var("HTTPS_PROXY")
+            && self.config.proxy_https.is_none()
+        {
+            self.config.proxy_https = Some(https_proxy);
+        }
+
+        // If `proxy_https` is set, check if the site is in `NO_PROXY` environment variable
+        // or in the `proxy_no_proxy` config field.
+        if self.config.proxy_https.is_some() {
+            let site_in_no_proxy = std::env::var("NO_PROXY")
+                .is_ok_and(|no_proxy| no_proxy.contains(&self.config.site))
+                || self
+                    .config
+                    .proxy_no_proxy
+                    .iter()
+                    .any(|no_proxy| no_proxy.contains(&self.config.site));
+            if site_in_no_proxy {
+                self.config.proxy_https = None;
+            }
+        }
+
+        // If extraction is not set, set it to the same as the propagation style
+        if self.config.trace_propagation_style_extract.is_empty() {
+            self.config
+                .trace_propagation_style_extract
+                .clone_from(&self.config.trace_propagation_style);
+        }
+
+        // If Logs URL is not set, set it to the default
+        if self.config.logs_config_logs_dd_url.trim().is_empty() {
+            self.config.logs_config_logs_dd_url = build_fqdn_logs(self.config.site.clone());
+        } else {
+            self.config.logs_config_logs_dd_url =
+                logs_intake_url(self.config.logs_config_logs_dd_url.as_str());
+        }
+
+        // If APM URL is not set, set it to the default
+        if self.config.apm_dd_url.is_empty() {
+            self.config.apm_dd_url = trace_intake_url(self.config.site.clone().as_str());
+        } else {
+            // If APM URL is set, add the site to the URL
+            self.config.apm_dd_url = trace_intake_url_prefixed(self.config.apm_dd_url.as_str());
+        }
+
+        self.config.clone()
+    }
 }
 
 #[inline]
@@ -517,366 +490,143 @@ fn logs_intake_url(url: &str) -> String {
     format!("https://{url}")
 }
 
-pub fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match Value::deserialize(deserializer)? {
-        Value::String(s) => Ok(Some(s)),
-        other => {
-            warn!(
-                "Failed to parse value, expected a string, got: {}, ignoring",
-                other
-            );
-            Ok(None)
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Merge macros — used by sources and extension implementations
+// ---------------------------------------------------------------------------
 
-pub fn deserialize_string_or_int<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Value::deserialize(deserializer)?;
-    match value {
-        Value::String(s) => {
-            if s.trim().is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(s))
-            }
-        }
-        Value::Number(n) => Ok(Some(n.to_string())),
-        _ => {
-            warn!("Failed to parse value, expected a string or an integer, ignoring");
-            Ok(None)
-        }
-    }
-}
-
-pub fn deserialize_optional_bool_from_anything<'de, D>(
-    deserializer: D,
-) -> Result<Option<bool>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    // First try to deserialize as Option<_> to handle null/missing values
-    let opt: Option<serde_json::Value> = Option::deserialize(deserializer)?;
-
-    match opt {
-        None => Ok(None),
-        Some(value) => match deserialize_bool_from_anything(value) {
-            Ok(bool_result) => Ok(Some(bool_result)),
-            Err(e) => {
-                warn!("Failed to parse bool value: {}, ignoring", e);
-                Ok(None)
-            }
-        },
-    }
-}
-
-/// Parse a single "key:value" string into a (key, value) tuple
-/// Returns None if the string is invalid (e.g., missing colon, empty key/value)
-fn parse_key_value_tag(tag: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = tag.splitn(2, ':').collect();
-    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-        Some((parts[0].to_string(), parts[1].to_string()))
-    } else {
-        warn!(
-            "Failed to parse tag '{}', expected format 'key:value', ignoring",
-            tag
-        );
-        None
-    }
-}
-
-pub fn deserialize_key_value_pairs<'de, D>(
-    deserializer: D,
-) -> Result<HashMap<String, String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct KeyValueVisitor;
-
-    impl serde::de::Visitor<'_> for KeyValueVisitor {
-        type Value = HashMap<String, String>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a string in format 'key1:value1,key2:value2' or 'key1:value1'")
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            let mut map = HashMap::new();
-            for tag in value.split(&[',', ' ']) {
-                if tag.is_empty() {
-                    continue;
-                }
-                if let Some((key, val)) = parse_key_value_tag(tag) {
-                    map.insert(key, val);
-                }
-            }
-
-            Ok(map)
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            warn!(
-                "Failed to parse tags: expected string in format 'key:value', got number {}, ignoring",
-                value
-            );
-            Ok(HashMap::new())
-        }
-
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            warn!(
-                "Failed to parse tags: expected string in format 'key:value', got number {}, ignoring",
-                value
-            );
-            Ok(HashMap::new())
-        }
-
-        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            warn!(
-                "Failed to parse tags: expected string in format 'key:value', got number {}, ignoring",
-                value
-            );
-            Ok(HashMap::new())
-        }
-
-        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            warn!(
-                "Failed to parse tags: expected string in format 'key:value', got boolean {}, ignoring",
-                value
-            );
-            Ok(HashMap::new())
-        }
-    }
-
-    deserializer.deserialize_any(KeyValueVisitor)
-}
-
-pub fn deserialize_array_from_comma_separated_string<'de, D>(
-    deserializer: D,
-) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = String::deserialize(deserializer)?;
-    Ok(s.split(',')
-        .map(|feature| feature.trim().to_string())
-        .filter(|feature| !feature.is_empty())
-        .collect())
-}
-
-pub fn deserialize_key_value_pair_array_to_hashmap<'de, D>(
-    deserializer: D,
-) -> Result<HashMap<String, String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let array: Vec<String> = match Vec::deserialize(deserializer) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("Failed to deserialize tags array: {e}, ignoring");
-            return Ok(HashMap::new());
-        }
-    };
-    let mut map = HashMap::new();
-    for s in array {
-        if let Some((key, val)) = parse_key_value_tag(&s) {
-            map.insert(key, val);
-        }
-    }
-    Ok(map)
-}
-
-/// Deserialize APM filter tags from space-separated "key:value" pairs, also support key-only tags
-pub fn deserialize_apm_filter_tags<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let opt: Option<String> = Option::deserialize(deserializer)?;
-
-    match opt {
-        None => Ok(None),
-        Some(s) if s.trim().is_empty() => Ok(None),
-        Some(s) => {
-            let tags: Vec<String> = s
-                .split_whitespace()
-                .filter_map(|pair| {
-                    let parts: Vec<&str> = pair.splitn(2, ':').collect();
-                    if parts.len() == 2 {
-                        let key = parts[0].trim();
-                        let value = parts[1].trim();
-                        if key.is_empty() {
-                            None
-                        } else if value.is_empty() {
-                            Some(key.to_string())
-                        } else {
-                            Some(format!("{key}:{value}"))
-                        }
-                    } else if parts.len() == 1 {
-                        let key = parts[0].trim();
-                        if key.is_empty() {
-                            None
-                        } else {
-                            Some(key.to_string())
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            if tags.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(tags))
-            }
-        }
-    }
-}
-
-pub fn deserialize_option_lossless<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    match Option::<T>::deserialize(deserializer) {
-        Ok(value) => Ok(value),
-        Err(e) => {
-            warn!("Failed to deserialize optional value: {}, ignoring", e);
-            Ok(None)
-        }
-    }
-}
-
-/// Gracefully deserialize any field, falling back to `T::default()` on error.
+/// Helper macro to merge Option<String> fields to String fields
 ///
-/// This ensures that a single field with the wrong type never fails the entire
-/// struct extraction. Works for any `T` that implements `Deserialize + Default`:
-/// - `Option<T>` defaults to `None`
-/// - `Vec<T>` defaults to `[]`
-/// - `HashMap<K,V>` defaults to `{}`
-/// - Structs with `#[derive(Default)]` use their default
-pub fn deserialize_with_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de> + Default,
-{
-    match T::deserialize(deserializer) {
-        Ok(value) => Ok(value),
-        Err(e) => {
-            warn!("Failed to deserialize field: {}, using default", e);
-            Ok(T::default())
-        }
-    }
-}
-
-pub fn deserialize_optional_duration_from_microseconds<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Duration>, D::Error> {
-    match Option::<u64>::deserialize(deserializer) {
-        Ok(opt) => Ok(opt.map(Duration::from_micros)),
-        Err(e) => {
-            warn!("Failed to deserialize duration (microseconds): {e}, ignoring");
-            Ok(None)
-        }
-    }
-}
-
-pub fn deserialize_optional_duration_from_seconds<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Duration>, D::Error> {
-    // Deserialize into a generic Value first to avoid propagating type errors,
-    // then try to extract a duration from it.
-    match Value::deserialize(deserializer) {
-        Ok(Value::Number(n)) => {
-            if let Some(u) = n.as_u64() {
-                Ok(Some(Duration::from_secs(u)))
-            } else if let Some(i) = n.as_i64() {
-                if i < 0 {
-                    warn!("Failed to parse duration: negative durations are not allowed, ignoring");
-                    Ok(None)
-                } else {
-                    Ok(Some(Duration::from_secs(i as u64)))
-                }
-            } else if let Some(f) = n.as_f64() {
-                if f < 0.0 {
-                    warn!("Failed to parse duration: negative durations are not allowed, ignoring");
-                    Ok(None)
-                } else {
-                    Ok(Some(Duration::from_secs_f64(f)))
-                }
-            } else {
-                warn!("Failed to parse duration: unsupported number format, ignoring");
-                Ok(None)
-            }
-        }
-        Ok(Value::Null) => Ok(None),
-        Ok(other) => {
-            warn!("Failed to parse duration: expected number, got {other}, ignoring");
-            Ok(None)
-        }
-        Err(e) => {
-            warn!("Failed to deserialize duration: {e}, ignoring");
-            Ok(None)
-        }
-    }
-}
-
-// Like deserialize_optional_duration_from_seconds(), but return None if the value is 0
-pub fn deserialize_optional_duration_from_seconds_ignore_zero<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Duration>, D::Error> {
-    let duration: Option<Duration> = deserialize_optional_duration_from_seconds(deserializer)?;
-    if duration.is_some_and(|d| d.as_secs() == 0) {
-        return Ok(None);
-    }
-    Ok(duration)
-}
-
-pub fn deserialize_trace_propagation_style<'de, D>(
-    deserializer: D,
-) -> Result<Vec<TracePropagationStyle>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use std::str::FromStr;
-    let s: String = match String::deserialize(deserializer) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("Failed to deserialize trace propagation style: {e}, ignoring");
-            return Ok(Vec::new());
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_string {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if let Some(value) = &$source.$source_field {
+            $config.$config_field.clone_from(value);
         }
     };
+    ($config:expr, $source:expr, $field:ident) => {
+        if let Some(value) = &$source.$field {
+            $config.$field.clone_from(value);
+        }
+    };
+}
 
-    Ok(s.split(',')
-        .filter_map(
-            |style| match TracePropagationStyle::from_str(style.trim()) {
-                Ok(parsed_style) => Some(parsed_style),
-                Err(e) => {
-                    warn!("Failed to parse trace propagation style: {e}, ignoring");
-                    None
-                }
-            },
-        )
-        .collect())
+/// Helper macro to merge Option<T> fields where T implements Clone
+///
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_option {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if $source.$source_field.is_some() {
+            $config.$config_field.clone_from(&$source.$source_field);
+        }
+    };
+    ($config:expr, $source:expr, $field:ident) => {
+        if $source.$field.is_some() {
+            $config.$field.clone_from(&$source.$field);
+        }
+    };
+}
+
+/// Helper macro to merge Option<T> fields to T fields when Option<T> is Some
+///
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_option_to_value {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if let Some(value) = &$source.$source_field {
+            $config.$config_field = value.clone();
+        }
+    };
+    ($config:expr, $source:expr, $field:ident) => {
+        if let Some(value) = &$source.$field {
+            $config.$field = value.clone();
+        }
+    };
+}
+
+/// Helper macro to merge `Vec` fields when `Vec` is not empty
+///
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_vec {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if !$source.$source_field.is_empty() {
+            $config.$config_field.clone_from(&$source.$source_field);
+        }
+    };
+    ($config:expr, $source:expr, $field:ident) => {
+        if !$source.$field.is_empty() {
+            $config.$field.clone_from(&$source.$field);
+        }
+    };
+}
+
+/// Helper macro to merge `HashMap` fields when `HashMap` is not empty
+///
+/// Providing one field argument will merge the value from the source config field into the config
+/// field.
+///
+/// Providing two field arguments will merge the value from the source config field into the config
+/// field if the value is not empty.
+#[macro_export]
+macro_rules! merge_hashmap {
+    ($config:expr, $config_field:ident, $source:expr, $source_field:ident) => {
+        if !$source.$source_field.is_empty() {
+            $config.$config_field.clone_from(&$source.$source_field);
+        }
+    };
+    ($config:expr, $source:expr, $field:ident) => {
+        if !$source.$field.is_empty() {
+            $config.$field.clone_from(&$source.$field);
+        }
+    };
+}
+
+/// Batch-merge extension fields from a source struct.
+///
+/// Groups fields by merge strategy so you don't have to write individual
+/// `merge_string!` / `merge_option_to_value!` / `merge_option!` calls.
+///
+/// ```ignore
+/// merge_fields!(self, source,
+///     string: [api_key_secret_arn, kms_api_key],
+///     value:  [enhanced_metrics, capture_lambda_payload],
+///     option: [span_dedup_timeout, appsec_rules],
+/// );
+/// ```
+#[macro_export]
+macro_rules! merge_fields {
+    // Internal rules dispatched by keyword
+    (@string $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
+        $( $crate::merge_string!($config, $source, $field); )*
+    };
+    (@value $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
+        $( $crate::merge_option_to_value!($config, $source, $field); )*
+    };
+    (@option $config:expr, $source:expr, [$($field:ident),* $(,)?]) => {
+        $( $crate::merge_option!($config, $source, $field); )*
+    };
+    // Public entry point: accepts any combination of groups in any order
+    ($config:expr, $source:expr, $($kind:ident: [$($field:ident),* $(,)?]),* $(,)?) => {
+        $( $crate::merge_fields!(@$kind $config, $source, [$($field),*]); )*
+    };
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))] // Test modules skew coverage metrics
@@ -887,12 +637,9 @@ pub mod tests {
 
     use super::*;
 
-    use crate::{
-        TracePropagationStyle,
-        flush_strategy::{FlushStrategy, PeriodicStrategy},
-        log_level::LogLevel,
-        processing_rule::ProcessingRule,
-    };
+    use std::time::Duration;
+
+    use crate::{TracePropagationStyle, log_level::LogLevel, processing_rule::ProcessingRule};
 
     #[test]
     fn test_default_logs_intake_url() {
@@ -1155,56 +902,6 @@ pub mod tests {
             // Assertion to ensure config.site runs before proxy
             // because we chenck that noproxy contains the site
             assert_eq!(config.site, "datadoghq.com");
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_parse_flush_strategy_end() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_SERVERLESS_FLUSH_STRATEGY", "end");
-            let config = get_config(Path::new(""));
-            assert_eq!(config.serverless_flush_strategy, FlushStrategy::End);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_parse_flush_strategy_periodically() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_SERVERLESS_FLUSH_STRATEGY", "periodically,100000");
-            let config = get_config(Path::new(""));
-            assert_eq!(
-                config.serverless_flush_strategy,
-                FlushStrategy::Periodically(PeriodicStrategy { interval: 100_000 })
-            );
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_parse_flush_strategy_invalid() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env("DD_SERVERLESS_FLUSH_STRATEGY", "invalid_strategy");
-            let config = get_config(Path::new(""));
-            assert_eq!(config.serverless_flush_strategy, FlushStrategy::Default);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_parse_flush_strategy_invalid_periodic() {
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            jail.set_env(
-                "DD_SERVERLESS_FLUSH_STRATEGY",
-                "periodically,invalid_interval",
-            );
-            let config = get_config(Path::new(""));
-            assert_eq!(config.serverless_flush_strategy, FlushStrategy::Default);
             Ok(())
         });
     }
@@ -1477,15 +1174,11 @@ pub mod tests {
     fn test_parse_bool_from_anything() {
         figment::Jail::expect_with(|jail| {
             jail.clear_env();
-            jail.set_env("DD_SERVERLESS_LOGS_ENABLED", "true");
-            jail.set_env("DD_ENHANCED_METRICS", "1");
             jail.set_env("DD_LOGS_CONFIG_USE_COMPRESSION", "TRUE");
-            jail.set_env("DD_CAPTURE_LAMBDA_PAYLOAD", "0");
+            jail.set_env("DD_SKIP_SSL_VALIDATION", "1");
             let config = get_config(Path::new(""));
-            assert!(config.serverless_logs_enabled);
-            assert!(config.enhanced_metrics);
             assert!(config.logs_config_use_compression);
-            assert!(!config.capture_lambda_payload);
+            assert!(config.skip_ssl_validation);
             Ok(())
         });
     }
@@ -1708,5 +1401,145 @@ pub mod tests {
         let result =
             serde_json::from_str::<TestStruct>(r#"{"tags": []}"#).expect("failed to parse JSON");
         assert_eq!(result.tags, HashMap::new());
+    }
+
+    // -- ConfigExtension tests --
+
+    /// A test extension with a few fields, mimicking what a consumer like Lambda would define.
+    #[derive(Clone, Default, Debug, PartialEq)]
+    struct TestExtension {
+        custom_flag: bool,
+        custom_name: String,
+    }
+
+    #[derive(Clone, Default, Debug, Deserialize)]
+    #[serde(default)]
+    struct TestExtSource {
+        #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
+        custom_flag: Option<bool>,
+        #[serde(deserialize_with = "deserialize_optional_string")]
+        custom_name: Option<String>,
+    }
+
+    impl ConfigExtension for TestExtension {
+        type Source = TestExtSource;
+
+        fn merge_from(&mut self, source: &TestExtSource) {
+            merge_fields!(self, source,
+                string: [custom_name],
+                value:  [custom_flag],
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_extension_config_works() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_SITE", "datad0g.com");
+            let config = get_config(Path::new(""));
+            assert_eq!(config.site, "datad0g.com");
+            assert_eq!(config.ext, NoExtension);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_receives_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_SITE", "datad0g.com");
+            jail.set_env("DD_CUSTOM_FLAG", "true");
+            jail.set_env("DD_CUSTOM_NAME", "my-extension");
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            // Core fields work
+            assert_eq!(config.site, "datad0g.com");
+            // Extension fields are populated
+            assert!(config.ext.custom_flag);
+            assert_eq!(config.ext.custom_name, "my-extension");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_receives_yaml_fields() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.create_file(
+                "datadog.yaml",
+                r#"
+site: "datad0g.com"
+custom_flag: true
+custom_name: "yaml-ext"
+"#,
+            )?;
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            assert_eq!(config.site, "datad0g.com");
+            assert!(config.ext.custom_flag);
+            assert_eq!(config.ext.custom_name, "yaml-ext");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_env_overrides_yaml() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.create_file(
+                "datadog.yaml",
+                r#"
+custom_name: "yaml-value"
+custom_flag: false
+"#,
+            )?;
+            jail.set_env("DD_CUSTOM_NAME", "env-value");
+            jail.set_env("DD_CUSTOM_FLAG", "true");
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            // Env should override YAML (env source loaded after yaml)
+            assert!(config.ext.custom_flag);
+            assert_eq!(config.ext.custom_name, "env-value");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_defaults_when_not_set() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            // Extension fields should be at their defaults
+            assert!(!config.ext.custom_flag);
+            assert_eq!(config.ext.custom_name, "");
+            // Core fields should have post-processing defaults
+            assert_eq!(config.site, "datadoghq.com");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_extension_does_not_interfere_with_core() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_SITE", "us5.datadoghq.com");
+            jail.set_env("DD_API_KEY", "test-key");
+            jail.set_env("DD_CUSTOM_FLAG", "true");
+
+            let config: Config<TestExtension> = get_config_with_extension(Path::new(""));
+
+            // Core fields are not affected by extension env vars
+            assert_eq!(config.site, "us5.datadoghq.com");
+            assert_eq!(config.api_key, "test-key");
+            // Extension fields work alongside core
+            assert!(config.ext.custom_flag);
+            Ok(())
+        });
     }
 }
