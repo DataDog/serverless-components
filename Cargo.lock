@@ -549,7 +549,6 @@ version = "0.1.0"
 dependencies = [
  "datadog-fips",
  "datadog-logs-agent",
- "datadog-metrics-collector",
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils 3.0.1",
