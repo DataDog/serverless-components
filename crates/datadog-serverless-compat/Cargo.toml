@@ -8,9 +8,11 @@ description = "Binary to run trace-agent and dogstatsd servers in Serverless env
 [features]
 default = []
 windows-pipes = ["datadog-trace-agent/windows-pipes", "dogstatsd/windows-pipes"]
+windows-enhanced-metrics = ["datadog-metrics-collector/windows-enhanced-metrics"]
 
 [dependencies]
 datadog-logs-agent = { path = "../datadog-logs-agent" }
+datadog-metrics-collector = { path = "../datadog-metrics-collector" }
 datadog-trace-agent = { path = "../datadog-trace-agent" }
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
 datadog-fips = { path = "../datadog-fips", default-features = false }
