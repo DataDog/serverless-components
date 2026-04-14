@@ -549,6 +549,7 @@ version = "0.1.0"
 dependencies = [
  "datadog-fips",
  "datadog-logs-agent",
+ "datadog-metrics-collector",
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils 3.0.1",
@@ -1468,6 +1469,36 @@ name = "libdd-common"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e5593b91f61eee38cddc9fdcbc99c9fad697b5d925e226bd500d86b4295380b"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "cc",
+ "const_format",
+ "futures",
+ "futures-core",
+ "futures-util",
+ "hex",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "nix",
+ "pin-project",
+ "regex",
+ "serde",
+ "static_assertions",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower-service",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "libdd-common"
+version = "3.0.1"
+source = "git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad#8c88979985154d6d97c0fc2ca9039682981eacad"
 dependencies = [
  "anyhow",
  "bytes",

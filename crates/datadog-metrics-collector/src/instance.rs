@@ -4,11 +4,7 @@
 //! Instance identity metric collector for Azure Functions.
 //!
 //! Submits `azure.functions.enhanced.instance` with value 1.0 on each
-//! collection tick, tagged with the instance identifier. The env var
-//! checked depends on the Azure plan type:
-//!
-//! - Elastic Premium / Premium: `WEBSITE_INSTANCE_ID`
-//! - Flex Consumption / Consumption: `WEBSITE_POD_NAME` or `CONTAINER_NAME`
+//! collection tick, tagged with the instance identifier.
 
 use dogstatsd::aggregator::AggregatorHandle;
 use dogstatsd::metric::{Metric, MetricValue, SortedTags};
@@ -33,8 +29,8 @@ fn resolve_instance_id_from(
 ///
 /// Checks in order:
 /// 1. `WEBSITE_INSTANCE_ID` (Elastic Premium / Premium plans)
-/// 2. `WEBSITE_POD_NAME` (Flex Consumption plans)
-/// 3. `CONTAINER_NAME` (Consumption plans)
+/// 2. `WEBSITE_POD_NAME` (Flex Consumption / Consumption plans)
+/// 3. `CONTAINER_NAME` (Flex Consumption / Consumption plans)
 fn resolve_instance_id() -> Option<String> {
     resolve_instance_id_from(
         env::var("WEBSITE_INSTANCE_ID").ok().as_deref(),
@@ -52,9 +48,7 @@ pub struct InstanceMetricsCollector {
 impl InstanceMetricsCollector {
     pub fn new(aggregator: AggregatorHandle, tags: Option<SortedTags>) -> Self {
         let instance_id = resolve_instance_id();
-        if let Some(ref id) = instance_id {
-            debug!("Instance ID resolved: {}", id);
-        } else {
+        if instance_id.is_none() {
             debug!("No instance ID found, instance metric will not be submitted");
         }
         Self {

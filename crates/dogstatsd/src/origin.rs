@@ -300,7 +300,32 @@ mod tests {
     }
 
     #[test]
-    fn test_find_metric_origin_azure_functions() {
+    fn test_find_metric_origin_azure_functions_enhanced() {
+        let tags = SortedTags::parse("origin:azurefunction").unwrap();
+        let metric = Metric {
+            id: 0,
+            name: "azure.functions.enhanced.instance".into(),
+            value: MetricValue::Gauge(1.0),
+            tags: Some(tags.clone()),
+            timestamp: 0,
+        };
+        let origin = metric.find_origin(tags).unwrap();
+        assert_eq!(
+            origin.origin_product as u32,
+            OriginProduct::Serverless as u32
+        );
+        assert_eq!(
+            origin.origin_category as u32,
+            OriginCategory::AzureFunctionsMetrics as u32
+        );
+        assert_eq!(
+            origin.origin_service as u32,
+            OriginService::ServerlessEnhanced as u32
+        );
+    }
+
+    #[test]
+    fn test_find_metric_origin_azure_functions_custom() {
         let tags = SortedTags::parse("origin:azurefunction").unwrap();
         let metric = Metric {
             id: 0,
@@ -352,31 +377,6 @@ mod tests {
         };
         let origin = metric.find_origin(tags);
         assert_eq!(origin, None);
-    }
-
-    #[test]
-    fn test_find_metric_origin_azure_functions_enhanced() {
-        let tags = SortedTags::parse("origin:azurefunction").unwrap();
-        let metric = Metric {
-            id: 0,
-            name: "azure.functions.enhanced.instance".into(),
-            value: MetricValue::Gauge(1.0),
-            tags: Some(tags.clone()),
-            timestamp: 0,
-        };
-        let origin = metric.find_origin(tags).unwrap();
-        assert_eq!(
-            origin.origin_product as u32,
-            OriginProduct::Serverless as u32
-        );
-        assert_eq!(
-            origin.origin_category as u32,
-            OriginCategory::AzureFunctionsMetrics as u32
-        );
-        assert_eq!(
-            origin.origin_service as u32,
-            OriginService::ServerlessEnhanced as u32
-        );
     }
 
     #[test]

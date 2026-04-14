@@ -46,7 +46,7 @@ use dogstatsd::metric::{EMPTY_TAGS, SortedTags};
 use tokio_util::sync::CancellationToken;
 
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
-const ENHANCED_METRICS_COLLECTION_INTERVAL_SECS: u64 = 1;
+const INSTANCE_METRICS_COLLECTION_INTERVAL_SECS: u64 = 3;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 const DEFAULT_LOG_INTAKE_PORT: u16 = 10517;
@@ -128,16 +128,10 @@ pub async fn main() {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(DEFAULT_LOG_INTAKE_PORT);
 
-    // Only enable enhanced metrics for Linux Azure Functions
-    #[cfg(not(feature = "windows-enhanced-metrics"))]
     let dd_enhanced_metrics = env_type == EnvironmentType::AzureFunction
         && env::var("DD_ENHANCED_METRICS_ENABLED")
             .map(|val| val.to_lowercase() != "false")
             .unwrap_or(true);
-
-    // Enhanced metrics are not yet supported in Windows environments
-    #[cfg(feature = "windows-enhanced-metrics")]
-    let dd_enhanced_metrics = false;
 
 
     let dd_agent_stats_computation_enabled = env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
@@ -231,6 +225,7 @@ pub async fn main() {
 
     // The aggregator is shared between dogstatsd and enhanced metrics.
     // It is started independently so that either can be enabled without the other.
+    // Only dogstatsd needs the dogstatsd listener
     let (metrics_flusher, aggregator_handle) = if needs_aggregator {
         debug!("Creating metrics flusher and aggregator");
 
@@ -300,7 +295,7 @@ pub async fn main() {
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     let mut enhanced_metrics_collection_interval = interval(Duration::from_secs(
-        ENHANCED_METRICS_COLLECTION_INTERVAL_SECS,
+        INSTANCE_METRICS_COLLECTION_INTERVAL_SECS,
     ));
     flush_interval.tick().await; // discard first tick, which is instantaneous
     enhanced_metrics_collection_interval.tick().await;
@@ -324,6 +319,9 @@ pub async fn main() {
                     let retry_in = std::mem::take(&mut pending_log_retries);
                     let failed = log_flusher.flush(retry_in).await;
                     if !failed.is_empty() {
+                        // TODO: surface flush failures into health/metrics telemetry so
+                        // operators have a durable signal beyond log lines when logs are
+                        // being dropped (e.g. increment a statsd counter or set a gauge).
                         warn!(
                             "log agent flush failed for {} batch(es); will retry next cycle",
                             failed.len()
@@ -347,6 +345,7 @@ async fn start_aggregator(
     https_proxy: Option<String>,
     dogstatsd_tags: &str,
 ) -> (Option<Flusher>, AggregatorHandle) {
+    // Create the aggregator service
     #[allow(clippy::expect_used)]
     let (service, handle) = AggregatorService::new(
         SortedTags::parse(dogstatsd_tags).unwrap_or(EMPTY_TAGS),
@@ -354,6 +353,7 @@ async fn start_aggregator(
     )
     .expect("Failed to create aggregator service");
 
+    // Start the aggregator service in the background
     tokio::spawn(service.run());
 
     let metrics_flusher = match dd_api_key {
@@ -424,6 +424,7 @@ async fn start_dogstatsd_listener(
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
 
+    // Use handle in DogStatsD (cheap to clone)
     let dogstatsd_client = DogStatsD::new(
         &dogstatsd_config,
         handle.clone(),
