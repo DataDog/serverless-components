@@ -13,7 +13,7 @@
 use dogstatsd::aggregator::AggregatorHandle;
 use dogstatsd::metric::{Metric, MetricValue, SortedTags};
 use std::env;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 const INSTANCE_METRIC: &str = "azure.functions.enhanced.instance";
 
@@ -53,7 +53,7 @@ impl InstanceMetricsCollector {
     pub fn new(aggregator: AggregatorHandle, tags: Option<SortedTags>) -> Self {
         let instance_id = resolve_instance_id();
         if let Some(ref id) = instance_id {
-            info!("Instance ID resolved: {}", id);
+            debug!("Instance ID resolved: {}", id);
         } else {
             debug!("No instance ID found, instance metric will not be submitted");
         }
