@@ -9,7 +9,7 @@
 use dogstatsd::aggregator::AggregatorHandle;
 use dogstatsd::metric::{Metric, MetricValue, SortedTags};
 use std::env;
-use tracing::{debug, error};
+use tracing::{error, warn};
 
 const INSTANCE_METRIC: &str = "azure.functions.enhanced.instance";
 
@@ -42,42 +42,39 @@ fn resolve_instance_id() -> Option<String> {
 pub struct InstanceMetricsCollector {
     aggregator: AggregatorHandle,
     tags: Option<SortedTags>,
-    instance_id: Option<String>,
 }
 
 impl InstanceMetricsCollector {
-    pub fn new(aggregator: AggregatorHandle, tags: Option<SortedTags>) -> Self {
+    /// Creates a new collector, returning `None` if no instance ID is found.
+    pub fn new(aggregator: AggregatorHandle, tags: Option<SortedTags>) -> Option<Self> {
         let instance_id = resolve_instance_id();
-        if instance_id.is_none() {
-            debug!("No instance ID found, instance metric will not be submitted");
-        }
-        Self {
-            aggregator,
-            tags,
-            instance_id,
-        }
-    }
-
-    pub fn collect_and_submit(&self) {
-        let Some(ref instance_id) = self.instance_id else {
-            debug!("No instance ID available, skipping instance metric");
-            return;
+        let Some(instance_id) = instance_id else {
+            warn!("No instance ID found, instance metric will not be submitted");
+            return None;
         };
 
-        // Build tags: start with shared tags, add instance
+        // Precompute tags: enhanced metrics tags + instance tag
         let instance_tag = format!("instance:{}", instance_id);
-        let tags = match &self.tags {
-            Some(existing) => {
-                let mut combined = existing.clone();
+        let tags = match tags {
+            Some(mut existing) => {
                 if let Ok(id_tag) = SortedTags::parse(&instance_tag) {
-                    combined.extend(&id_tag);
+                    existing.extend(&id_tag);
                 }
-                Some(combined)
+                Some(existing)
             }
             None => SortedTags::parse(&instance_tag).ok(),
         };
 
-        let metric = Metric::new(INSTANCE_METRIC.into(), MetricValue::gauge(1.0), tags, None);
+        Some(Self { aggregator, tags })
+    }
+
+    pub fn collect_and_submit(&self) {
+        let metric = Metric::new(
+            INSTANCE_METRIC.into(),
+            MetricValue::gauge(1.0),
+            self.tags.clone(),
+            None,
+        );
 
         if let Err(e) = self.aggregator.insert_batch(vec![metric]) {
             error!("Failed to insert instance metric: {}", e);

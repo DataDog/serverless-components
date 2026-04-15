@@ -262,7 +262,7 @@ pub async fn main() {
     };
 
     let instance_collector = if dd_enhanced_metrics && metrics_flusher.is_some() {
-        aggregator_handle.as_ref().map(|handle| {
+        aggregator_handle.as_ref().and_then(|handle| {
             let tags = datadog_metrics_collector::tags::build_enhanced_metrics_tags();
             InstanceMetricsCollector::new(handle.clone(), tags)
         })
