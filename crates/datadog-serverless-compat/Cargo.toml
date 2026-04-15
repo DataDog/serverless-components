@@ -8,7 +8,6 @@ description = "Binary to run trace-agent and dogstatsd servers in Serverless env
 [features]
 default = []
 windows-pipes = ["datadog-trace-agent/windows-pipes", "dogstatsd/windows-pipes"]
-windows-enhanced-metrics = ["datadog-metrics-collector/windows-enhanced-metrics"]
 
 [dependencies]
 datadog-logs-agent = { path = "../datadog-logs-agent" }

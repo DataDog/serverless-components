@@ -339,6 +339,8 @@ pub async fn main() {
     }
 }
 
+/// Starts the metrics aggregator service and creates a flusher to send
+/// aggregated metrics to the Datadog intake.
 async fn start_aggregator(
     dd_api_key: Option<String>,
     dd_site: String,
