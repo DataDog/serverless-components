@@ -294,11 +294,11 @@ pub async fn main() {
         };
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
-    let mut enhanced_metrics_collection_interval = interval(Duration::from_secs(
+    let mut instance_metrics_collection_interval = interval(Duration::from_secs(
         INSTANCE_METRICS_COLLECTION_INTERVAL_SECS,
     ));
     flush_interval.tick().await; // discard first tick, which is instantaneous
-    enhanced_metrics_collection_interval.tick().await;
+    instance_metrics_collection_interval.tick().await;
 
     // Builders for log batches that failed transiently in the previous flush
     // cycle. They are redriven on the next cycle before new batches are sent.
@@ -330,7 +330,7 @@ pub async fn main() {
                     }
                 }
             }
-            _ = enhanced_metrics_collection_interval.tick() => {
+            _ = instance_metrics_collection_interval.tick(), if instance_collector.is_some() => {
                 if let Some(ref collector) = instance_collector {
                     collector.collect_and_submit();
                 }
