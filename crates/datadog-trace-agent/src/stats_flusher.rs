@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
+use libdd_common::DefaultHttpClient;
 use std::{sync::Arc, time};
 use tokio::sync::{Mutex, mpsc::Receiver};
 use tracing::{debug, error};
@@ -76,7 +77,7 @@ impl StatsFlusher for ServerlessStatsFlusher {
         };
 
         #[allow(clippy::unwrap_used)]
-        match stats_utils::send_stats_payload(
+        match stats_utils::send_stats_payload::<DefaultHttpClient>(
             serialized_stats_payload,
             &config.trace_stats_intake,
             config.trace_stats_intake.api_key.as_ref().unwrap(),
