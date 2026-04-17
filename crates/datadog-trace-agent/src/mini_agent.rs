@@ -192,13 +192,14 @@ impl MiniAgent {
                 // SAFETY: LAMBDA_LITE_SENTINEL_PATH is a hard-coded absolute path,
                 // so .parent() always returns Some.
                 if let Some(parent) = sentinel.parent()
-                    && let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        error!(
-                            "Could not create parent directory for Lambda Lite sentinel \
+                    && let Err(e) = tokio::fs::create_dir_all(parent).await
+                {
+                    error!(
+                        "Could not create parent directory for Lambda Lite sentinel \
                              file at {}: {}.",
-                            LAMBDA_LITE_SENTINEL_PATH, e
-                        );
-                    }
+                        LAMBDA_LITE_SENTINEL_PATH, e
+                    );
+                }
                 if let Err(e) = tokio::fs::write(sentinel, b"").await {
                     error!(
                         "Could not write Lambda Lite sentinel file at {}: {}. \
