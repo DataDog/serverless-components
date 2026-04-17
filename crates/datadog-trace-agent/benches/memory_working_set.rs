@@ -8,8 +8,6 @@
 // realistic flush intervals. The benchmark runs long enough to span multiple
 // flush cycles and reports per-cycle peak/trough RSS once the system has
 // reached steady state.
-//
-// Run with: cargo bench --bench memory_working_set
 
 use async_trait::async_trait;
 use datadog_trace_agent::{
@@ -46,18 +44,19 @@ const CHILD_SPANS_PER_INVOCATION: usize = 10;
 /// Flush interval in seconds — matches a realistic production default.
 const FLUSH_INTERVAL_SECS: u64 = 3;
 
-/// Cycles discarded before measurement begins (allow the system to warm up).
-const WARMUP_CYCLES: u64 = 2;
+/// Cycles discarded before measurement begins to allow the system to warm up.
+const WARMUP_CYCLES: u64 = 3;
 
 /// Cycles over which steady-state RSS is averaged.
 const MEASURE_CYCLES: u64 = 10;
 
 const SERVICE: &str = "test-service";
-const TRACE_ID: u64 = 0x30c5a_ec80b_b4081_5;
-const ROOT_SPAN_ID: u64 = 3_514_407_258_445_580_309;
+const TRACE_ID: u64 = 1;
+const ROOT_SPAN_ID: u64 = 1;
 
 // ── Agent setup ───────────────────────────────────────────────────────────────
 
+// Skip environment verification
 struct NoopEnvVerifier;
 
 #[async_trait]
@@ -72,7 +71,6 @@ impl EnvVerifier for NoopEnvVerifier {
     }
 }
 
-#[allow(clippy::unwrap_used)]
 fn create_bench_config() -> Config {
     Config {
         dd_site: "notdog.com".to_string(),
@@ -216,7 +214,7 @@ async fn run_sender(port: u16, start_ns: i64, duration: Duration) {
             .header("datadog-meta-lang", "javascript")
             .header("datadog-meta-tracer-version", "5.87.0")
             .header("datadog-meta-lang-version", "22")
-            .header("datadog-container-id", "bench-container-01")
+            .header("datadog-container-id", "1")
             .body(http_common::Body::from(body))
             .expect("Failed to build HTTP request");
 
@@ -296,6 +294,18 @@ fn analyze(
             })
         })
         .collect()
+}
+
+fn median(sorted: &[usize]) -> usize {
+    let n = sorted.len();
+    if n == 0 {
+        return 0;
+    }
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2
+    }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -379,9 +389,6 @@ fn main() {
     println!();
     println!("── Per-cycle RSS ────────────────────────────────");
 
-    let mut sum_peak = 0usize;
-    let mut sum_trough = 0usize;
-
     for (i, cycle) in cycles.iter().enumerate() {
         println!(
             "  cycle {}: peak {:>8} KB   trough {:>8} KB   delta {:>8} KB",
@@ -390,27 +397,32 @@ fn main() {
             cycle.trough_kb,
             cycle.peak_kb.saturating_sub(cycle.trough_kb),
         );
-        sum_peak += cycle.peak_kb;
-        sum_trough += cycle.trough_kb;
     }
 
-    let n = cycles.len().max(1);
-    let avg_peak = sum_peak / n;
-    let avg_trough = sum_trough / n;
-    let avg_delta = avg_peak.saturating_sub(avg_trough);
+    let mut peaks: Vec<usize> = cycles.iter().map(|c| c.peak_kb).collect();
+    let mut troughs: Vec<usize> = cycles.iter().map(|c| c.trough_kb).collect();
+    peaks.sort_unstable();
+    troughs.sort_unstable();
+
+    let median_peak = median(&peaks);
+    let median_trough = median(&troughs);
+    let median_delta = median_peak.saturating_sub(median_trough);
 
     println!();
-    println!("── Steady-state averages ────────────────────────");
-    println!("  avg peak RSS:       {} KB", avg_peak);
-    println!("  avg trough RSS:     {} KB", avg_trough);
-    println!("  avg cycle delta:    {} KB", avg_delta);
+    println!("── Steady-state medians ─────────────────────────");
+    println!("  median peak RSS:    {} KB", median_peak);
+    println!("  median trough RSS:  {} KB", median_trough);
+    println!("  median cycle delta: {} KB", median_delta);
     println!();
 
-    // Machine-readable line parsed by CI to feed benchmark-action.
+    // Write machine-readable JSON to a file for CI benchmark-action.
+    // The output path can be overridden via the BENCH_OUTPUT env var.
     let json = serde_json::json!([{
         "name": "steady-state-peak-rss",
         "unit": "KB",
-        "value": avg_peak,
+        "value": median_peak,
     }]);
-    println!("__BENCH_JSON__:{json}");
+    let output_path = std::env::var("BENCH_OUTPUT").unwrap_or_else(|_| "bench-output.json".to_string());
+    std::fs::write(&output_path, json.to_string()).expect("Failed to write bench output JSON");
+    println!("bench output written to {output_path}");
 }

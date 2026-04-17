@@ -101,12 +101,11 @@ jobs:
           fi
 
   bench:
-    name: Benchmark (Memory Working Set)
-    needs: setup
-    runs-on: ${{ inputs.runner }}
+    name: Memory Working Set Benchmark
     permissions:
       contents: write
-      pull-requests: write
+    needs: setup
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install Protoc Binary
@@ -114,17 +113,17 @@ jobs:
         run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
       - name: Run memory working set benchmark
         shell: bash
-        run: |
-          cargo bench --bench memory_working_set 2>&1 | tee bench-raw.txt
-          grep '__BENCH_JSON__:' bench-raw.txt | sed 's/__BENCH_JSON__://' > bench-output.json
+        run: cargo bench --bench memory_working_set
+        env:
+          BENCH_OUTPUT: ./bench-output.json
       - name: Create benchmark data directory
         shell: bash
         run: mkdir -p benchmarks/${{ inputs.runner }}
       - uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
-          tool: cargo
-          output-file-path: bench-output.json
-          external-data-json-path: ./benchmarks/${{ inputs.runner }}/data.json
+          tool: customSmallerIsBetter
+          output-file-path: ./bench-output.json
+          external-data-json-path: ./benchmarks/${{ inputs.runner }}/memory.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           comment-on-alert: true
           alert-threshold: '150%'

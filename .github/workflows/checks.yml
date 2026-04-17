@@ -1,6 +1,7 @@
 name: Checks
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
@@ -11,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm, windows-2022]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, windows-2022, macos-14]
     uses: ./.github/workflows/cargo.yml
     with:
       runner: ${{matrix.runner}}
