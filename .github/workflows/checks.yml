@@ -1,12 +1,10 @@
 name: Checks
 
 on:
-  workflow_dispatch:
   pull_request:
   push:
     branches:
       - main
-      - duncan-harvey/memory-bench
 
 jobs:
   cargo:

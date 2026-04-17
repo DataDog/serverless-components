@@ -56,8 +56,8 @@ jobs:
         run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
       - shell: bash
         run: |
-          if [[ "${{ inputs.runner }}" == "windows-2022" ]]; then
-            # we don't technially support the datadog-fips crate on windows
+          if [[ "${{ inputs.runner }}" == "windows-2022" || "${{ inputs.runner }}" == 'macos-14' ]]; then
+            # we don't technially support the datadog-fips crate on windows or macos
             # right now anyway, so let's set this so that the windows build
             # doesn't fail.
             export AWS_LC_FIPS_SYS_NO_ASM=1
@@ -118,16 +118,10 @@ jobs:
         run: cargo bench --bench memory_working_set
         env:
           BENCH_OUTPUT: ${{ github.workspace }}/bench-output.json
-      - name: Create benchmark data directory
-        shell: bash
-        run: mkdir -p benchmarks/${{ inputs.runner }}
       - uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: customSmallerIsBetter
           output-file-path: ${{ github.workspace }}/bench-output.json
-          external-data-json-path: ./benchmarks/${{ inputs.runner }}/memory.json
+          external-data-json-path: ./benchmarks/${{ inputs.runner }}/data.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          comment-on-alert: true
-          alert-threshold: '150%'
-          fail-on-alert: false
-          auto-push: false
+          comment-always: true
