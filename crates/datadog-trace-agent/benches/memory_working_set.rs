@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Measures the steady-state RSS working set of the datadog-trace-agent under a
-// realistic Azure Functions invocation workload.
+// high workload.
 //
-// Traces are sent at a fixed rate over HTTP to the full mini-agent server with
+// Traces are sent at a fixed rate over HTTP to the datadog-trace-agent server with
 // realistic flush intervals. The benchmark runs long enough to span multiple
 // flush cycles and reports per-cycle peak/trough RSS once the system has
 // reached steady state.
@@ -39,7 +39,7 @@ use tokio::time::MissedTickBehavior;
 
 const BENCH_PORT: u16 = 18126;
 
-/// Invocations sent per second. Each produces 1 root span + CHILD_SPANS_PER_INVOCATION spans.
+/// Traces sent per second. Each produces 1 root span + CHILD_SPANS_PER_INVOCATION spans.
 const TRACE_RATE_HZ: u64 = 10000;
 const CHILD_SPANS_PER_INVOCATION: usize = 10;
 
@@ -52,7 +52,7 @@ const WARMUP_CYCLES: u64 = 2;
 /// Cycles over which steady-state RSS is averaged.
 const MEASURE_CYCLES: u64 = 10;
 
-const SERVICE: &str = "func-sm-linux-fc1-node22-code-compat-dh";
+const SERVICE: &str = "test-service";
 const TRACE_ID: u64 = 0x30c5a_ec80b_b4081_5;
 const ROOT_SPAN_ID: u64 = 3_514_407_258_445_580_309;
 
@@ -78,7 +78,7 @@ fn create_bench_config() -> Config {
         dd_site: "notdog.com".to_string(),
         dd_apm_receiver_port: BENCH_PORT,
         dd_dogstatsd_port: 8125,
-        env_type: trace_utils::EnvironmentType::LambdaFunction,
+        env_type: trace_utils::EnvironmentType::AzureFunction,
         app_name: Some(SERVICE.to_string()),
         max_request_content_length: 10 * 1024 * 1024,
         obfuscation_config: ObfuscationConfig::new().unwrap(),
@@ -103,46 +103,45 @@ fn create_bench_config() -> Config {
 
 // ── Span builders ─────────────────────────────────────────────────────────────
 
-fn aas_meta() -> serde_json::Value {
+fn span_meta() -> serde_json::Value {
     json!({
-        "_dd.integration": "opentracing",
+        "_dd.agent_hostname": "",
         "_dd.tracer_version": "5.87.0",
         "_dd.serverless_compat_version": "0.0.0",
-        "env": "test",
-        "language": "javascript",
-        "version": "0.0.0",
-        "runtime-id": "502d8761-833a-4184-8b77-c45294504d52",
-        "service": SERVICE,
-        "aas.site.kind": "functionapp",
-        "aas.site.name": SERVICE,
-        "aas.site.type": "function",
+        "aas.environment.function_runtime": "~4",
+        "aas.environment.instance_id": "unknown",
+        "aas.environment.instance_name": "unknown",
         "aas.environment.os": "linux",
         "aas.environment.runtime": "node",
         "aas.environment.runtime_version": "22",
-        "aas.environment.function_runtime": "~4",
-        "aas.plan_sku": "fc1",
-        "sm.os": "linux",
-        "sm.runtime": "node",
-        "sm.runtime_version": "22",
-        "sm.deployment_type": "code",
-        "sm.function_name": "compat",
-        "ddtags": "ingestion_reason:auto"
+        "aas.resource.group": "rg-test",
+        "aas.resource.id": format!("/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-test/providers/microsoft.web/sites/{SERVICE}"),
+        "aas.site.kind": "functionapp",
+        "aas.site.name": SERVICE,
+        "aas.site.type": "function",
+        "aas.subscription.id": "00000000-0000-0000-0000-000000000000",
+        "env": "test",
+        "language": "javascript",
+        "process_id": "123",
+        "runtime-id": "00000000-0000-0000-0000-000000000000",
+        "service": SERVICE,
+        "version": "0.0.0",
     })
 }
 
 fn root_span(start_ns: i64) -> serde_json::Value {
     json!({
         "service": SERVICE,
-        "name": "azure.functions.invocation",
-        "resource": "compat",
+        "name": "azure.functions.invoke",
+        "resource": "GET /api/httptest",
         "trace_id": TRACE_ID,
         "span_id": ROOT_SPAN_ID,
-        "parent_id": 0u64,
+        "parent_id": 0,
         "start": start_ns,
-        "duration": 11_068_359i64,
+        "duration": 10_000_000,
         "error": 0,
-        "meta": aas_meta(),
-        "metrics": { "_dd.top_level": 1.0f64, "_sampling_priority_v1": 1.0f64 },
+        "meta": span_meta(),
+        "metrics": { "_dd.measured": 1, "_dd.top_level": 1, "_sampling_priority_v1": 1, "_top_level": 1, "_trace_root": 1 },
         "type": ""
     })
 }
@@ -156,15 +155,14 @@ fn child_span(span_id: u64, start_ns: i64) -> serde_json::Value {
         "span_id": span_id,
         "parent_id": ROOT_SPAN_ID,
         "start": start_ns,
-        "duration": 10_821_289i64,
+        "duration": 10_000_000,
         "error": 0,
-        "meta": aas_meta(),
-        "metrics": { "_dd.measured": 0.0f64, "_sampling_priority_v1": 1.0f64 },
+        "meta": span_meta(),
+        "metrics": { "_dd.measured": 0, "_sampling_priority_v1": 1 },
         "type": ""
     })
 }
 
-#[allow(clippy::unwrap_used)]
 fn make_invocation_payload(invocation_start_ns: i64, idx: usize) -> Vec<u8> {
     let mut spans = vec![root_span(invocation_start_ns)];
     for j in 0..CHILD_SPANS_PER_INVOCATION {
@@ -292,7 +290,10 @@ fn analyze(
                 .collect();
             let peak = rss_values.iter().copied().max()?;
             let trough = rss_values.iter().copied().min()?;
-            Some(CycleStats { peak_kb: peak, trough_kb: trough })
+            Some(CycleStats {
+                peak_kb: peak,
+                trough_kb: trough,
+            })
         })
         .collect()
 }
@@ -339,8 +340,7 @@ fn main() {
         .unwrap()
         .as_nanos() as i64;
 
-    let send_duration =
-        Duration::from_secs(FLUSH_INTERVAL_SECS * (WARMUP_CYCLES + MEASURE_CYCLES));
+    let send_duration = Duration::from_secs(FLUSH_INTERVAL_SECS * (WARMUP_CYCLES + MEASURE_CYCLES));
     // After sending ends, wait for the final flush cycle to drain before
     // stopping the sampler. One extra flush interval plus a small buffer is
     // enough since flush + failed send completes almost immediately.
@@ -351,8 +351,7 @@ fn main() {
     rt.block_on(async {
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
-        let sampler_handle =
-            tokio::spawn(run_sampler(bench_start, Arc::clone(&samples), stop_rx));
+        let sampler_handle = tokio::spawn(run_sampler(bench_start, Arc::clone(&samples), stop_rx));
 
         run_sender(BENCH_PORT, start_ns, send_duration).await;
 
@@ -367,8 +366,7 @@ fn main() {
 
     let total_invocations =
         (TRACE_RATE_HZ * FLUSH_INTERVAL_SECS * (WARMUP_CYCLES + MEASURE_CYCLES)) as usize;
-    let measured_invocations =
-        (TRACE_RATE_HZ * FLUSH_INTERVAL_SECS * MEASURE_CYCLES) as usize;
+    let measured_invocations = (TRACE_RATE_HZ * FLUSH_INTERVAL_SECS * MEASURE_CYCLES) as usize;
 
     println!("── Configuration ────────────────────────────────");
     println!("  rate:               {} inv/s", TRACE_RATE_HZ);
