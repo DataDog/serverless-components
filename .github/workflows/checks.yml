@@ -10,6 +10,8 @@ on:
 
 jobs:
   cargo:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
