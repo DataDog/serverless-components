@@ -6,7 +6,11 @@ use std::{error::Error, sync::Arc, time};
 use tokio::sync::{Mutex, mpsc::Receiver};
 use tracing::{debug, error};
 
-use libdd_common::{GenericHttpClient, http_common};
+use http_body_util::BodyExt;
+use libdd_capabilities::http::{HttpClientTrait, HttpError};
+use libdd_capabilities::{MaybeSend, Request, Response};
+use libdd_common::connector::Connector;
+use libdd_common::http_common::{self, Body, GenericHttpClient};
 use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
@@ -75,14 +79,13 @@ impl TraceFlusher for ServerlessTraceFlusher {
         }
         debug!("Flushing {} traces", traces.len());
 
-        let http_client =
-            match ServerlessTraceFlusher::get_http_client(self.config.proxy_url.as_ref()) {
-                Ok(client) => client,
-                Err(e) => {
-                    error!("Failed to create HTTP client: {e:?}");
-                    return;
-                }
-            };
+        let http_client = match ProxyHttpClient::try_new(self.config.proxy_url.as_ref()) {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Failed to create HTTP client: {e:?}");
+                return;
+            }
+        };
 
         // Retries are handled internally by SendData::send()
         for coalesced_traces in trace_utils::coalesce_send_data(traces) {
@@ -97,26 +100,61 @@ impl TraceFlusher for ServerlessTraceFlusher {
     }
 }
 
-impl ServerlessTraceFlusher {
-    fn get_http_client(
-        proxy_https: Option<&String>,
-    ) -> Result<
-        GenericHttpClient<hyper_http_proxy::ProxyConnector<libdd_common::connector::Connector>>,
-        Box<dyn Error>,
-    > {
+#[derive(Clone)]
+struct ProxyHttpClient {
+    client: GenericHttpClient<hyper_http_proxy::ProxyConnector<Connector>>,
+}
+
+impl std::fmt::Debug for ProxyHttpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyHttpClient").finish()
+    }
+}
+
+impl ProxyHttpClient {
+    fn try_new(proxy_https: Option<&String>) -> Result<Self, Box<dyn Error>> {
         if let Some(proxy) = proxy_https {
             let proxy =
                 hyper_http_proxy::Proxy::new(hyper_http_proxy::Intercept::Https, proxy.parse()?);
-            let proxy_connector = hyper_http_proxy::ProxyConnector::from_proxy(
-                libdd_common::connector::Connector::default(),
-                proxy,
-            )?;
-            Ok(http_common::client_builder().build(proxy_connector))
+            let proxy_connector =
+                hyper_http_proxy::ProxyConnector::from_proxy(Connector::default(), proxy)?;
+            Ok(Self {
+                client: http_common::client_builder().build(proxy_connector),
+            })
         } else {
-            let proxy_connector = hyper_http_proxy::ProxyConnector::new(
-                libdd_common::connector::Connector::default(),
-            )?;
-            Ok(http_common::client_builder().build(proxy_connector))
+            let proxy_connector = hyper_http_proxy::ProxyConnector::new(Connector::default())?;
+            Ok(Self {
+                client: http_common::client_builder().build(proxy_connector),
+            })
+        }
+    }
+}
+
+impl HttpClientTrait for ProxyHttpClient {
+    #[allow(clippy::expect_used)]
+    fn new_client() -> Self {
+        Self::try_new(None).expect("building proxy connector with default TLS should not fail")
+    }
+
+    fn request(
+        &self,
+        req: Request<bytes::Bytes>,
+    ) -> impl std::future::Future<Output = Result<Response<bytes::Bytes>, HttpError>> + MaybeSend
+    {
+        let client = self.client.clone();
+        async move {
+            let hyper_req = req.map(Body::from_bytes);
+            let response = client
+                .request(hyper_req)
+                .await
+                .map_err(|e| HttpError::Network(e.into()))?;
+            let (parts, body) = response.into_parts();
+            let collected = body
+                .collect()
+                .await
+                .map_err(|e| HttpError::ResponseBody(e.into()))?
+                .to_bytes();
+            Ok(Response::from_parts(parts, collected))
         }
     }
 }
