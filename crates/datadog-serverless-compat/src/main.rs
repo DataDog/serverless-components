@@ -128,10 +128,7 @@ pub async fn main() {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(DEFAULT_LOG_INTAKE_PORT);
 
-    let dd_enhanced_metrics = env_type == EnvironmentType::AzureFunction
-        && env::var("DD_ENHANCED_METRICS_ENABLED")
-            .map(|val| val.to_lowercase() != "false")
-            .unwrap_or(true);
+    let instance_metric_enabled = env_type == EnvironmentType::AzureFunction;
 
 
     let dd_agent_stats_computation_enabled = env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
@@ -221,7 +218,7 @@ pub async fn main() {
         }
     });
 
-    let needs_aggregator = dd_use_dogstatsd || dd_enhanced_metrics;
+    let needs_aggregator = dd_use_dogstatsd || instance_metric_enabled;
 
     // The aggregator is shared between dogstatsd and enhanced metrics.
     // It is started independently so that either can be enabled without the other.
@@ -261,17 +258,12 @@ pub async fn main() {
         (None, None)
     };
 
-    let instance_collector = if dd_enhanced_metrics && metrics_flusher.is_some() {
+    let instance_collector = if instance_metric_enabled && metrics_flusher.is_some() {
         aggregator_handle.as_ref().and_then(|handle| {
             let tags = datadog_metrics_collector::tags::build_enhanced_metrics_tags();
             InstanceMetricsCollector::new(handle.clone(), tags)
         })
     } else {
-        if !dd_enhanced_metrics {
-            info!("Enhanced metrics disabled");
-        } else {
-            info!("Enhanced metrics enabled but metrics flusher not found");
-        }
         None
     };
 
