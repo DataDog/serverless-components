@@ -422,7 +422,8 @@ fn main() {
         "unit": "KB",
         "value": median_peak,
     }]);
-    let output_path = std::env::var("BENCH_OUTPUT").unwrap_or_else(|_| "bench-output.json".to_string());
+    let output_path =
+        std::env::var("BENCH_OUTPUT").unwrap_or_else(|_| "bench-output.json".to_string());
     std::fs::write(&output_path, json.to_string()).expect("Failed to write bench output JSON");
     println!("bench output written to {output_path}");
 }

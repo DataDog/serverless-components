@@ -117,14 +117,14 @@ jobs:
         shell: bash
         run: cargo bench --bench memory_working_set
         env:
-          BENCH_OUTPUT: ./bench-output.json
+          BENCH_OUTPUT: ${{ github.workspace }}/bench-output.json
       - name: Create benchmark data directory
         shell: bash
         run: mkdir -p benchmarks/${{ inputs.runner }}
       - uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
         with:
           tool: customSmallerIsBetter
-          output-file-path: ./bench-output.json
+          output-file-path: ${{ github.workspace }}/bench-output.json
           external-data-json-path: ./benchmarks/${{ inputs.runner }}/memory.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           comment-on-alert: true
