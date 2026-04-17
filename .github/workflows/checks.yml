@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - duncan-harvey/memory-bench
 
 jobs:
   cargo:
