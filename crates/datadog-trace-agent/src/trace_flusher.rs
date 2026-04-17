@@ -79,7 +79,7 @@ impl TraceFlusher for ServerlessTraceFlusher {
         }
         debug!("Flushing {} traces", traces.len());
 
-        let http_client = match ProxyHttpClient::try_new(self.config.proxy_url.as_ref()) {
+        let http_client = match ProxyHttpClient::with_proxy(self.config.proxy_url.as_ref()) {
             Ok(client) => client,
             Err(e) => {
                 error!("Failed to create HTTP client: {e:?}");
@@ -112,7 +112,9 @@ impl std::fmt::Debug for ProxyHttpClient {
 }
 
 impl ProxyHttpClient {
-    fn try_new(proxy_https: Option<&String>) -> Result<Self, Box<dyn Error>> {
+    // `HttpClientTrait::new_client` takes no arguments, so we use `with_proxy` to
+    // take in the proxy URL and build the client. `new_client` is never called on our code path.
+    fn with_proxy(proxy_https: Option<&String>) -> Result<Self, Box<dyn Error>> {
         if let Some(proxy) = proxy_https {
             let proxy =
                 hyper_http_proxy::Proxy::new(hyper_http_proxy::Intercept::Https, proxy.parse()?);
@@ -133,7 +135,7 @@ impl ProxyHttpClient {
 impl HttpClientTrait for ProxyHttpClient {
     #[allow(clippy::expect_used)]
     fn new_client() -> Self {
-        Self::try_new(None).expect("building proxy connector with default TLS should not fail")
+        Self::with_proxy(None).expect("building proxy connector with default TLS should not fail")
     }
 
     fn request(
