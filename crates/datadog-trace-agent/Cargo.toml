@@ -37,7 +37,7 @@ bytes = "1.10.1"
 [dev-dependencies]
 rmp-serde = "1.1.1"
 serial_test = "2.0.0"
-duplicate = "0.4.1"
+duplicate = "2.0.1"
 temp-env = "0.3.6"
 tempfile = "3.3.0"
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "8c88979985154d6d97c0fc2ca9039682981eacad", features = [

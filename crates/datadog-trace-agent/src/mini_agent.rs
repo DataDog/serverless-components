@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
 use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
@@ -191,14 +191,14 @@ impl MiniAgent {
                 let sentinel = std::path::Path::new(LAMBDA_LITE_SENTINEL_PATH);
                 // SAFETY: LAMBDA_LITE_SENTINEL_PATH is a hard-coded absolute path,
                 // so .parent() always returns Some.
-                if let Some(parent) = sentinel.parent() {
-                    if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        error!(
-                            "Could not create parent directory for Lambda Lite sentinel \
+                if let Some(parent) = sentinel.parent()
+                    && let Err(e) = tokio::fs::create_dir_all(parent).await
+                {
+                    error!(
+                        "Could not create parent directory for Lambda Lite sentinel \
                              file at {}: {}.",
-                            LAMBDA_LITE_SENTINEL_PATH, e
-                        );
-                    }
+                        LAMBDA_LITE_SENTINEL_PATH, e
+                    );
                 }
                 if let Err(e) = tokio::fs::write(sentinel, b"").await {
                     error!(
