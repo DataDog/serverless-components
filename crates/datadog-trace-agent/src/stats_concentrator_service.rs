@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::Config;
@@ -10,7 +9,7 @@ use libdd_library_config::tracer_metadata::TracerMetadata;
 use libdd_trace_protobuf::pb::{ClientStatsPayload, TraceChunk};
 use libdd_trace_stats::span_concentrator::SpanConcentrator;
 use std::time::{Duration, SystemTime};
-use tracing::{debug, error};
+use tracing::error;
 
 const S_TO_NS: u64 = 1_000_000_000;
 const BUCKET_DURATION_NS: u64 = 10 * S_TO_NS; // 10 seconds
@@ -36,9 +35,7 @@ pub struct StatsConcentratorHandle {
 
 impl StatsConcentratorHandle {
     #[must_use]
-    pub fn new(
-        tx: mpsc::UnboundedSender<ConcentratorCommand>,
-    ) -> Self {
+    pub fn new(tx: mpsc::UnboundedSender<ConcentratorCommand>) -> Self {
         Self { tx }
     }
 
@@ -50,18 +47,14 @@ impl StatsConcentratorHandle {
     ) -> Result<(), StatsError> {
         self.tx
             .send(ConcentratorCommand::AddChunk(Box::new(chunk), metadata))
-            .map_err(|e| {
-                StatsError::SendError(Box::new(e))
-            })
+            .map_err(|e| StatsError::SendError(Box::new(e)))
     }
 
     pub async fn flush(&self, force_flush: bool) -> Result<Option<ClientStatsPayload>, StatsError> {
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
             .send(ConcentratorCommand::Flush(force_flush, response_tx))
-            .map_err(|e| {
-                StatsError::SendError(Box::new(e))
-            })?;
+            .map_err(|e| StatsError::SendError(Box::new(e)))?;
         response_rx.await.map_err(StatsError::RecvError)
     }
 }
