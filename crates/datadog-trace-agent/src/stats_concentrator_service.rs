@@ -32,16 +32,14 @@ pub enum ConcentratorCommand {
 #[derive(Clone)]
 pub struct StatsConcentratorHandle {
     tx: mpsc::UnboundedSender<ConcentratorCommand>,
-    channel_depth: Arc<AtomicUsize>,
 }
 
 impl StatsConcentratorHandle {
     #[must_use]
     pub fn new(
         tx: mpsc::UnboundedSender<ConcentratorCommand>,
-        channel_depth: Arc<AtomicUsize>,
     ) -> Self {
-        Self { tx, channel_depth }
+        Self { tx }
     }
 
     /// Adds a trace chunk for stats computation.
@@ -50,22 +48,18 @@ impl StatsConcentratorHandle {
         chunk: TraceChunk,
         metadata: Arc<TracerMetadata>,
     ) -> Result<(), StatsError> {
-        self.channel_depth.fetch_add(1, Ordering::Relaxed);
         self.tx
             .send(ConcentratorCommand::AddChunk(Box::new(chunk), metadata))
             .map_err(|e| {
-                self.channel_depth.fetch_sub(1, Ordering::Relaxed);
                 StatsError::SendError(Box::new(e))
             })
     }
 
     pub async fn flush(&self, force_flush: bool) -> Result<Option<ClientStatsPayload>, StatsError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.channel_depth.fetch_add(1, Ordering::Relaxed);
         self.tx
             .send(ConcentratorCommand::Flush(force_flush, response_tx))
             .map_err(|e| {
-                self.channel_depth.fetch_sub(1, Ordering::Relaxed);
                 StatsError::SendError(Box::new(e))
             })?;
         response_rx.await.map_err(StatsError::RecvError)
@@ -77,15 +71,13 @@ pub struct StatsConcentratorService {
     rx: mpsc::UnboundedReceiver<ConcentratorCommand>,
     tracer_metadata: Option<Arc<TracerMetadata>>,
     config: Arc<Config>,
-    channel_depth: Arc<AtomicUsize>,
 }
 
 impl StatsConcentratorService {
     #[must_use]
     pub fn new(config: Arc<Config>) -> (Self, StatsConcentratorHandle) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let channel_depth = Arc::new(AtomicUsize::new(0));
-        let handle = StatsConcentratorHandle::new(tx, Arc::clone(&channel_depth));
+        let handle = StatsConcentratorHandle::new(tx);
         // TODO: set span_kinds_stats_computed and peer_tag_keys
         let concentrator = SpanConcentrator::new(
             Duration::from_nanos(BUCKET_DURATION_NS),
@@ -98,7 +90,6 @@ impl StatsConcentratorService {
             rx,
             tracer_metadata: None,
             config,
-            channel_depth,
         };
         (service, handle)
     }
@@ -107,7 +98,6 @@ impl StatsConcentratorService {
         while let Some(command) = self.rx.recv().await {
             match command {
                 ConcentratorCommand::AddChunk(chunk, metadata) => {
-                    self.channel_depth.fetch_sub(1, Ordering::Relaxed);
                     if self.tracer_metadata.is_none() {
                         self.tracer_metadata = Some(metadata);
                     }
@@ -116,8 +106,6 @@ impl StatsConcentratorService {
                     }
                 }
                 ConcentratorCommand::Flush(force_flush, response_tx) => {
-                    let depth = self.channel_depth.fetch_sub(1, Ordering::Relaxed) - 1;
-                    debug!(channel_depth = depth, "Stats concentrator channel depth");
                     self.handle_flush(force_flush, response_tx);
                 }
             }
