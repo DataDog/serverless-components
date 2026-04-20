@@ -45,7 +45,9 @@ pub fn configure_mock_endpoints(config: &mut Config, mock_server_url: &str) {
 }
 
 /// Helper to create a mini agent with real flushers
-pub fn create_mini_agent_with_real_flushers(config: Arc<Config>) -> MiniAgent {
+pub fn create_mini_agent_with_real_flushers(
+    config: Arc<Config>,
+) -> (MiniAgent, tokio::task::JoinHandle<()>) {
     use datadog_trace_agent::{
         aggregator::TraceAggregator, stats_concentrator_service::StatsConcentratorService,
         stats_flusher::ServerlessStatsFlusher, stats_generator::StatsGenerator,
@@ -53,14 +55,14 @@ pub fn create_mini_agent_with_real_flushers(config: Arc<Config>) -> MiniAgent {
     };
 
     let (service, stats_concentrator_handle) = StatsConcentratorService::new(config.clone());
-    tokio::spawn(service.run());
+    let stats_concentrator_service_handle = tokio::spawn(service.run());
 
     let stats_generator = Some(Arc::new(StatsGenerator::new(
         stats_concentrator_handle.clone(),
     )));
 
     let aggregator = Arc::new(tokio::sync::Mutex::new(TraceAggregator::default()));
-    MiniAgent {
+    let mini_agent = MiniAgent {
         config: config.clone(),
         trace_processor: Arc::new(ServerlessTraceProcessor { stats_generator }),
         trace_flusher: Arc::new(ServerlessTraceFlusher::new(
@@ -73,7 +75,8 @@ pub fn create_mini_agent_with_real_flushers(config: Arc<Config>) -> MiniAgent {
         }),
         env_verifier: Arc::new(MockEnvVerifier),
         proxy_flusher: Arc::new(ProxyFlusher::new(config.clone())),
-    }
+    };
+    (mini_agent, stats_concentrator_service_handle)
 }
 
 /// Helper to verify trace request sent to mock server
@@ -179,7 +182,7 @@ async fn test_mini_agent_tcp_handles_requests() {
     // Start the mini agent
     let agent_handle = tokio::spawn(async move {
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let _ = mini_agent.start_mini_agent(shutdown_rx).await;
+        let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
     });
 
     // Give server time to start
@@ -279,7 +282,7 @@ async fn test_mini_agent_named_pipe_handles_requests() {
     // Start the mini agent
     let agent_handle = tokio::spawn(async move {
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let _ = mini_agent.start_mini_agent(shutdown_rx).await;
+        let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
     });
 
     // Give server time to create pipe
@@ -348,11 +351,14 @@ async fn test_mini_agent_tcp_with_real_flushers() {
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
 
-    let mini_agent = create_mini_agent_with_real_flushers(config);
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let agent_handle = tokio::spawn(async move {
-        let _ = mini_agent.start_mini_agent(shutdown_rx).await;
+        let _ = mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await;
     });
 
     // Wait for server to be ready
@@ -395,6 +401,59 @@ async fn test_mini_agent_tcp_with_real_flushers() {
 #[cfg(test)]
 #[tokio::test]
 #[serial]
+async fn test_concentrator_task_death_shuts_down_mini_agent() {
+    let mock_server: MockServer = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut config = create_tcp_test_config(8129);
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+    let abort_handle = stats_concentrator_service_handle.abort_handle();
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let agent_handle = tokio::spawn(async move {
+        mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await
+            .map_err(|e| e.to_string())
+    });
+
+    // Wait for server to be ready
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    // Kill the concentrator task to simulate unexpected task death
+    abort_handle.abort();
+
+    // Mini agent should detect the task death and exit with an error
+    let result = tokio::time::timeout(Duration::from_secs(2), agent_handle)
+        .await
+        .expect("mini agent should have exited after concentrator task death");
+    assert!(
+        result.expect("agent task should not panic").is_err(),
+        "mini agent should return an error when the concentrator task dies"
+    );
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[serial]
 async fn test_mini_agent_tcp_with_real_flushers_and_tracer_computed_stats() {
     let mock_server: MockServer = MockServer::start().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -404,11 +463,12 @@ async fn test_mini_agent_tcp_with_real_flushers_and_tracer_computed_stats() {
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
 
-    let mini_agent = create_mini_agent_with_real_flushers(config);
+    let (mini_agent, _stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
 
     let agent_handle = tokio::spawn(async move {
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let _ = mini_agent.start_mini_agent(shutdown_rx).await;
+        let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
     });
 
     // Wait for server to be ready
@@ -464,11 +524,12 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     config.dd_apm_receiver_port = 0;
     let config = Arc::new(config);
 
-    let mini_agent = create_mini_agent_with_real_flushers(config);
+    let (mini_agent, _stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let agent_handle = tokio::spawn(async move {
-        let _ = mini_agent.start_mini_agent(shutdown_rx).await;
+        let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
     });
 
     // Wait for server to be ready

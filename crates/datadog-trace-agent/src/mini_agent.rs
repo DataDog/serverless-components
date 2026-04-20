@@ -46,6 +46,7 @@ impl MiniAgent {
     pub async fn start_mini_agent(
         &self,
         shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+        stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
 
@@ -159,6 +160,7 @@ impl MiniAgent {
                     service,
                     trace_flusher_handle,
                     stats_flusher_handle,
+                    stats_concentrator_service_handle,
                 )
                 .await?;
             }
@@ -181,6 +183,7 @@ impl MiniAgent {
                 service,
                 trace_flusher_handle,
                 stats_flusher_handle,
+                stats_concentrator_service_handle,
             )
             .await?;
         }
@@ -193,6 +196,7 @@ impl MiniAgent {
         service: S,
         mut trace_flusher_handle: tokio::task::JoinHandle<()>,
         mut stats_flusher_handle: tokio::task::JoinHandle<()>,
+        mut stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
         S: hyper::service::Service<
@@ -246,6 +250,15 @@ impl MiniAgent {
                     error!("Stats flusher task died: {:?}", result);
                     return Err("Stats flusher task terminated unexpectedly".into());
                 },
+                result = async {
+                    match stats_concentrator_service_handle {
+                        Some(ref mut h) => h.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    error!("Stats concentrator service task died: {:?}", result);
+                    return Err("Stats concentrator service task terminated unexpectedly".into());
+                },
             };
             let conn = hyper_util::rt::TokioIo::new(conn);
             let server = server.clone();
@@ -264,6 +277,7 @@ impl MiniAgent {
         service: S,
         mut trace_flusher_handle: tokio::task::JoinHandle<()>,
         mut stats_flusher_handle: tokio::task::JoinHandle<()>,
+        mut stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
         S: hyper::service::Service<
@@ -333,6 +347,15 @@ impl MiniAgent {
                 result = &mut stats_flusher_handle => {
                     error!("Stats flusher task died: {:?}", result);
                     return Err("Stats flusher task terminated unexpectedly".into());
+                },
+                result = async {
+                    match stats_concentrator_service_handle {
+                        Some(ref mut h) => h.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    error!("Stats concentrator task died: {:?}", result);
+                    return Err("Stats concentrator task terminated unexpectedly".into());
                 },
             };
 

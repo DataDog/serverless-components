@@ -159,19 +159,21 @@ pub async fn main() {
         }
     };
 
-    let (stats_concentrator_handle, stats_generator) = if dd_serverless_stats_computation_enabled {
-        info!("serverless stats computation enabled");
-        let (service, handle) =
-            stats_concentrator_service::StatsConcentratorService::new(config.clone());
-        tokio::spawn(service.run());
-        (
-            Some(handle.clone()),
-            Some(Arc::new(stats_generator::StatsGenerator::new(handle))),
-        )
-    } else {
-        info!("serverless stats computation disabled");
-        (None, None)
-    };
+    let (stats_concentrator_handle, stats_generator, stats_concentrator_service_handle) =
+        if dd_serverless_stats_computation_enabled {
+            info!("serverless stats computation enabled");
+            let (service, handle) =
+                stats_concentrator_service::StatsConcentratorService::new(config.clone());
+            let task = tokio::spawn(service.run());
+            (
+                Some(handle.clone()),
+                Some(Arc::new(stats_generator::StatsGenerator::new(handle))),
+                Some(task),
+            )
+        } else {
+            info!("serverless stats computation disabled");
+            (None, None, None)
+        };
 
     let trace_processor = Arc::new(trace_processor::ServerlessTraceProcessor {
         stats_generator: stats_generator.clone(),
@@ -202,7 +204,9 @@ pub async fn main() {
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
-        let res = mini_agent.start_mini_agent(shutdown_rx).await;
+        let res = mini_agent
+            .start_mini_agent(shutdown_rx, stats_concentrator_service_handle)
+            .await;
         if let Err(e) = res {
             error!("Error when starting serverless trace mini agent: {e:?}");
         }
