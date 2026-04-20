@@ -296,6 +296,7 @@ mod tests {
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
                 ("K_SERVICE", Some("function_name")),
+                ("FUNCTION_TARGET", Some("function_target")),
             ],
             || {
                 let config_res = config::Config::new();
@@ -329,6 +330,7 @@ mod tests {
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
                 ("K_SERVICE", Some("function_name")),
+                ("FUNCTION_TARGET", Some("function_target")),
                 ("DD_SITE", Some(dd_site)),
             ],
             || {
@@ -356,6 +358,7 @@ mod tests {
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
                 ("K_SERVICE", Some("function_name")),
+                ("FUNCTION_TARGET", Some("function_target")),
                 ("DD_SITE", Some(dd_site)),
             ],
             || {
@@ -374,6 +377,7 @@ mod tests {
             [
                 ("DD_API_KEY", Some("_not_a_real_key_")),
                 ("K_SERVICE", Some("function_name")),
+                ("FUNCTION_TARGET", Some("function_target")),
                 ("DD_APM_DD_URL", Some("http://127.0.0.1:3333")),
             ],
             || {
