@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::oneshot;
 use tracing::{debug, error};
 
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
@@ -85,12 +86,17 @@ impl MiniAgent {
             Receiver<pb::ClientStatsPayload>,
         ) = mpsc::channel(STATS_PAYLOAD_CHANNEL_BUFFER_SIZE);
 
+        // Create a separate shutdown channel for the stats flusher so that serve_tcp
+        // can drain all in-flight HTTP handlers before triggering the final flush,
+        // preventing AddChunk/ClientStatsPayload messages from being missed.
+        let (flusher_shutdown_tx, flusher_shutdown_rx) = oneshot::channel::<()>();
+
         // start our stats flusher.
         let stats_flusher = self.stats_flusher.clone();
         let stats_config = self.config.clone();
         let stats_flusher_handle = tokio::spawn(async move {
             stats_flusher
-                .start_stats_flusher(stats_config, stats_rx, shutdown_rx)
+                .start_stats_flusher(stats_config, stats_rx, flusher_shutdown_rx)
                 .await;
         });
 
@@ -161,6 +167,8 @@ impl MiniAgent {
                     trace_flusher_handle,
                     stats_flusher_handle,
                     stats_concentrator_service_handle,
+                    shutdown_rx,
+                    flusher_shutdown_tx,
                 )
                 .await?;
             }
@@ -184,6 +192,8 @@ impl MiniAgent {
                 trace_flusher_handle,
                 stats_flusher_handle,
                 stats_concentrator_service_handle,
+                shutdown_rx,
+                flusher_shutdown_tx,
             )
             .await?;
         }
@@ -195,8 +205,10 @@ impl MiniAgent {
         listener: tokio::net::TcpListener,
         service: S,
         mut trace_flusher_handle: tokio::task::JoinHandle<()>,
-        mut stats_flusher_handle: tokio::task::JoinHandle<()>,
+        stats_flusher_handle: tokio::task::JoinHandle<()>,
         mut stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
+        mut shutdown_rx: oneshot::Receiver<()>,
+        flusher_shutdown_tx: oneshot::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
         S: hyper::service::Service<
@@ -210,6 +222,7 @@ impl MiniAgent {
     {
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
+        let mut stats_flusher_handle = stats_flusher_handle;
 
         loop {
             let conn = tokio::select! {
@@ -259,6 +272,23 @@ impl MiniAgent {
                     error!("Stats concentrator service task died: {:?}", result);
                     return Err("Stats concentrator service task terminated unexpectedly".into());
                 },
+                _ = &mut shutdown_rx => {
+                    // Drain all in-flight connections so every handler has finished
+                    // writing to the stats/trace channels before we trigger the flush.
+                    while let Some(result) = joinset.join_next().await {
+                        if let Err(e) = result
+                            && e.is_panic() {
+                                std::panic::resume_unwind(e.into_panic());
+                            }
+                    }
+                    // Signal the stats flusher to force-flush now that all handlers
+                    // have finished writing to the channel.
+                    let _ = flusher_shutdown_tx.send(());
+                    if let Err(e) = stats_flusher_handle.await {
+                        error!("Stats flusher task failed during shutdown: {e:?}");
+                    }
+                    return Ok(());
+                },
             };
             let conn = hyper_util::rt::TokioIo::new(conn);
             let server = server.clone();
@@ -276,8 +306,10 @@ impl MiniAgent {
         pipe_name: &str,
         service: S,
         mut trace_flusher_handle: tokio::task::JoinHandle<()>,
-        mut stats_flusher_handle: tokio::task::JoinHandle<()>,
+        stats_flusher_handle: tokio::task::JoinHandle<()>,
         mut stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
+        mut shutdown_rx: oneshot::Receiver<()>,
+        flusher_shutdown_tx: oneshot::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
         S: hyper::service::Service<
@@ -291,6 +323,7 @@ impl MiniAgent {
     {
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
+        let mut stats_flusher_handle = stats_flusher_handle;
 
         loop {
             // Create a new pipe instance
@@ -356,6 +389,20 @@ impl MiniAgent {
                 } => {
                     error!("Stats concentrator task died: {:?}", result);
                     return Err("Stats concentrator task terminated unexpectedly".into());
+                },
+                _ = &mut shutdown_rx => {
+                    while let Some(result) = joinset.join_next().await {
+                        if let Err(e) = result {
+                            if e.is_panic() {
+                                std::panic::resume_unwind(e.into_panic());
+                            }
+                        }
+                    }
+                    let _ = flusher_shutdown_tx.send(());
+                    if let Err(e) = stats_flusher_handle.await {
+                        error!("Stats flusher task failed during shutdown: {e:?}");
+                    }
+                    return Ok(());
                 },
             };
 
