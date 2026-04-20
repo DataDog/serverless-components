@@ -448,7 +448,7 @@ dependencies = [
  "dogstatsd",
  "figment",
  "libdd-trace-obfuscation",
- "libdd-trace-utils 3.0.0",
+ "libdd-trace-utils 3.0.1",
  "log",
  "serde",
  "serde-aux",
@@ -542,7 +542,7 @@ dependencies = [
  "datadog-logs-agent",
  "datadog-trace-agent",
  "dogstatsd",
- "libdd-trace-utils 3.0.0",
+ "libdd-trace-utils 3.0.1",
  "reqwest",
  "serde_json",
  "tokio",
@@ -565,10 +565,11 @@ dependencies = [
  "hyper",
  "hyper-http-proxy",
  "hyper-util",
- "libdd-common 3.0.1",
+ "libdd-capabilities",
+ "libdd-common 3.0.2",
  "libdd-trace-obfuscation",
- "libdd-trace-protobuf 3.0.0",
- "libdd-trace-utils 3.0.0",
+ "libdd-trace-protobuf 3.0.1",
+ "libdd-trace-utils 3.0.1",
  "reqwest",
  "rmp-serde",
  "serde",
@@ -1427,6 +1428,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
+name = "libdd-capabilities"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "http",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "libdd-capabilities-impl"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+dependencies = [
+ "bytes",
+ "http",
+ "libdd-capabilities",
+ "libdd-common 3.0.2",
+]
+
+[[package]]
 name = "libdd-common"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1459,8 +1482,8 @@ dependencies = [
 
 [[package]]
 name = "libdd-common"
-version = "3.0.1"
-source = "git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad#8c88979985154d6d97c0fc2ca9039682981eacad"
+version = "3.0.2"
+source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1477,6 +1500,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "libc",
+ "libdd-capabilities",
  "nix",
  "pin-project",
  "regex",
@@ -1581,7 +1605,7 @@ dependencies = [
 [[package]]
 name = "libdd-tinybytes"
 version = "1.1.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad#8c88979985154d6d97c0fc2ca9039682981eacad"
+source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
 dependencies = [
  "serde",
 ]
@@ -1598,23 +1622,23 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-normalization"
-version = "1.0.3"
-source = "git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad#8c88979985154d6d97c0fc2ca9039682981eacad"
+version = "2.0.0"
+source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
 dependencies = [
  "anyhow",
- "libdd-trace-protobuf 3.0.0",
+ "libdd-trace-protobuf 3.0.1",
 ]
 
 [[package]]
 name = "libdd-trace-obfuscation"
-version = "1.0.1"
-source = "git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad#8c88979985154d6d97c0fc2ca9039682981eacad"
+version = "2.0.0"
+source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
 dependencies = [
  "anyhow",
  "fluent-uri",
- "libdd-common 3.0.1",
- "libdd-trace-protobuf 3.0.0",
- "libdd-trace-utils 3.0.0",
+ "libdd-common 3.0.2",
+ "libdd-trace-protobuf 3.0.1",
+ "libdd-trace-utils 3.0.1",
  "log",
  "percent-encoding",
  "regex",
@@ -1635,8 +1659,8 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-protobuf"
-version = "3.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad#8c88979985154d6d97c0fc2ca9039682981eacad"
+version = "3.0.1"
+source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
 dependencies = [
  "prost 0.14.3",
  "serde",
@@ -1685,25 +1709,29 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-utils"
-version = "3.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad#8c88979985154d6d97c0fc2ca9039682981eacad"
+version = "3.0.1"
+source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bytes",
  "cargo-platform",
  "cargo_metadata",
  "flate2",
  "futures",
+ "getrandom 0.2.17",
  "http",
  "http-body",
  "http-body-util",
  "httpmock",
  "hyper",
  "indexmap",
- "libdd-common 3.0.1",
- "libdd-tinybytes 1.1.0 (git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad)",
- "libdd-trace-normalization 1.0.3",
- "libdd-trace-protobuf 3.0.0",
+ "libdd-capabilities",
+ "libdd-capabilities-impl",
+ "libdd-common 3.0.2",
+ "libdd-tinybytes 1.1.0 (git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665)",
+ "libdd-trace-normalization 2.0.0",
+ "libdd-trace-protobuf 3.0.1",
  "prost 0.14.3",
  "rand 0.8.6",
  "rmp",
@@ -1901,9 +1929,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "openssl-probe"
-version = "0.2.1"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "opentelemetry"
@@ -2625,9 +2653,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-native-certs"
-version = "0.8.3"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "612460d5f7bea540c490b2b6395d8e34a953e52b491accd6c86c8164c5932a63"
+checksum = "9980d917ebb0c0536119ba501e90834767bffc3d60641457fd84a1f3fd337923"
 dependencies = [
  "openssl-probe",
  "rustls-pki-types",
