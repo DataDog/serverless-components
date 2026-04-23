@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
-use libdd_common::DefaultHttpClient;
+use libdd_capabilities_impl::DefaultHttpClient;
 use std::{sync::Arc, time};
 use tokio::sync::{Mutex, mpsc::Receiver};
 use tracing::{debug, error};

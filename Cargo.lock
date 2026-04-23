@@ -566,6 +566,7 @@ dependencies = [
  "hyper-http-proxy",
  "hyper-util",
  "libdd-capabilities",
+ "libdd-capabilities-impl",
  "libdd-common 3.0.2",
  "libdd-trace-obfuscation",
  "libdd-trace-protobuf 3.0.1",
@@ -1430,7 +1431,7 @@ checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 [[package]]
 name = "libdd-capabilities"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1441,10 +1442,11 @@ dependencies = [
 [[package]]
 name = "libdd-capabilities-impl"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
 dependencies = [
  "bytes",
  "http",
+ "http-body-util",
  "libdd-capabilities",
  "libdd-common 3.0.2",
 ]
@@ -1483,7 +1485,7 @@ dependencies = [
 [[package]]
 name = "libdd-common"
 version = "3.0.2"
-source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1500,7 +1502,6 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "libc",
- "libdd-capabilities",
  "nix",
  "pin-project",
  "regex",
@@ -1605,7 +1606,7 @@ dependencies = [
 [[package]]
 name = "libdd-tinybytes"
 version = "1.1.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
 dependencies = [
  "serde",
 ]
@@ -1623,7 +1624,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-normalization"
 version = "2.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
 dependencies = [
  "anyhow",
  "libdd-trace-protobuf 3.0.1",
@@ -1632,7 +1633,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-obfuscation"
 version = "2.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
 dependencies = [
  "anyhow",
  "fluent-uri",
@@ -1660,7 +1661,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-protobuf"
 version = "3.0.1"
-source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
 dependencies = [
  "prost 0.14.3",
  "serde",
@@ -1710,7 +1711,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-utils"
 version = "3.0.1"
-source = "git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665#986aab55cb7941d8453dffb59d35a70599d08665"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1729,7 +1730,7 @@ dependencies = [
  "libdd-capabilities",
  "libdd-capabilities-impl",
  "libdd-common 3.0.2",
- "libdd-tinybytes 1.1.0 (git+https://github.com/DataDog/libdatadog?rev=986aab55cb7941d8453dffb59d35a70599d08665)",
+ "libdd-tinybytes 1.1.0 (git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a)",
  "libdd-trace-normalization 2.0.0",
  "libdd-trace-protobuf 3.0.1",
  "prost 0.14.3",
@@ -2675,9 +2676,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.12"
+version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8279bb85272c9f10811ae6a6c547ff594d6a7f3c6c6b02ee9726d1d0dcfcdd06"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
  "aws-lc-rs",
  "ring",
