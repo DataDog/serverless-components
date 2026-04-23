@@ -30,7 +30,7 @@ libdd-trace-protobuf = { git = "https://github.com/DataDog/libdatadog", rev = "9
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "986aab55cb7941d8453dffb59d35a70599d08665", features = [
     "mini_agent",
 ] }
-libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "986aab55cb7941d8453dffb59d35a70599d08665" }
+libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "950562bb191205bf16edbb4296e4a8ae33da194c" }
 datadog-fips = { path = "../datadog-fips" }
 reqwest = { version = "0.12.23", features = ["json", "http2"], default-features = false }
 bytes = "1.10.1"
