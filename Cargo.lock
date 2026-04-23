@@ -566,6 +566,7 @@ dependencies = [
  "hyper-http-proxy",
  "hyper-util",
  "libdd-capabilities",
+ "libdd-capabilities-impl",
  "libdd-common 3.0.2",
  "libdd-trace-obfuscation",
  "libdd-trace-protobuf 3.0.1",
