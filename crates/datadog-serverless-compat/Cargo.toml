@@ -12,7 +12,7 @@ windows-pipes = ["datadog-trace-agent/windows-pipes", "dogstatsd/windows-pipes"]
 [dependencies]
 datadog-logs-agent = { path = "../datadog-logs-agent" }
 datadog-trace-agent = { path = "../datadog-trace-agent" }
-libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "986aab55cb7941d8453dffb59d35a70599d08665" }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "950562bb191205bf16edbb4296e4a8ae33da194c" }
 datadog-fips = { path = "../datadog-fips", default-features = false }
 dogstatsd = { path = "../dogstatsd", default-features = true }
 reqwest = { version = "0.12.4", default-features = false }
