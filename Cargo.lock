@@ -1495,40 +1495,12 @@ dependencies = [
  "windows-sys 0.52.0",
 ]
 
-[[package]]
-name = "libdd-common"
-version = "3.0.1"
-source = "git+https://github.com/DataDog/libdatadog?rev=8c88979985154d6d97c0fc2ca9039682981eacad#8c88979985154d6d97c0fc2ca9039682981eacad"
-dependencies = [
- "anyhow",
- "bytes",
- "cc",
- "const_format",
- "futures",
- "futures-core",
- "futures-util",
- "hex",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-util",
- "libc",
- "nix",
- "pin-project",
- "regex",
- "serde",
- "static_assertions",
- "thiserror 1.0.69",
- "tokio",
- "tower-service",
- "windows-sys 0.52.0",
-]
+
 
 [[package]]
 name = "libdd-common"
-version = "4.0.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=d7eef8031192d0ee79ba64cd824804c5a57abacf#d7eef8031192d0ee79ba64cd824804c5a57abacf"
+version = "3.0.2"
+source = "git+https://github.com/DataDog/libdatadog?rev=27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a#27aa92cfeeca073d8730a8b4974bd3fdef7ddf3a"
 dependencies = [
  "anyhow",
  "bytes",

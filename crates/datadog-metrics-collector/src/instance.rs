@@ -166,4 +166,12 @@ mod tests {
         let id = resolve_instance_id_from(None, None, None, None);
         assert_eq!(id, None);
     }
+
+    // On Windows Consumption we've observed CONTAINER_NAME and WEBSITE_POD_NAME
+    // unset but COMPUTERNAME set
+    #[test]
+    fn test_windows_consumption_falls_through_to_computer_name() {
+        let id = resolve_instance_id_from(Some("Dynamic"), None, None, Some("10-20-30-40"));
+        assert_eq!(id, Some("10-20-30-40".to_string()));
+    }
 }
