@@ -16,8 +16,8 @@ const INSTANCE_METRIC: &str = "azure.functions.enhanced.instance";
 /// Resolves the instance ID from explicit values (used by tests).
 ///
 /// Picks the env var that matches the Azure integration metric's `instance`
-/// tag for the current hosting plan (via `WEBSITE_SKU`), with fallback logic
-/// if the preferred var is empty.
+/// tag for the current hosting plan with fallback logic
+/// if the preferred source is empty.
 fn resolve_instance_id_from(
     website_sku: Option<&str>,
     container_name: Option<&str>,
@@ -143,7 +143,6 @@ mod tests {
 
     #[test]
     fn test_empty_string_is_treated_as_missing() {
-        // EP2 .NET exposes WEBSITE_INSTANCE_ID as empty; we should skip empties.
         let id =
             resolve_instance_id_from(Some("ElasticPremium"), Some(""), Some(""), Some("worker-1"));
         assert_eq!(id, Some("worker-1".to_string()));
