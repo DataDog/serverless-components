@@ -22,18 +22,7 @@ const AAS_UNKNOWN_VALUE: &str = "unknown";
 /// The DogStatsD origin tag (e.g. `origin:azurefunction`) is added by the metrics aggregator,
 /// not here.
 pub fn build_enhanced_metrics_tags() -> Option<SortedTags> {
-    let mut tags = Vec::new();
-
-    fn push(tags: &mut Vec<Tag>, key: &str, value: &str) {
-        if value.is_empty() {
-            return;
-        }
-        // Tag::new validates that the key and value are not empty and do not start or end with a colon
-        match Tag::new(key, value) {
-            Ok(t) => tags.push(t),
-            Err(e) => warn!("Skipping invalid tag {key}:{value}: {e}"),
-        }
-    }
+    let mut pairs: Vec<(&'static str, String)> = Vec::new();
 
     if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
         for (name, value) in [
@@ -42,7 +31,7 @@ pub fn build_enhanced_metrics_tags() -> Option<SortedTags> {
             ("name", aas_metadata.get_site_name()),
         ] {
             if value != AAS_UNKNOWN_VALUE {
-                push(&mut tags, name, value);
+                pairs.push((name, value.to_string()));
             }
         }
     }
@@ -56,10 +45,26 @@ pub fn build_enhanced_metrics_tags() -> Option<SortedTags> {
         ("serverless_compat_version", "DD_SERVERLESS_COMPAT_VERSION"),
     ] {
         if let Ok(val) = env::var(env_var) {
-            push(&mut tags, tag_name, &val);
+            pairs.push((tag_name, val));
         }
     }
 
+    build_tags(pairs)
+}
+
+fn build_tags(pairs: impl IntoIterator<Item = (&'static str, String)>) -> Option<SortedTags> {
+    let mut tags: Vec<Tag> = Vec::new();
+    for (key, value) in pairs {
+        if value.is_empty() {
+            continue;
+        }
+        // Tag::new validates the combined "key:value" string: it must be
+        // non-empty and not start or end with a colon
+        match Tag::new(key, &value) {
+            Ok(t) => tags.push(t),
+            Err(e) => warn!("Skipping invalid tag {key}:{value}: {e}"),
+        }
+    }
     if tags.is_empty() {
         return None;
     }
@@ -69,4 +74,50 @@ pub fn build_enhanced_metrics_tags() -> Option<SortedTags> {
         .collect::<Vec<&str>>()
         .join(",");
     SortedTags::parse(&joined).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_tags_returns_none_when_no_pairs() {
+        let pairs: Vec<(&'static str, String)> = Vec::new();
+        assert!(build_tags(pairs).is_none());
+    }
+
+    #[test]
+    fn test_build_tags_returns_none_when_all_values_empty() {
+        let pairs = vec![("service", String::new()), ("env", String::new())];
+        assert!(build_tags(pairs).is_none());
+    }
+
+    #[test]
+    fn test_build_tags_skips_empty_values() {
+        let pairs = vec![("service", String::new()), ("env", "dev".to_string())];
+        let tags = build_tags(pairs).unwrap().to_strings();
+        assert_eq!(tags, vec!["env:dev"]);
+    }
+
+    #[test]
+    fn test_build_tags_includes_all_nonempty_pairs() {
+        let pairs = vec![
+            ("service", "svc-1".to_string()),
+            ("env", "dev".to_string()),
+            ("version", "1.2.3".to_string()),
+        ];
+        let mut tags = build_tags(pairs).unwrap().to_strings();
+        tags.sort();
+        assert_eq!(tags, vec!["env:dev", "service:svc-1", "version:1.2.3"]);
+    }
+
+    #[test]
+    fn test_build_tags_rejects_trailing_colon_values() {
+        let pairs = vec![
+            ("service", "svc-1:".to_string()),
+            ("env", "dev".to_string()),
+        ];
+        let tags = build_tags(pairs).unwrap().to_strings();
+        assert_eq!(tags, vec!["env:dev"]);
+    }
 }
