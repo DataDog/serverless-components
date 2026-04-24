@@ -19,7 +19,7 @@ use zstd::zstd_safe::CompressionLevel;
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
     config, env_verifier, mini_agent, proxy_flusher, stats_concentrator_service, stats_flusher,
-    stats_generator, stats_processor,
+    stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
 };
@@ -159,24 +159,20 @@ pub async fn main() {
         }
     };
 
-    let (stats_concentrator_handle, stats_generator, stats_concentrator_service_handle) =
+    let (stats_concentrator_handle, stats_concentrator_service_handle) =
         if dd_serverless_stats_computation_enabled {
             info!("serverless stats computation enabled");
             let (service, handle) =
                 stats_concentrator_service::StatsConcentratorService::new(config.clone());
             let task = tokio::spawn(service.run());
-            (
-                Some(handle.clone()),
-                Some(Arc::new(stats_generator::StatsGenerator::new(handle))),
-                Some(task),
-            )
+            (Some(handle), Some(task))
         } else {
             info!("serverless stats computation disabled");
-            (None, None, None)
+            (None, None)
         };
 
     let trace_processor = Arc::new(trace_processor::ServerlessTraceProcessor {
-        stats_generator: stats_generator.clone(),
+        stats_concentrator: stats_concentrator_handle.clone(),
     });
 
     let stats_flusher = Arc::new(stats_flusher::ServerlessStatsFlusher {

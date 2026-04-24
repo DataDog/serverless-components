@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hyper::{StatusCode, http};
 use libdd_common::http_common;
+use libdd_library_config::tracer_metadata::TracerMetadata;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error};
 
@@ -18,7 +19,7 @@ use libdd_trace_utils::tracer_payload::{TraceChunkProcessor, TracerPayloadCollec
 use crate::{
     config::Config,
     http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
-    stats_generator::StatsGenerator,
+    stats_concentrator_service::StatsConcentratorHandle,
 };
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
@@ -67,8 +68,38 @@ impl TraceChunkProcessor for ChunkProcessor {
 }
 #[derive(Clone)]
 pub struct ServerlessTraceProcessor {
-    /// The stats generator to use for generating stats and sending them to the stats concentrator.
-    pub stats_generator: Option<Arc<StatsGenerator>>,
+    pub stats_concentrator: Option<StatsConcentratorHandle>,
+}
+
+impl ServerlessTraceProcessor {
+    fn send_to_concentrator(
+        concentrator: &StatsConcentratorHandle,
+        payload: &TracerPayloadCollection,
+    ) {
+        if let TracerPayloadCollection::V07(tracer_payloads) = payload {
+            for tracer_payload in tracer_payloads {
+                let metadata = Arc::new(TracerMetadata {
+                    schema_version: 2,
+                    runtime_id: None,
+                    tracer_language: tracer_payload.language_name.clone(),
+                    tracer_version: tracer_payload.tracer_version.clone(),
+                    hostname: String::new(),
+                    service_name: None,
+                    service_env: Some(tracer_payload.env.clone()),
+                    service_version: Some(tracer_payload.app_version.clone()),
+                    process_tags: None,
+                    container_id: Some(tracer_payload.container_id.clone()),
+                });
+                for chunk in &tracer_payload.chunks {
+                    if let Err(e) = concentrator.add_chunk(chunk.clone(), Arc::clone(&metadata)) {
+                        error!("Failed to send trace chunk to concentrator: {e}");
+                    }
+                }
+            }
+        } else {
+            error!("Unsupported tracer payload version. Failed to send trace stats.");
+        }
+    }
 }
 
 #[async_trait]
@@ -143,11 +174,10 @@ impl TraceProcessor for ServerlessTraceProcessor {
             }
         }
 
-        if let Some(stats_generator) = self.stats_generator.as_ref()
+        if let Some(ref concentrator) = self.stats_concentrator
             && !tracer_header_tags.client_computed_stats
-            && let Err(e) = stats_generator.send(&payload)
         {
-            error!("Stats generator error: {e}");
+            Self::send_to_concentrator(concentrator, &payload);
         }
 
         let send_data = SendData::new(body_size, payload, tracer_header_tags, &config.trace_intake);
@@ -268,7 +298,7 @@ mod tests {
             .unwrap();
 
         let trace_processor = trace_processor::ServerlessTraceProcessor {
-            stats_generator: None,
+            stats_concentrator: None,
         };
         let res = trace_processor
             .process_traces(
@@ -342,7 +372,7 @@ mod tests {
             .unwrap();
 
         let trace_processor = trace_processor::ServerlessTraceProcessor {
-            stats_generator: None,
+            stats_concentrator: None,
         };
         let res = trace_processor
             .process_traces(
