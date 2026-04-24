@@ -126,10 +126,9 @@ pub async fn main() {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(DEFAULT_LOG_INTAKE_PORT);
 
-    let dd_serverless_stats_computation_enabled =
-        env::var("DD_SERVERLESS_STATS_COMPUTATION_ENABLED")
-            .map(|val| val.to_lowercase() != "false")
-            .unwrap_or(true);
+    let dd_agent_stats_computation_enabled = env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
+        .map(|val| val.to_lowercase() != "false")
+        .unwrap_or(true);
 
     debug!("Starting serverless trace mini agent");
 
@@ -164,8 +163,8 @@ pub async fn main() {
         }
     };
 
-    let stats_concentrator = if dd_serverless_stats_computation_enabled {
-        info!("serverless stats computation enabled");
+    let stats_concentrator = if dd_agent_stats_computation_enabled {
+        info!("agent stats computation enabled");
         let (service, handle) =
             stats_concentrator_service::StatsConcentratorService::new(config.clone());
         Some(StatsConcentratorComponents {
@@ -173,7 +172,7 @@ pub async fn main() {
             handle,
         })
     } else {
-        info!("serverless stats computation disabled");
+        info!("agent stats computation disabled");
         None
     };
 
