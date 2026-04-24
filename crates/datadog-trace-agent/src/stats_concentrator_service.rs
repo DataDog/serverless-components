@@ -91,8 +91,17 @@ impl StatsConcentratorService {
         while let Some(command) = self.rx.recv().await {
             match command {
                 ConcentratorCommand::AddChunk(chunk, metadata) => {
-                    if self.tracer_metadata.is_none() {
-                        self.tracer_metadata = Some(metadata);
+                    match &self.tracer_metadata {
+                        None => self.tracer_metadata = Some(metadata),
+                        Some(concentrator_metadata)
+                            if concentrator_metadata.as_ref() != metadata.as_ref() =>
+                        {
+                            error!(
+                                "Multiple tracers detected: stats concentrator service received metadata from a different tracer. Expected: {concentrator_metadata:?}, received: {metadata:?}."
+                            );
+                            return;
+                        }
+                        Some(_) => {}
                     }
                     for span in &chunk.spans {
                         self.concentrator.add_span(span);
@@ -154,5 +163,69 @@ impl StatsConcentratorService {
         if let Err(e) = response_tx.send(stats) {
             error!("Failed to return trace stats: {e:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::test_helpers::create_tcp_test_config;
+    use libdd_trace_protobuf::pb::TraceChunk;
+
+    fn make_metadata(language: &str) -> Arc<TracerMetadata> {
+        Arc::new(TracerMetadata {
+            tracer_language: language.to_string(),
+            ..Default::default()
+        })
+    }
+
+    fn empty_chunk() -> TraceChunk {
+        TraceChunk {
+            spans: vec![],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stops_on_multiple_tracers() {
+        let config = Arc::new(create_tcp_test_config(0));
+        let (service, handle) = StatsConcentratorService::new(config);
+        let service_handle = tokio::spawn(service.run());
+
+        // First tracer — sets metadata
+        handle
+            .add_chunk(empty_chunk(), make_metadata("python"))
+            .unwrap();
+
+        // Second tracer with different metadata — should stop the service
+        handle
+            .add_chunk(empty_chunk(), make_metadata("nodejs"))
+            .unwrap();
+
+        // Service task should complete promptly after detecting multiple tracers
+        tokio::time::timeout(std::time::Duration::from_secs(1), service_handle)
+            .await
+            .expect("service did not stop after detecting multiple tracers")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_continues_with_same_tracer() {
+        let config = Arc::new(create_tcp_test_config(0));
+        let (service, handle) = StatsConcentratorService::new(config);
+        let service_handle = tokio::spawn(service.run());
+
+        handle
+            .add_chunk(empty_chunk(), make_metadata("python"))
+            .unwrap();
+        handle
+            .add_chunk(empty_chunk(), make_metadata("python"))
+            .unwrap();
+
+        // Service should still be running — flush should succeed
+        assert!(handle.flush(false).await.is_ok());
+
+        drop(handle);
+        let _ = service_handle.await;
     }
 }
