@@ -256,12 +256,10 @@ impl MiniAgent {
                 },
                 // If there's some error in the background tasks, we can't send data
                 result = &mut trace_flusher_handle => {
-                    error!("Trace flusher task died: {:?}", result);
-                    return Err("Trace flusher task terminated unexpectedly".into());
+                    return Err(format!("Trace flusher task terminated unexpectedly: {result:?}").into());
                 },
                 result = &mut stats_flusher_handle => {
-                    error!("Stats flusher task died: {:?}", result);
-                    return Err("Stats flusher task terminated unexpectedly".into());
+                    return Err(format!("Stats flusher task terminated unexpectedly: {result:?}").into());
                 },
                 result = async {
                     match stats_concentrator_service_handle {
@@ -269,8 +267,7 @@ impl MiniAgent {
                         None => std::future::pending().await,
                     }
                 } => {
-                    error!("Stats concentrator service task died: {:?}", result);
-                    return Err("Stats concentrator service task terminated unexpectedly".into());
+                    return Err(format!("Stats concentrator service task terminated unexpectedly: {result:?}").into());
                 },
                 _ = &mut shutdown_rx => {
                     // Drain all in-flight connections so every handler has finished
@@ -285,7 +282,7 @@ impl MiniAgent {
                     // have finished writing to the channel.
                     let _ = flusher_shutdown_tx.send(());
                     if let Err(e) = stats_flusher_handle.await {
-                        error!("Stats flusher task failed during shutdown: {e:?}");
+                        return Err(format!("Stats flusher task failed during shutdown: {e:?}").into());
                     }
                     return Ok(());
                 },
@@ -374,12 +371,10 @@ impl MiniAgent {
                 },
                 // If there's some error in the background tasks, we can't send data
                 result = &mut trace_flusher_handle => {
-                    error!("Trace flusher task died: {:?}", result);
-                    return Err("Trace flusher task terminated unexpectedly".into());
+                    return Err(format!("Trace flusher task terminated unexpectedly: {result:?}").into());
                 },
                 result = &mut stats_flusher_handle => {
-                    error!("Stats flusher task died: {:?}", result);
-                    return Err("Stats flusher task terminated unexpectedly".into());
+                    return Err(format!("Stats flusher task terminated unexpectedly: {result:?}").into());
                 },
                 result = async {
                     match stats_concentrator_service_handle {
@@ -387,8 +382,7 @@ impl MiniAgent {
                         None => std::future::pending().await,
                     }
                 } => {
-                    error!("Stats concentrator task died: {:?}", result);
-                    return Err("Stats concentrator task terminated unexpectedly".into());
+                    return Err(format!("Stats concentrator service task terminated unexpectedly: {result:?}").into());
                 },
                 _ = &mut shutdown_rx => {
                     while let Some(result) = joinset.join_next().await {
@@ -400,7 +394,7 @@ impl MiniAgent {
                     }
                     let _ = flusher_shutdown_tx.send(());
                     if let Err(e) = stats_flusher_handle.await {
-                        error!("Stats flusher task failed during shutdown: {e:?}");
+                        return Err(format!("Stats flusher task failed during shutdown: {e:?}").into());
                     }
                     return Ok(());
                 },
