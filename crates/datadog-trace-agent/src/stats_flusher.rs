@@ -14,14 +14,6 @@ use libdd_trace_utils::stats_utils;
 use crate::config::Config;
 use crate::stats_concentrator_service::StatsConcentratorHandle;
 
-/// Whether the stats flusher should run `flush_stats`
-fn should_flush_stats_buffer(
-    channel_has_tracer_stats: bool,
-    serverless_stats_enabled: bool,
-) -> bool {
-    channel_has_tracer_stats || serverless_stats_enabled
-}
-
 /// Serializes and sends a single `StatsPayload` to the intake.
 async fn send_stats_payload(config: &Arc<Config>, payload: pb::StatsPayload) {
     debug!("Stats payload to be sent: {payload:?}");
@@ -94,11 +86,7 @@ impl StatsFlusher for ServerlessStatsFlusher {
                 // Drain client stats in buffer and stats from concentrator on interval
                 _ = interval.tick() => {
                     let client_stats = std::mem::take(&mut buffer);
-                    let should_flush = should_flush_stats_buffer(
-                        !client_stats.is_empty(),
-                        self.stats_concentrator.is_some(),
-                    );
-                    if should_flush {
+                    if !client_stats.is_empty() || self.stats_concentrator.is_some() {
                         self.flush_stats(config.clone(), client_stats, false).await;
                     }
                 }
@@ -141,19 +129,5 @@ impl StatsFlusher for ServerlessStatsFlusher {
                 Err(e) => error!("Failed to flush concentrator stats: {e}"),
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_flush_stats_buffer;
-
-    #[test]
-    fn should_flush_stats_buffer_all_cases() {
-        // (stats channel empty, serverless computed stats enabled with concentrator)
-        assert!(!should_flush_stats_buffer(false, false));
-        assert!(should_flush_stats_buffer(true, false));
-        assert!(should_flush_stats_buffer(false, true));
-        assert!(should_flush_stats_buffer(true, true));
     }
 }
