@@ -389,11 +389,8 @@ async fn test_mini_agent_tcp_with_real_flushers() {
 
     // Trigger shutdown to force flush in progress concentrator buckets
     let _ = shutdown_tx.send(());
-    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+    let _ = agent_handle.await;
     verify_stats_request(&mock_server); // Stats generator should generate stats from trace payload
-
-    // Clean up
-    agent_handle.abort();
 }
 
 #[cfg(test)]
@@ -560,9 +557,6 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
 
     // Trigger shutdown to force flush in progress concentrator buckets
     let _ = shutdown_tx.send(());
-    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+    let _ = agent_handle.await;
     verify_stats_request(&mock_server);
-
-    // Clean up
-    agent_handle.abort();
 }
