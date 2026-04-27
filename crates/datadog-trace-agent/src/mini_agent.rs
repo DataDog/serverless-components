@@ -551,6 +551,8 @@ impl MiniAgent {
                     INFO_ENDPOINT_PATH,
                     PROFILING_ENDPOINT_PATH
                 ],
+                // client_drop_p0s tells the tracer whether it should drop unsampled p0 traces before sending them.
+                // In order to actually support this, sampling rates need to be sent back to the tracer.
                 "client_drop_p0s": false,
                 "config": config_json
             }
