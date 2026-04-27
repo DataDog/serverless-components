@@ -97,7 +97,12 @@ impl ServerlessTraceProcessor {
                 }
             }
         } else {
-            error!("Unsupported tracer payload version. Failed to send trace stats.");
+            let version = match payload {
+                TracerPayloadCollection::V04(_) => "V04",
+                TracerPayloadCollection::V05(_) => "V05",
+                TracerPayloadCollection::V07(_) => unreachable!(),
+            };
+            error!("Unsupported tracer payload version {version}. Failed to send trace stats.");
         }
     }
 }
