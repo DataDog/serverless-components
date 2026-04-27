@@ -86,6 +86,8 @@ impl StatsFlusher for ServerlessStatsFlusher {
                 // Drain client stats in buffer and stats from concentrator on interval
                 _ = interval.tick() => {
                     let client_stats = std::mem::take(&mut buffer);
+                    // Flush if trace stats are received from the tracer
+                    // or if there is a stats concentrator for agent computed trace stats
                     if !client_stats.is_empty() || self.stats_concentrator.is_some() {
                         self.flush_stats(config.clone(), client_stats, false).await;
                     }
@@ -117,7 +119,7 @@ impl StatsFlusher for ServerlessStatsFlusher {
             send_stats_payload(&config, payload).await;
         }
 
-        // Flush concentrator stats
+        // Flush agent computed trace stats from the stats concentrator
         if let Some(ref concentrator) = self.stats_concentrator {
             match concentrator.flush(force_flush).await {
                 Ok(Some(agent_stats)) => {
