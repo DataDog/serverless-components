@@ -78,21 +78,15 @@ impl ServerlessTraceProcessor {
     ) {
         if let TracerPayloadCollection::V07(tracer_payloads) = payload {
             for tracer_payload in tracer_payloads {
-                // Fetch service from the `_dd.base_service` attribute on the root span,
-                // falling back to `span.service` if not set
+                // Fetch service from the `_dd.base_service` attribute on the root span
                 let service_name = tracer_payload
                     .chunks
                     .iter()
                     .flat_map(|c| c.spans.iter())
                     .find(|s| s.parent_id == 0)
-                    .map(|s| {
-                        s.meta
-                            .get("_dd.base_service")
-                            .filter(|v| !v.is_empty())
-                            .cloned()
-                            .unwrap_or_else(|| s.service.clone())
-                    })
-                    .filter(|s| !s.is_empty());
+                    .and_then(|s| s.meta.get("_dd.base_service"))
+                    .filter(|v| !v.is_empty())
+                    .cloned();
                 let metadata = Arc::new(TracerMetadata {
                     schema_version: 2,
                     runtime_id: None,
