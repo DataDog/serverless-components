@@ -280,7 +280,7 @@ mod tests {
                 ..Default::default()
             },
             tags: Tags::from_env_string("env:test,service:my-service"),
-            env: Some("test-env".to_string()),
+            env: "test-env".to_string(),
         }
     }
 

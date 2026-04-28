@@ -131,8 +131,7 @@ impl StatsConcentratorService {
                         .service_env
                         .clone()
                         .filter(|s| !s.is_empty())
-                        .or_else(|| self.config.env.clone())
-                        .unwrap_or_default(),
+                        .unwrap_or_else(|| self.config.env.clone()),
                     version: metadata.service_version.clone().unwrap_or_default(),
                     lang: metadata.tracer_language.clone(),
                     tracer_version: metadata.tracer_version.clone(),
