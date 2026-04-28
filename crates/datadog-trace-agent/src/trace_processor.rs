@@ -78,7 +78,8 @@ impl ServerlessTraceProcessor {
     ) {
         if let TracerPayloadCollection::V07(tracer_payloads) = payload {
             for tracer_payload in tracer_payloads {
-                // Fetch service from the `_dd.base_service` attribute on the root span
+                // Fetch service from the `_dd.base_service` attribute on the root span,
+                // falling back to `span.service` if not set
                 let service_name = tracer_payload
                     .chunks
                     .iter()

@@ -94,6 +94,11 @@ impl StatsConcentratorService {
         while let Some(command) = self.rx.recv().await {
             match command {
                 ConcentratorCommand::AddChunk(chunk, metadata) => {
+                    // A single tracer may produce payloads with different metadata depending on the
+                    // integration. For example, the .NET process integration appends `-command` to
+                    // the base service and omits the version. A separate concentrator is kept per
+                    // unique metadata so that each payload's stats are flushed with the metadata
+                    // from the originating payload.
                     let concentrator = self
                         .concentrators
                         .entry(Arc::clone(&metadata))
