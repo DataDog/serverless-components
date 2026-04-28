@@ -1,6 +1,7 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
@@ -24,7 +25,7 @@ pub enum StatsError {
 
 pub enum ConcentratorCommand {
     AddChunk(Box<TraceChunk>, Arc<TracerMetadata>),
-    Flush(bool, oneshot::Sender<Option<ClientStatsPayload>>),
+    Flush(bool, oneshot::Sender<Vec<ClientStatsPayload>>),
 }
 
 /// A cloneable handle to the stats concentrator service, safe to share across async tasks.
@@ -50,7 +51,7 @@ impl StatsConcentratorHandle {
             .map_err(|e| StatsError::SendError(Box::new(e)))
     }
 
-    pub async fn flush(&self, force_flush: bool) -> Result<Option<ClientStatsPayload>, StatsError> {
+    pub async fn flush(&self, force_flush: bool) -> Result<Vec<ClientStatsPayload>, StatsError> {
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
             .send(ConcentratorCommand::Flush(force_flush, response_tx))
@@ -59,10 +60,20 @@ impl StatsConcentratorHandle {
     }
 }
 
+fn new_concentrator() -> SpanConcentrator {
+    // TODO: set span_kinds_stats_computed and peer_tag_keys
+    SpanConcentrator::new(
+        Duration::from_nanos(BUCKET_DURATION_NS),
+        SystemTime::now(),
+        vec![],
+        vec![],
+    )
+}
+
 pub struct StatsConcentratorService {
-    concentrator: SpanConcentrator,
+    /// One concentrator per unique TracerMetadata.
+    concentrators: HashMap<Arc<TracerMetadata>, SpanConcentrator>,
     rx: mpsc::UnboundedReceiver<ConcentratorCommand>,
-    tracer_metadata: Option<Arc<TracerMetadata>>,
     config: Arc<Config>,
 }
 
@@ -71,17 +82,9 @@ impl StatsConcentratorService {
     pub fn new(config: Arc<Config>) -> (Self, StatsConcentratorHandle) {
         let (tx, rx) = mpsc::unbounded_channel();
         let handle = StatsConcentratorHandle::new(tx);
-        // TODO: set span_kinds_stats_computed and peer_tag_keys
-        let concentrator = SpanConcentrator::new(
-            Duration::from_nanos(BUCKET_DURATION_NS),
-            SystemTime::now(),
-            vec![],
-            vec![],
-        );
         let service = Self {
-            concentrator,
+            concentrators: HashMap::new(),
             rx,
-            tracer_metadata: None,
             config,
         };
         (service, handle)
@@ -91,20 +94,13 @@ impl StatsConcentratorService {
         while let Some(command) = self.rx.recv().await {
             match command {
                 ConcentratorCommand::AddChunk(chunk, metadata) => {
-                    match &self.tracer_metadata {
-                        None => self.tracer_metadata = Some(metadata),
-                        Some(concentrator_metadata)
-                            if concentrator_metadata.as_ref() != metadata.as_ref() =>
-                        {
-                            error!(
-                                "Multiple tracers detected: stats concentrator service received metadata from a different tracer. Expected: {concentrator_metadata:?}, received: {metadata:?}."
-                            );
-                            return;
-                        }
-                        Some(_) => {}
-                    }
+                    let concentrator = self
+                        .concentrators
+                        .entry(Arc::clone(&metadata))
+                        .or_insert_with(new_concentrator);
+
                     for span in &chunk.spans {
-                        self.concentrator.add_span(span);
+                        concentrator.add_span(span);
                     }
                 }
                 ConcentratorCommand::Flush(force_flush, response_tx) => {
@@ -117,50 +113,52 @@ impl StatsConcentratorService {
     fn handle_flush(
         &mut self,
         force_flush: bool,
-        response_tx: oneshot::Sender<Option<ClientStatsPayload>>,
+        response_tx: oneshot::Sender<Vec<ClientStatsPayload>>,
     ) {
-        let stats_buckets = self.concentrator.flush(SystemTime::now(), force_flush);
-        let stats = if stats_buckets.is_empty() {
-            None
-        } else {
-            let default_metadata = TracerMetadata::default();
-            let metadata = self.tracer_metadata.as_deref().unwrap_or(&default_metadata);
-            Some(ClientStatsPayload {
-                // Do not set hostname so the trace stats backend can aggregate stats properly
-                hostname: String::new(),
-                // Prefer env from the tracer payload, fall back to agent config
-                env: metadata
-                    .service_env
-                    .clone()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| self.config.env.clone())
-                    .unwrap_or_default(),
-                version: metadata.service_version.clone().unwrap_or_default(),
-                lang: metadata.tracer_language.clone(),
-                tracer_version: metadata.tracer_version.clone(),
-                // Not set for agent-computed stats; runtime_id identifies tracer-computed payloads
-                runtime_id: String::new(),
-                // Not supported yet
-                sequence: 0,
-                // Not supported yet
-                agent_aggregation: String::new(),
-                // One service per app for serverless
-                service: self.config.service.clone().unwrap_or_default(),
-                container_id: metadata.container_id.clone().unwrap_or_default(),
-                // Not supported yet
-                tags: vec![],
-                // Not supported yet
-                git_commit_sha: String::new(),
-                // Not supported yet
-                image_tag: String::new(),
-                stats: stats_buckets,
-                // Not supported yet
-                process_tags: String::new(),
-                // Not supported yet
-                process_tags_hash: 0,
+        let payloads = self
+            .concentrators
+            .iter_mut()
+            .filter_map(|(metadata, concentrator)| {
+                let stats_buckets = concentrator.flush(SystemTime::now(), force_flush);
+                if stats_buckets.is_empty() {
+                    return None;
+                }
+                Some(ClientStatsPayload {
+                    // Do not set hostname so the trace stats backend can aggregate stats properly
+                    hostname: String::new(),
+                    // Prefer env from the tracer payload, fall back to agent config
+                    env: metadata
+                        .service_env
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| self.config.env.clone())
+                        .unwrap_or_default(),
+                    version: metadata.service_version.clone().unwrap_or_default(),
+                    lang: metadata.tracer_language.clone(),
+                    tracer_version: metadata.tracer_version.clone(),
+                    // Not set for agent-computed stats; runtime_id identifies tracer-computed payloads
+                    runtime_id: String::new(),
+                    // Not supported yet
+                    sequence: 0,
+                    // Not supported yet
+                    agent_aggregation: String::new(),
+                    service: metadata.service_name.clone().unwrap_or_default(),
+                    container_id: metadata.container_id.clone().unwrap_or_default(),
+                    // Not supported yet
+                    tags: vec![],
+                    // Not supported yet
+                    git_commit_sha: String::new(),
+                    // Not supported yet
+                    image_tag: String::new(),
+                    stats: stats_buckets,
+                    // Not supported yet
+                    process_tags: String::new(),
+                    // Not supported yet
+                    process_tags_hash: 0,
+                })
             })
-        };
-        if let Err(e) = response_tx.send(stats) {
+            .collect();
+        if let Err(e) = response_tx.send(payloads) {
             error!("Failed to return trace stats: {e:?}");
         }
     }
@@ -172,9 +170,11 @@ mod tests {
     use crate::config::test_helpers::create_tcp_test_config;
     use libdd_trace_protobuf::pb::TraceChunk;
 
-    fn make_metadata(language: &str) -> Arc<TracerMetadata> {
+    fn make_metadata(language: &str, service: &str, version: &str) -> Arc<TracerMetadata> {
         Arc::new(TracerMetadata {
             tracer_language: language.to_string(),
+            service_name: Some(service.to_string()),
+            service_version: Some(version.to_string()),
             ..Default::default()
         })
     }
@@ -187,45 +187,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stops_on_multiple_tracers() {
+    async fn test_unique_metadata_gets_separate_concentrators() {
         let config = Arc::new(create_tcp_test_config(0));
         let (service, handle) = StatsConcentratorService::new(config);
-        let service_handle = tokio::spawn(service.run());
+        tokio::spawn(service.run());
 
-        // First tracer — sets metadata
         handle
-            .add_chunk(empty_chunk(), make_metadata("python"))
+            .add_chunk(
+                empty_chunk(),
+                make_metadata("python", "my-service", "1.0.0"),
+            )
             .unwrap();
-
-        // Second tracer with different metadata — should stop the service
         handle
-            .add_chunk(empty_chunk(), make_metadata("nodejs"))
+            .add_chunk(
+                empty_chunk(),
+                make_metadata("python", "my-service", "2.0.0"),
+            )
+            .unwrap();
+        handle
+            .add_chunk(
+                empty_chunk(),
+                make_metadata("nodejs", "my-service", "1.0.0"),
+            )
             .unwrap();
 
-        // Service task should complete promptly after detecting multiple tracers
-        tokio::time::timeout(std::time::Duration::from_secs(1), service_handle)
-            .await
-            .expect("service did not stop after detecting multiple tracers")
-            .unwrap();
+        assert!(handle.flush(false).await.is_ok());
     }
 
     #[tokio::test]
-    async fn test_continues_with_same_tracer() {
+    async fn test_continues_with_same_metadata() {
         let config = Arc::new(create_tcp_test_config(0));
         let (service, handle) = StatsConcentratorService::new(config);
-        let service_handle = tokio::spawn(service.run());
+        tokio::spawn(service.run());
 
         handle
-            .add_chunk(empty_chunk(), make_metadata("python"))
+            .add_chunk(
+                empty_chunk(),
+                make_metadata("python", "my-service", "1.0.0"),
+            )
             .unwrap();
         handle
-            .add_chunk(empty_chunk(), make_metadata("python"))
+            .add_chunk(
+                empty_chunk(),
+                make_metadata("python", "my-service", "1.0.0"),
+            )
             .unwrap();
 
-        // Service should still be running — flush should succeed
         assert!(handle.flush(false).await.is_ok());
-
-        drop(handle);
-        let _ = service_handle.await;
     }
 }

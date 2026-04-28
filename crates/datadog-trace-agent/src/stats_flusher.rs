@@ -122,12 +122,12 @@ impl StatsFlusher for ServerlessStatsFlusher {
         // Flush agent computed trace stats from the stats concentrator
         if let Some(ref concentrator) = self.stats_concentrator {
             match concentrator.flush(force_flush).await {
-                Ok(Some(agent_stats)) => {
-                    let mut payload = stats_utils::construct_stats_payload(vec![agent_stats]);
+                Ok(agent_stats) if !agent_stats.is_empty() => {
+                    let mut payload = stats_utils::construct_stats_payload(agent_stats);
                     payload.client_computed = false;
                     send_stats_payload(&config, payload).await;
                 }
-                Ok(None) => {}
+                Ok(_) => {}
                 Err(e) => error!("Failed to flush concentrator stats: {e}"),
             }
         }

@@ -78,13 +78,27 @@ impl ServerlessTraceProcessor {
     ) {
         if let TracerPayloadCollection::V07(tracer_payloads) = payload {
             for tracer_payload in tracer_payloads {
+                // Fetch service from the `_dd.base_service` attribute on the root span
+                let service_name = tracer_payload
+                    .chunks
+                    .iter()
+                    .flat_map(|c| c.spans.iter())
+                    .find(|s| s.parent_id == 0)
+                    .map(|s| {
+                        s.meta
+                            .get("_dd.base_service")
+                            .filter(|v| !v.is_empty())
+                            .cloned()
+                            .unwrap_or_else(|| s.service.clone())
+                    })
+                    .filter(|s| !s.is_empty());
                 let metadata = Arc::new(TracerMetadata {
                     schema_version: 2,
                     runtime_id: None,
                     tracer_language: tracer_payload.language_name.clone(),
                     tracer_version: tracer_payload.tracer_version.clone(),
                     hostname: String::new(),
-                    service_name: None,
+                    service_name,
                     service_env: Some(tracer_payload.env.clone()),
                     service_version: Some(tracer_payload.app_version.clone()),
                     process_tags: None,
@@ -179,6 +193,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
             }
         }
 
+        // Skip agent side stats computation if the tracer has already computed stats
         if let Some(ref concentrator) = self.stats_concentrator
             && !tracer_header_tags.client_computed_stats
         {
@@ -265,7 +280,6 @@ mod tests {
                 ..Default::default()
             },
             tags: Tags::from_env_string("env:test,service:my-service"),
-            service: Some("test-service".to_string()),
             env: Some("test-env".to_string()),
         }
     }

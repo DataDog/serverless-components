@@ -109,7 +109,6 @@ pub struct Config {
     /// timeout for environment verification, in milliseconds
     pub verify_env_timeout_ms: u64,
     pub proxy_url: Option<String>,
-    pub service: Option<String>,
     pub env: Option<String>,
 }
 
@@ -253,8 +252,7 @@ impl Config {
                 .or_else(|_| env::var("HTTPS_PROXY"))
                 .ok(),
             tags,
-            service: env::var("DD_SERVICE").ok(),
-            env: env::var("DD_ENV").ok(),
+            env: env::var("DD_ENV").ok().filter(|v| v != "none"),
         })
     }
 }
@@ -729,7 +727,6 @@ pub mod test_helpers {
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 1000,
             proxy_url: None,
-            service: None,
             env: None,
         }
     }
