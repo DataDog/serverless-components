@@ -553,7 +553,8 @@ impl MiniAgent {
                 ],
                 // client_drop_p0s tells the tracer whether it should drop unsampled p0 traces before sending them.
                 // In order to actually support this, sampling rates need to be sent back to the tracer.
-                "client_drop_p0s": false,
+                // Continue to set client_drop_p0s to true until DD_AGENT_STATS_COMPUTATION_ENABLED is true by default.
+                "client_drop_p0s": true,
                 "config": config_json
             }
         );

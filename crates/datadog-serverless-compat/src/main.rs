@@ -128,7 +128,7 @@ pub async fn main() {
 
     let dd_agent_stats_computation_enabled = env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
         .map(|val| val.to_lowercase() != "false")
-        .unwrap_or(true);
+        .unwrap_or(false);
 
     debug!("Starting serverless trace mini agent");
 

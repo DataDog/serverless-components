@@ -220,8 +220,8 @@ async fn test_mini_agent_tcp_handles_requests() {
 
     // Check client_drop_p0s flag
     assert_eq!(
-        json["client_drop_p0s"], false,
-        "Expected client_drop_p0s to be false"
+        json["client_drop_p0s"], true,
+        "Expected client_drop_p0s to be true"
     );
 
     // Check config object
