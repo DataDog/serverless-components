@@ -14,6 +14,7 @@ use tracing::error;
 
 const S_TO_NS: u64 = 1_000_000_000;
 const BUCKET_DURATION_NS: u64 = 10 * S_TO_NS; // 10 seconds
+pub const SPAN_KINDS_STATS_COMPUTED: &[&str] = &["server", "client", "producer", "consumer"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum StatsError {
@@ -61,11 +62,14 @@ impl StatsConcentratorHandle {
 }
 
 fn new_concentrator() -> SpanConcentrator {
-    // TODO: set span_kinds_stats_computed and peer_tag_keys
+    // TODO: set peer_tag_keys
     SpanConcentrator::new(
         Duration::from_nanos(BUCKET_DURATION_NS),
         SystemTime::now(),
-        vec![],
+        SPAN_KINDS_STATS_COMPUTED
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         vec![],
     )
 }

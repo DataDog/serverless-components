@@ -20,6 +20,7 @@ use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
 #[cfg(all(windows, feature = "windows-pipes"))]
 use tokio::net::windows::named_pipe::ServerOptions;
 
+use crate::stats_concentrator_service::SPAN_KINDS_STATS_COMPUTED;
 use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils;
@@ -638,6 +639,7 @@ impl MiniAgent {
                     PROFILING_ENDPOINT_PATH
                 ],
                 "client_drop_p0s": client_drop_p0s,
+                "span_kinds_stats_computed": SPAN_KINDS_STATS_COMPUTED,
                 "config": config_json
             }
         );
