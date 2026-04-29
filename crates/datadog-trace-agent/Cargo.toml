@@ -25,16 +25,16 @@ tracing = { version = "0.1", default-features = false }
 serde = { version = "1.0.145", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { version = "1.0.58", default-features = false }
-libdd-capabilities = { git = "https://github.com/DataDog/libdatadog", rev = "dbd3ecb74cdad68d1efe3f0024cc3551f502a4c3" }
-libdd-capabilities-impl = { git = "https://github.com/DataDog/libdatadog", rev = "dbd3ecb74cdad68d1efe3f0024cc3551f502a4c3" }
-libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "dbd3ecb74cdad68d1efe3f0024cc3551f502a4c3" }
-libdd-library-config = { git = "https://github.com/DataDog/libdatadog", rev = "dbd3ecb74cdad68d1efe3f0024cc3551f502a4c3" }
-libdd-trace-protobuf = { git = "https://github.com/DataDog/libdatadog", rev = "dbd3ecb74cdad68d1efe3f0024cc3551f502a4c3" }
-libdd-trace-stats = { git = "https://github.com/DataDog/libdatadog", rev = "dbd3ecb74cdad68d1efe3f0024cc3551f502a4c3" }
-libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "dbd3ecb74cdad68d1efe3f0024cc3551f502a4c3", features = [
+libdd-capabilities = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
+libdd-capabilities-impl = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
+libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
+libdd-library-config = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
+libdd-trace-protobuf = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
+libdd-trace-stats = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf", features = [
     "mini_agent",
 ] }
-libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "dbd3ecb74cdad68d1efe3f0024cc3551f502a4c3" }
+libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
 datadog-fips = { path = "../datadog-fips" }
 reqwest = { version = "0.12.23", features = [
     "json",
@@ -48,6 +48,6 @@ serial_test = "2.0.0"
 duplicate = "2.0.1"
 temp-env = "0.3.6"
 tempfile = "3.3.0"
-libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "dbd3ecb74cdad68d1efe3f0024cc3551f502a4c3", features = [
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf", features = [
     "test-utils",
 ] }
