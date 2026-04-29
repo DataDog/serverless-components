@@ -7,5 +7,5 @@
 #![cfg_attr(not(test), deny(clippy::todo))]
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
-pub mod instance;
-pub mod tags;
+pub mod azure_instance;
+pub mod azure_tags;

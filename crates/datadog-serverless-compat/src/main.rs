@@ -41,7 +41,7 @@ use dogstatsd::{
     util::parse_metric_namespace,
 };
 
-use datadog_metrics_collector::instance::InstanceMetricsCollector;
+use datadog_metrics_collector::azure_instance::InstanceMetricsCollector;
 use dogstatsd::metric::{EMPTY_TAGS, SortedTags};
 use tokio_util::sync::CancellationToken;
 
@@ -260,7 +260,7 @@ pub async fn main() {
 
     let instance_collector = if instance_metric_enabled && metrics_flusher.is_some() {
         aggregator_handle.as_ref().and_then(|handle| {
-            let tags = datadog_metrics_collector::tags::build_enhanced_metrics_tags();
+            let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
             InstanceMetricsCollector::new(handle.clone(), tags)
         })
     } else {
