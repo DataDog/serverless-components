@@ -61,19 +61,6 @@ impl StatsConcentratorHandle {
     }
 }
 
-fn new_concentrator() -> SpanConcentrator {
-    // TODO: set peer_tag_keys
-    SpanConcentrator::new(
-        Duration::from_nanos(BUCKET_DURATION_NS),
-        SystemTime::now(),
-        SPAN_KINDS_STATS_COMPUTED
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        vec![],
-    )
-}
-
 pub struct StatsConcentratorService {
     /// One concentrator per unique TracerMetadata.
     concentrators: HashMap<Arc<TracerMetadata>, SpanConcentrator>,
@@ -94,6 +81,18 @@ impl StatsConcentratorService {
         (service, handle)
     }
 
+    fn new_span_concentrator(peer_tags: Vec<String>) -> SpanConcentrator {
+        SpanConcentrator::new(
+            Duration::from_nanos(BUCKET_DURATION_NS),
+            SystemTime::now(),
+            SPAN_KINDS_STATS_COMPUTED
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            peer_tags,
+        )
+    }
+
     pub async fn run(mut self) {
         while let Some(command) = self.rx.recv().await {
             match command {
@@ -106,7 +105,9 @@ impl StatsConcentratorService {
                     let concentrator = self
                         .concentrators
                         .entry(Arc::clone(&metadata))
-                        .or_insert_with(new_concentrator);
+                        .or_insert_with(|| {
+                            Self::new_span_concentrator(self.config.peer_tags.clone())
+                        });
 
                     for span in &chunk.spans {
                         concentrator.add_span(span);

@@ -12,6 +12,7 @@ pub mod config;
 pub mod env_verifier;
 pub mod http_utils;
 pub mod mini_agent;
+pub mod peer_tags;
 pub mod proxy_flusher;
 pub mod stats_concentrator_service;
 pub mod stats_flusher;

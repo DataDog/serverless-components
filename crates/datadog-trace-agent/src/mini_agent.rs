@@ -541,6 +541,7 @@ impl MiniAgent {
                 #[cfg(not(all(windows, feature = "windows-pipes")))]
                 None,
                 config.dd_dogstatsd_port,
+                &config.peer_tags,
                 config.agent_stats_computation_enabled,
             ) {
                 Ok(res) => Ok(res),
@@ -614,6 +615,7 @@ impl MiniAgent {
         dd_apm_receiver_port: u16,
         dd_apm_windows_pipe_name: Option<&str>,
         dd_dogstatsd_port: u16,
+        peer_tags: &[String],
         agent_stats_computation_enabled: bool,
     ) -> http::Result<http_common::HttpResponse> {
         // pipe_name already includes \\.\pipe\ prefix from config
@@ -640,6 +642,7 @@ impl MiniAgent {
                 ],
                 "client_drop_p0s": client_drop_p0s,
                 "span_kinds_stats_computed": SPAN_KINDS_STATS_COMPUTED,
+                "peer_tags": peer_tags,
                 "config": config_json
             }
         );
