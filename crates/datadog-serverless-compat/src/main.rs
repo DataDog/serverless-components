@@ -221,52 +221,54 @@ pub async fn main() {
     let enabled_metrics_components =
         decide_metrics_components(dd_use_dogstatsd, instance_metric_enabled);
 
-    // The metrics aggregator is started independently so that dogstatsd and enhanced metrics can be enabled independently.
-    let (metrics_flusher, aggregator_handle) = if enabled_metrics_components.start_aggregator {
-        debug!("Creating metrics flusher and aggregator");
+    // The metrics aggregator and flusher are started together and shared between dogstatsd and enhanced metrics,
+    // so they are started if either is enabled.
+    let (metrics_flusher, aggregator_handle) =
+        if enabled_metrics_components.start_metrics_aggregator_and_flusher {
+            debug!("Creating metrics flusher and aggregator");
 
-        let (flusher, handle) = start_aggregator(
-            dd_api_key.clone(),
-            dd_site,
-            https_proxy.clone(),
-            dogstatsd_tags,
-        )
-        .await;
-
-        if enabled_metrics_components.start_dogstatsd_listener {
-            debug!("Starting dogstatsd");
-            let _ = start_dogstatsd_listener(
-                dd_dogstatsd_port,
-                handle.clone(),
-                dd_statsd_metric_namespace,
-                #[cfg(all(windows, feature = "windows-pipes"))]
-                dd_dogstatsd_windows_pipe_name.clone(),
+            let (flusher, handle) = start_aggregator(
+                dd_api_key.clone(),
+                dd_site,
+                https_proxy.clone(),
+                dogstatsd_tags,
             )
             .await;
-            if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
-                info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
-            } else {
-                info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
-            }
-        } else {
-            info!("dogstatsd disabled");
-        }
-        (flusher, Some(handle))
-    } else {
-        info!("dogstatsd and enhanced metrics disabled");
-        (None, None)
-    };
 
-    let instance_collector = if enabled_metrics_components.start_instance_metrics_collector
-        && metrics_flusher.is_some()
-    {
-        aggregator_handle.as_ref().and_then(|handle| {
-            let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
-            InstanceMetricsCollector::new(handle.clone(), tags)
-        })
-    } else {
-        None
-    };
+            if enabled_metrics_components.start_dogstatsd_listener {
+                debug!("Starting dogstatsd");
+                let _ = start_dogstatsd_listener(
+                    dd_dogstatsd_port,
+                    handle.clone(),
+                    dd_statsd_metric_namespace,
+                    #[cfg(all(windows, feature = "windows-pipes"))]
+                    dd_dogstatsd_windows_pipe_name.clone(),
+                )
+                .await;
+                if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
+                    info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
+                } else {
+                    info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
+                }
+            } else {
+                info!("dogstatsd disabled");
+            }
+            (flusher, Some(handle))
+        } else {
+            info!("dogstatsd and enhanced metrics disabled");
+            (None, None)
+        };
+
+    let instance_collector: Option<InstanceMetricsCollector> =
+        if enabled_metrics_components.start_instance_metrics_collector && metrics_flusher.is_some()
+        {
+            aggregator_handle.as_ref().and_then(|handle| {
+                let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
+                InstanceMetricsCollector::new(handle.clone(), tags)
+            })
+        } else {
+            None
+        };
 
     let (log_flusher, _log_aggregator_handle): (Option<LogFlusher>, Option<LogAggregatorHandle>) =
         if dd_logs_enabled {
@@ -525,25 +527,26 @@ fn start_log_agent(
 /// Records which metrics components are enabled and should be started.
 #[derive(Debug, PartialEq)]
 struct EnabledMetricsComponents {
-    start_aggregator: bool,
+    start_metrics_aggregator_and_flusher: bool,
     start_dogstatsd_listener: bool,
     start_instance_metrics_collector: bool,
 }
 
 /// Determines which components should be started based on configuration.
 ///
-/// The metrics aggregator is shared between dogstatsd and enhanced metrics,
-/// so it's started if either is enabled.
+/// The metrics aggregator and flusher are started together and shared between dogstatsd and enhanced metrics,
+/// so they are started if either is enabled.
 fn decide_metrics_components(
     dd_use_dogstatsd: bool,
     instance_metric_enabled: bool,
 ) -> EnabledMetricsComponents {
     let start_dogstatsd_listener = dd_use_dogstatsd;
     let start_instance_metrics_collector = instance_metric_enabled;
-    let start_aggregator = start_dogstatsd_listener || start_instance_metrics_collector;
+    let start_metrics_aggregator_and_flusher =
+        start_dogstatsd_listener || start_instance_metrics_collector;
 
     EnabledMetricsComponents {
-        start_aggregator,
+        start_metrics_aggregator_and_flusher,
         start_dogstatsd_listener,
         start_instance_metrics_collector,
     }
@@ -667,7 +670,7 @@ mod metrics_components_tests {
                 false,
                 false,
                 EnabledMetricsComponents {
-                    start_aggregator: false,
+                    start_metrics_aggregator_and_flusher: false,
                     start_dogstatsd_listener: false,
                     start_instance_metrics_collector: false,
                 },
@@ -676,7 +679,7 @@ mod metrics_components_tests {
                 true,
                 false,
                 EnabledMetricsComponents {
-                    start_aggregator: true,
+                    start_metrics_aggregator_and_flusher: true,
                     start_dogstatsd_listener: true,
                     start_instance_metrics_collector: false,
                 },
@@ -685,7 +688,7 @@ mod metrics_components_tests {
                 false,
                 true,
                 EnabledMetricsComponents {
-                    start_aggregator: true,
+                    start_metrics_aggregator_and_flusher: true,
                     start_dogstatsd_listener: false,
                     start_instance_metrics_collector: true,
                 },
@@ -694,7 +697,7 @@ mod metrics_components_tests {
                 true,
                 true,
                 EnabledMetricsComponents {
-                    start_aggregator: true,
+                    start_metrics_aggregator_and_flusher: true,
                     start_dogstatsd_listener: true,
                     start_instance_metrics_collector: true,
                 },
