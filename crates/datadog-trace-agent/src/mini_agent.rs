@@ -461,6 +461,7 @@ impl MiniAgent {
                 #[cfg(not(all(windows, feature = "windows-pipes")))]
                 None,
                 config.dd_dogstatsd_port,
+                config.agent_stats_computation_enabled,
             ) {
                 Ok(res) => Ok(res),
                 Err(err) => log_and_create_http_response(
@@ -533,6 +534,7 @@ impl MiniAgent {
         dd_apm_receiver_port: u16,
         dd_apm_windows_pipe_name: Option<&str>,
         dd_dogstatsd_port: u16,
+        agent_stats_computation_enabled: bool,
     ) -> http::Result<http_common::HttpResponse> {
         // pipe_name already includes \\.\pipe\ prefix from config
         let receiver_socket = dd_apm_windows_pipe_name.unwrap_or("");
@@ -543,6 +545,11 @@ impl MiniAgent {
             "receiver_socket": receiver_socket
         });
 
+        // client_drop_p0s tells the tracer whether it should drop unsampled P0 traces.
+        // When the agent computes stats, tracers must send all traces to the agent
+        // so it can compute accurate stats. P0 traces must not be dropped by the tracer.
+        let client_drop_p0s = !agent_stats_computation_enabled;
+
         let response_json = json!(
             {
                 "endpoints": [
@@ -551,10 +558,7 @@ impl MiniAgent {
                     INFO_ENDPOINT_PATH,
                     PROFILING_ENDPOINT_PATH
                 ],
-                // client_drop_p0s tells the tracer whether it should drop unsampled p0 traces before sending them.
-                // In order to actually support this, sampling rates need to be sent back to the tracer.
-                // Continue to set client_drop_p0s to true until DD_AGENT_STATS_COMPUTATION_ENABLED is true by default.
-                "client_drop_p0s": true,
+                "client_drop_p0s": client_drop_p0s,
                 "config": config_json
             }
         );

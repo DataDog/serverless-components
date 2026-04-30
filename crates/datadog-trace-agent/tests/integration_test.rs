@@ -346,6 +346,7 @@ async fn test_mini_agent_tcp_with_real_flushers() {
 
     let mut config = create_tcp_test_config(8127);
     configure_mock_endpoints(&mut config, &mock_server.url());
+    config.agent_stats_computation_enabled = true;
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
 
@@ -517,6 +518,7 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     configure_mock_endpoints(&mut config, &mock_server.url());
     config.dd_apm_windows_pipe_name = Some(pipe_name.to_string());
     config.dd_apm_receiver_port = 0;
+    config.agent_stats_computation_enabled = true;
     let config = Arc::new(config);
 
     let (mini_agent, _stats_concentrator_service_handle) =

@@ -187,8 +187,9 @@ impl TraceProcessor for ServerlessTraceProcessor {
             }
         }
 
-        // Skip agent side stats computation if the tracer has already computed stats
+        // Skip agent side stats computation if disabled or if the tracer has already computed stats
         if let Some(ref concentrator) = self.stats_concentrator
+            && config.agent_stats_computation_enabled
             && !tracer_header_tags.client_computed_stats
         {
             Self::send_to_concentrator(concentrator, &payload);
@@ -275,6 +276,7 @@ mod tests {
             },
             tags: Tags::from_env_string("env:test,service:my-service"),
             env: "test-env".to_string(),
+            agent_stats_computation_enabled: false,
         }
     }
 
