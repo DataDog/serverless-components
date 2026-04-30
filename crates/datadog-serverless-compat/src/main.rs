@@ -218,12 +218,11 @@ pub async fn main() {
         }
     });
 
-    let needs_aggregator = dd_use_dogstatsd || instance_metric_enabled;
+    let enabled_metrics_components =
+        decide_metrics_components(dd_use_dogstatsd, instance_metric_enabled);
 
-    // The aggregator is shared between dogstatsd and enhanced metrics.
-    // It is started independently so that either can be enabled without the other.
-    // Only dogstatsd needs the dogstatsd listener
-    let (metrics_flusher, aggregator_handle) = if needs_aggregator {
+    // The metrics aggregator is started independently so that dogstatsd and enhanced metrics can be enabled independently.
+    let (metrics_flusher, aggregator_handle) = if enabled_metrics_components.start_aggregator {
         debug!("Creating metrics flusher and aggregator");
 
         let (flusher, handle) = start_aggregator(
@@ -234,7 +233,7 @@ pub async fn main() {
         )
         .await;
 
-        if dd_use_dogstatsd {
+        if enabled_metrics_components.start_dogstatsd_listener {
             debug!("Starting dogstatsd");
             let _ = start_dogstatsd_listener(
                 dd_dogstatsd_port,
@@ -258,7 +257,9 @@ pub async fn main() {
         (None, None)
     };
 
-    let instance_collector = if instance_metric_enabled && metrics_flusher.is_some() {
+    let instance_collector = if enabled_metrics_components.start_instance_metrics_collector
+        && metrics_flusher.is_some()
+    {
         aggregator_handle.as_ref().and_then(|handle| {
             let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
             InstanceMetricsCollector::new(handle.clone(), tags)
@@ -521,6 +522,33 @@ fn start_log_agent(
     Some((flusher, handle))
 }
 
+/// Records which metrics components are enabled and should be started.
+#[derive(Debug, PartialEq)]
+struct EnabledMetricsComponents {
+    start_aggregator: bool,
+    start_dogstatsd_listener: bool,
+    start_instance_metrics_collector: bool,
+}
+
+/// Determines which components should be started based on configuration.
+///
+/// The metrics aggregator is shared between dogstatsd and enhanced metrics,
+/// so it's started if either is enabled.
+fn decide_metrics_components(
+    dd_use_dogstatsd: bool,
+    instance_metric_enabled: bool,
+) -> EnabledMetricsComponents {
+    let start_dogstatsd_listener = dd_use_dogstatsd;
+    let start_instance_metrics_collector = instance_metric_enabled;
+    let start_aggregator = start_dogstatsd_listener || start_instance_metrics_collector;
+
+    EnabledMetricsComponents {
+        start_aggregator,
+        start_dogstatsd_listener,
+        start_instance_metrics_collector,
+    }
+}
+
 #[cfg(test)]
 mod log_agent_integration_tests {
     use datadog_logs_agent::{AggregatorService, IntakeEntry, LogServer, LogServerConfig};
@@ -625,5 +653,60 @@ mod log_agent_integration_tests {
         assert_eq!(arr[0]["service"], "my-fn");
 
         handle.shutdown().expect("shutdown");
+    }
+}
+
+#[cfg(test)]
+mod metrics_components_tests {
+    use super::{EnabledMetricsComponents, decide_metrics_components};
+
+    #[test]
+    fn test_decide_metrics_components() {
+        let cases: &[(bool, bool, EnabledMetricsComponents)] = &[
+            (
+                false,
+                false,
+                EnabledMetricsComponents {
+                    start_aggregator: false,
+                    start_dogstatsd_listener: false,
+                    start_instance_metrics_collector: false,
+                },
+            ),
+            (
+                true,
+                false,
+                EnabledMetricsComponents {
+                    start_aggregator: true,
+                    start_dogstatsd_listener: true,
+                    start_instance_metrics_collector: false,
+                },
+            ),
+            (
+                false,
+                true,
+                EnabledMetricsComponents {
+                    start_aggregator: true,
+                    start_dogstatsd_listener: false,
+                    start_instance_metrics_collector: true,
+                },
+            ),
+            (
+                true,
+                true,
+                EnabledMetricsComponents {
+                    start_aggregator: true,
+                    start_dogstatsd_listener: true,
+                    start_instance_metrics_collector: true,
+                },
+            ),
+        ];
+
+        for (dogstatsd, instance, expected) in cases {
+            let actual = decide_metrics_components(*dogstatsd, *instance);
+            assert_eq!(
+                &actual, expected,
+                "case (dd_use_dogstatsd={dogstatsd}, instance_metric_enabled={instance})"
+            );
+        }
     }
 }
