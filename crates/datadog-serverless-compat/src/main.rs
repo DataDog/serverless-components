@@ -259,6 +259,7 @@ pub async fn main() {
             (None, None)
         };
 
+    // Skip enhanced metrics collection if we can't flush metrics
     let instance_collector: Option<InstanceMetricsCollector> =
         if enabled_metrics_components.start_instance_metrics_collector && metrics_flusher.is_some()
         {
