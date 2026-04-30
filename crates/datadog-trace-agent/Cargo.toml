@@ -43,6 +43,7 @@ reqwest = { version = "0.12.23", features = [
 bytes = "1.10.1"
 
 [dev-dependencies]
+flate2 = "1"
 rmp-serde = "1.1.1"
 serial_test = "2.0.0"
 duplicate = "2.0.1"

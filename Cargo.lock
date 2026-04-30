@@ -571,6 +571,7 @@ dependencies = [
  "bytes",
  "datadog-fips",
  "duplicate",
+ "flate2",
  "http-body-util",
  "hyper",
  "hyper-http-proxy",

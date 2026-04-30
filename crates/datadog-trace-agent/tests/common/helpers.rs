@@ -3,10 +3,14 @@
 
 //! Helper functions for integration tests
 
+use flate2::read::GzDecoder;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use libdd_common::http_common;
+use libdd_trace_protobuf::pb;
 use libdd_trace_utils::test_utils::create_test_json_span;
+use serde_json::json;
+use std::io::Read;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::time::timeout;
 
@@ -22,6 +26,44 @@ pub fn create_test_trace_payload(service: Option<&str>) -> Vec<u8> {
         span["meta"]["service"] = serde_json::Value::String(name.into());
     }
     rmp_serde::to_vec(&vec![vec![span]]).expect("Failed to serialize test trace")
+}
+
+/// Create a trace payload with a root span and two non-top-level, non-measured child spans:
+/// - a `"server"` child, which is eligible for stats only via `span_kinds_stats_computed`
+/// - an `"internal"` child, which is never eligible regardless of configuration
+pub fn create_trace_with_span_kind_children_payload() -> Vec<u8> {
+    let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
+    let root = create_test_json_span(300, 301, 0, start, false);
+    let mut server_child = create_test_json_span(300, 302, 301, start, false);
+    server_child["name"] = json!("server_op");
+    server_child["meta"]["span.kind"] = json!("server");
+    let mut internal_child = create_test_json_span(300, 303, 301, start, false);
+    internal_child["name"] = json!("internal_op");
+    internal_child["meta"]["span.kind"] = json!("internal");
+    let payload = rmp_serde::to_vec(&vec![vec![root, server_child, internal_child]])
+        .expect("Failed to serialize span kind children trace");
+    payload
+}
+
+/// Create a trace payload with a single client span that carries a `peer.service` peer tag.
+/// The span is a trace root (parent_id == 0) so it is both top-level and eligible due to span.kind.
+pub fn create_client_span_with_peer_tag_payload() -> Vec<u8> {
+    let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
+    let mut span = create_test_json_span(400, 401, 0, start, false);
+    span["meta"]["span.kind"] = json!("client");
+    span["meta"]["peer.service"] = json!("my-db");
+    rmp_serde::to_vec(&vec![vec![span]]).expect("Failed to serialize client peer tag trace")
+}
+
+/// Decompress a gzip+msgpack stats payload and deserialize it into a `StatsPayload`.
+/// The stats flusher encodes payloads as `gzip(rmp_serde::to_vec_named(StatsPayload))`.
+pub fn decode_stats_payload(body: &[u8]) -> pb::StatsPayload {
+    let mut decoder = GzDecoder::new(body);
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .expect("Failed to decompress stats payload");
+    rmp_serde::from_slice(&decompressed).expect("Failed to deserialize stats payload")
 }
 
 /// Send an HTTP request over TCP and return the response

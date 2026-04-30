@@ -3,13 +3,18 @@
 
 mod common;
 
-use common::helpers::{create_test_trace_payload, send_tcp_request};
+use common::helpers::{
+    create_client_span_with_peer_tag_payload, create_test_trace_payload,
+    create_trace_with_span_kind_children_payload, decode_stats_payload, send_tcp_request,
+};
 use common::mock_server::MockServer;
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
     config::{Config, test_helpers::create_tcp_test_config},
     mini_agent::MiniAgent,
+    peer_tags::peer_tag_keys,
     proxy_flusher::ProxyFlusher,
+    stats_concentrator_service::SPAN_KINDS_STATS_COMPUTED,
     trace_flusher::TraceFlusher,
     trace_processor::ServerlessTraceProcessor,
 };
@@ -245,6 +250,21 @@ async fn test_mini_agent_tcp_handles_requests() {
         "Expected client_drop_p0s to be true"
     );
 
+    // Check span_kinds_stats_computed
+    assert_eq!(
+        json["span_kinds_stats_computed"],
+        serde_json::json!(SPAN_KINDS_STATS_COMPUTED),
+        "Expected span_kinds_stats_computed to match SPAN_KINDS_STATS_COMPUTED"
+    );
+
+    // Check peer_tags
+    let expected_peer_tags = peer_tag_keys().unwrap();
+    assert_eq!(
+        json["peer_tags"],
+        serde_json::json!(expected_peer_tags),
+        "Expected peer_tags to match peer_tag_keys()"
+    );
+
     // Check config object
     let config = &json["config"];
     assert_eq!(
@@ -326,6 +346,39 @@ async fn test_mini_agent_named_pipe_handles_requests() {
         .to_bytes();
     let json: Value =
         serde_json::from_slice(&body).expect("Failed to parse /info response as JSON");
+
+    // Check endpoints array
+    assert_eq!(
+        json["endpoints"],
+        serde_json::json!([
+            "/v0.4/traces",
+            "/v0.6/stats",
+            "/info",
+            "/profiling/v1/input"
+        ]),
+        "Expected endpoints array"
+    );
+
+    // Check client_drop_p0s flag
+    assert_eq!(
+        json["client_drop_p0s"], true,
+        "Expected client_drop_p0s to be true"
+    );
+
+    // Check span_kinds_stats_computed
+    assert_eq!(
+        json["span_kinds_stats_computed"],
+        serde_json::json!(SPAN_KINDS_STATS_COMPUTED),
+        "Expected span_kinds_stats_computed to match SPAN_KINDS_STATS_COMPUTED"
+    );
+
+    // Check peer_tags
+    let expected_peer_tags = peer_tag_keys().unwrap();
+    assert_eq!(
+        json["peer_tags"],
+        serde_json::json!(expected_peer_tags),
+        "Expected peer_tags to match peer_tag_keys()"
+    );
 
     // Check config object specific to named pipe
     let config_value = &json["config"];
@@ -523,6 +576,174 @@ async fn test_mini_agent_tcp_with_real_flushers_and_tracer_computed_stats() {
 
     // Clean up
     agent_handle.abort();
+}
+
+/// Verify that `span_kinds_stats_computed` controls which non-top-level, non-measured child spans
+/// produce stats.
+#[cfg(test)]
+#[tokio::test]
+#[serial]
+async fn test_internal_span_kind_does_not_produce_stats() {
+    let mock_server = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut config = create_tcp_test_config(8130);
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    config.agent_stats_computation_enabled = true;
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let agent_handle = tokio::spawn(async move {
+        let _ = mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await;
+    });
+
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    let trace_response = send_tcp_request(
+        test_port,
+        "/v0.4/traces",
+        "POST",
+        Some(create_trace_with_span_kind_children_payload()),
+        &[],
+    )
+    .await
+    .expect("Failed to send /v0.4/traces request");
+    assert_eq!(trace_response.status(), StatusCode::OK);
+
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+
+    let _ = shutdown_tx.send(());
+    let _ = agent_handle.await;
+
+    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
+    assert!(
+        !stats_reqs.is_empty(),
+        "Expected a stats request from the root span"
+    );
+
+    let all_groups: Vec<_> = stats_reqs
+        .iter()
+        .map(|req| decode_stats_payload(&req.body))
+        .flat_map(|payload| {
+            payload
+                .stats
+                .into_iter()
+                .flat_map(|csp| csp.stats.into_iter())
+                .flat_map(|bucket| bucket.stats.into_iter())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    // server_op is only eligible via span_kinds_stats_computed — fails if span kinds are not
+    // passed to the concentrator
+    assert!(
+        all_groups.iter().any(|g| g.name == "server_op"),
+        "Expected server_op to appear in stats (eligible via span_kinds_stats_computed), got: {:?}",
+        all_groups.iter().map(|g| &g.name).collect::<Vec<_>>()
+    );
+
+    // internal_op is never eligible regardless of configuration
+    assert!(
+        !all_groups.iter().any(|g| g.name == "internal_op"),
+        "internal_op should not appear in stats, but got: {:?}",
+        all_groups.iter().map(|g| &g.name).collect::<Vec<_>>()
+    );
+}
+
+/// Verify that peer tags are present in the flushed stats payload when a client span carries a
+/// peer tag (`peer.service`).
+#[cfg(test)]
+#[tokio::test]
+#[serial]
+async fn test_peer_tags_in_flushed_stats() {
+    let mock_server = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut config = create_tcp_test_config(8131);
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    config.agent_stats_computation_enabled = true;
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let agent_handle = tokio::spawn(async move {
+        let _ = mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await;
+    });
+
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    let trace_response = send_tcp_request(
+        test_port,
+        "/v0.4/traces",
+        "POST",
+        Some(create_client_span_with_peer_tag_payload()),
+        &[],
+    )
+    .await
+    .expect("Failed to send /v0.4/traces request");
+    assert_eq!(trace_response.status(), StatusCode::OK);
+
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+
+    let _ = shutdown_tx.send(());
+    let _ = agent_handle.await;
+
+    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
+    assert!(
+        !stats_reqs.is_empty(),
+        "Expected at least one stats request"
+    );
+
+    let payload = decode_stats_payload(&stats_reqs[0].body);
+    let all_peer_tags: Vec<&str> = payload
+        .stats
+        .iter()
+        .flat_map(|csp| &csp.stats)
+        .flat_map(|bucket| &bucket.stats)
+        .flat_map(|group| group.peer_tags.iter().map(String::as_str))
+        .collect();
+
+    assert!(
+        all_peer_tags.contains(&"peer.service:my-db"),
+        "Expected peer.service:my-db in stats peer_tags, got: {all_peer_tags:?}"
+    );
 }
 
 #[cfg(all(test, windows, feature = "windows-pipes"))]
