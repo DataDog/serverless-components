@@ -286,22 +286,22 @@ pub async fn main() {
     };
 
     let (log_flusher, _log_aggregator_handle): (Option<LogFlusher>, Option<LogAggregatorHandle>) =
-    if dd_logs_enabled {
-        debug!("Starting log agent");
-        match start_log_agent(dd_api_key, https_proxy, dd_logs_port) {
-            Some((flusher, handle)) => {
-                info!("log agent started");
-                (Some(flusher), Some(handle))
+        if dd_logs_enabled {
+            debug!("Starting log agent");
+            match start_log_agent(dd_api_key, https_proxy, dd_logs_port) {
+                Some((flusher, handle)) => {
+                    info!("log agent started");
+                    (Some(flusher), Some(handle))
+                }
+                None => {
+                    warn!("log agent failed to start, log flushing disabled");
+                    (None, None)
+                }
             }
-            None => {
-                warn!("log agent failed to start, log flushing disabled");
-                (None, None)
-            }
-        }
-    } else {
-        info!("log agent disabled");
-        (None, None)
-    };
+        } else {
+            info!("log agent disabled");
+            (None, None)
+        };
 
     // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
     // Use the existing aggregator handle
