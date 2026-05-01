@@ -109,6 +109,9 @@ pub struct Config {
     /// timeout for environment verification, in milliseconds
     pub verify_env_timeout_ms: u64,
     pub proxy_url: Option<String>,
+    pub env: String,
+    /// Whether the agent should compute trace stats
+    pub agent_stats_computation_enabled: bool,
 }
 
 impl Config {
@@ -251,6 +254,10 @@ impl Config {
                 .or_else(|_| env::var("HTTPS_PROXY"))
                 .ok(),
             tags,
+            env: env::var("DD_ENV").unwrap_or_else(|_| "none".to_string()),
+            agent_stats_computation_enabled: env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
+                .map(|val| val.to_lowercase() == "true")
+                .unwrap_or(false),
         })
     }
 }
@@ -725,6 +732,8 @@ pub mod test_helpers {
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 1000,
             proxy_url: None,
+            env: "none".to_string(),
+            agent_stats_computation_enabled: false,
         }
     }
 }

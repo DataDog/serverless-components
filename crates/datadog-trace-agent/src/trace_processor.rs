@@ -6,8 +6,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hyper::{StatusCode, http};
 use libdd_common::http_common;
+use libdd_library_config::tracer_metadata::TracerMetadata;
 use tokio::sync::mpsc::Sender;
-use tracing::debug;
+use tracing::{debug, error};
 
 use libdd_trace_obfuscation::obfuscate::obfuscate_span;
 use libdd_trace_protobuf::pb;
@@ -18,6 +19,7 @@ use libdd_trace_utils::tracer_payload::{TraceChunkProcessor, TracerPayloadCollec
 use crate::{
     config::Config,
     http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
+    stats_concentrator_service::StatsConcentratorHandle,
 };
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
@@ -65,7 +67,53 @@ impl TraceChunkProcessor for ChunkProcessor {
     }
 }
 #[derive(Clone)]
-pub struct ServerlessTraceProcessor {}
+pub struct ServerlessTraceProcessor {
+    pub stats_concentrator: Option<StatsConcentratorHandle>,
+}
+
+impl ServerlessTraceProcessor {
+    fn send_to_concentrator(
+        concentrator: &StatsConcentratorHandle,
+        payload: &TracerPayloadCollection,
+    ) {
+        if let TracerPayloadCollection::V07(tracer_payloads) = payload {
+            for tracer_payload in tracer_payloads {
+                // Fetch service from the `_dd.base_service` attribute on the root span
+                let service_name = tracer_payload.chunks.iter().find_map(|c| {
+                    trace_utils::get_root_span_index(&c.spans)
+                        .ok()
+                        .and_then(|i| c.spans[i].meta.get("_dd.base_service"))
+                        .filter(|v| !v.is_empty())
+                        .cloned()
+                });
+                let metadata = Arc::new(TracerMetadata {
+                    schema_version: 2,
+                    runtime_id: None,
+                    tracer_language: tracer_payload.language_name.clone(),
+                    tracer_version: tracer_payload.tracer_version.clone(),
+                    hostname: String::new(),
+                    service_name,
+                    service_env: Some(tracer_payload.env.clone()),
+                    service_version: Some(tracer_payload.app_version.clone()),
+                    process_tags: None,
+                    container_id: Some(tracer_payload.container_id.clone()),
+                });
+                for chunk in &tracer_payload.chunks {
+                    if let Err(e) = concentrator.add_chunk(chunk.clone(), Arc::clone(&metadata)) {
+                        error!("Failed to send trace chunk to concentrator: {e}");
+                    }
+                }
+            }
+        } else {
+            let version = match payload {
+                TracerPayloadCollection::V04(_) => "V04",
+                TracerPayloadCollection::V05(_) => "V05",
+                TracerPayloadCollection::V07(_) => unreachable!(),
+            };
+            error!("Unsupported tracer payload version {version}. Failed to send trace stats.");
+        }
+    }
+}
 
 #[async_trait]
 impl TraceProcessor for ServerlessTraceProcessor {
@@ -137,6 +185,14 @@ impl TraceProcessor for ServerlessTraceProcessor {
                     function_tags.to_string(),
                 );
             }
+        }
+
+        // Skip agent side stats computation if disabled or if the tracer has already computed stats
+        if let Some(ref concentrator) = self.stats_concentrator
+            && config.agent_stats_computation_enabled
+            && !tracer_header_tags.client_computed_stats
+        {
+            Self::send_to_concentrator(concentrator, &payload);
         }
 
         let send_data = SendData::new(body_size, payload, tracer_header_tags, &config.trace_intake);
@@ -219,6 +275,8 @@ mod tests {
                 ..Default::default()
             },
             tags: Tags::from_env_string("env:test,service:my-service"),
+            env: "test-env".to_string(),
+            agent_stats_computation_enabled: false,
         }
     }
 
@@ -254,7 +312,9 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor {};
+        let trace_processor = trace_processor::ServerlessTraceProcessor {
+            stats_concentrator: None,
+        };
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -326,7 +386,9 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor {};
+        let trace_processor = trace_processor::ServerlessTraceProcessor {
+            stats_concentrator: None,
+        };
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
