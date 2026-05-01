@@ -8,4 +8,4 @@ description = "Collector to read, compute, and submit enhanced metrics in Server
 [dependencies]
 dogstatsd = { path = "../dogstatsd", default-features = true }
 tracing = { version = "0.1", default-features = false }
-libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "8c88979985154d6d97c0fc2ca9039682981eacad", default-features = false }
+libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf", default-features = false }
