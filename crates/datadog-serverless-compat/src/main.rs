@@ -130,7 +130,6 @@ pub async fn main() {
 
     let instance_metric_enabled = env_type == EnvironmentType::AzureFunction;
 
-
     let dd_agent_stats_computation_enabled = env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
         .map(|val| val.to_lowercase() == "true")
         .unwrap_or(false);
