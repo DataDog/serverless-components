@@ -41,10 +41,12 @@ use dogstatsd::{
     util::parse_metric_namespace,
 };
 
+use datadog_metrics_collector::azure_instance::InstanceMetricsCollector;
 use dogstatsd::metric::{EMPTY_TAGS, SortedTags};
 use tokio_util::sync::CancellationToken;
 
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
+const INSTANCE_METRICS_COLLECTION_INTERVAL_SECS: u64 = 3;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 const DEFAULT_LOG_INTAKE_PORT: u16 = 10517;
@@ -125,6 +127,8 @@ pub async fn main() {
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(DEFAULT_LOG_INTAKE_PORT);
+
+    let instance_metric_enabled = env_type == EnvironmentType::AzureFunction;
 
     let dd_agent_stats_computation_enabled = env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
         .map(|val| val.to_lowercase() == "true")
@@ -213,29 +217,58 @@ pub async fn main() {
         }
     });
 
-    let (metrics_flusher, _aggregator_handle) = if dd_use_dogstatsd {
-        debug!("Starting dogstatsd");
-        let (_, metrics_flusher, aggregator_handle) = start_dogstatsd(
-            dd_dogstatsd_port,
-            dd_api_key.clone(),
-            dd_site,
-            https_proxy.clone(),
-            dogstatsd_tags,
-            dd_statsd_metric_namespace,
-            #[cfg(all(windows, feature = "windows-pipes"))]
-            dd_dogstatsd_windows_pipe_name.clone(),
-        )
-        .await;
-        if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
-            info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
+    let enabled_metrics_components =
+        decide_metrics_components(dd_use_dogstatsd, instance_metric_enabled);
+
+    // The metrics aggregator and flusher are started together and shared between dogstatsd and enhanced metrics,
+    // so they are started if either is enabled.
+    let (metrics_flusher, aggregator_handle) =
+        if enabled_metrics_components.start_metrics_aggregator_and_flusher {
+            debug!("Creating metrics flusher and aggregator");
+
+            let (flusher, handle) = start_aggregator(
+                dd_api_key.clone(),
+                dd_site,
+                https_proxy.clone(),
+                dogstatsd_tags,
+            )
+            .await;
+
+            if enabled_metrics_components.start_dogstatsd_listener {
+                debug!("Starting dogstatsd");
+                let _ = start_dogstatsd_listener(
+                    dd_dogstatsd_port,
+                    handle.clone(),
+                    dd_statsd_metric_namespace,
+                    #[cfg(all(windows, feature = "windows-pipes"))]
+                    dd_dogstatsd_windows_pipe_name.clone(),
+                )
+                .await;
+                if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
+                    info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
+                } else {
+                    info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
+                }
+            } else {
+                info!("dogstatsd disabled");
+            }
+            (flusher, Some(handle))
         } else {
-            info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
-        }
-        (metrics_flusher, Some(aggregator_handle))
-    } else {
-        info!("dogstatsd disabled");
-        (None, None)
-    };
+            info!("dogstatsd and enhanced metrics disabled");
+            (None, None)
+        };
+
+    // Skip enhanced metrics collection if we can't flush metrics
+    let instance_collector: Option<InstanceMetricsCollector> =
+        if enabled_metrics_components.start_instance_metrics_collector && metrics_flusher.is_some()
+        {
+            aggregator_handle.as_ref().and_then(|handle| {
+                let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
+                InstanceMetricsCollector::new(handle.clone(), tags)
+            })
+        } else {
+            None
+        };
 
     let (log_flusher, _log_aggregator_handle): (Option<LogFlusher>, Option<LogAggregatorHandle>) =
         if dd_logs_enabled {
@@ -256,48 +289,60 @@ pub async fn main() {
         };
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
+    let mut instance_metrics_collection_interval = interval(Duration::from_secs(
+        INSTANCE_METRICS_COLLECTION_INTERVAL_SECS,
+    ));
     flush_interval.tick().await; // discard first tick, which is instantaneous
+    instance_metrics_collection_interval.tick().await;
 
     // Builders for log batches that failed transiently in the previous flush
     // cycle. They are redriven on the next cycle before new batches are sent.
     let mut pending_log_retries: Vec<reqwest::RequestBuilder> = Vec::new();
 
     loop {
-        flush_interval.tick().await;
+        tokio::select! {
+            _ = flush_interval.tick() => {
+                if let Some(metrics_flusher) = metrics_flusher.clone() {
+                    debug!("Flushing dogstatsd metrics");
+                    tokio::spawn(async move {
+                        metrics_flusher.flush().await;
+                    });
+                }
 
-        if let Some(metrics_flusher) = metrics_flusher.as_ref() {
-            debug!("Flushing dogstatsd metrics");
-            metrics_flusher.flush().await;
-        }
-
-        if let Some(log_flusher) = log_flusher.as_ref() {
-            debug!("Flushing log agent");
-            let retry_in = std::mem::take(&mut pending_log_retries);
-            let failed = log_flusher.flush(retry_in).await;
-            if !failed.is_empty() {
-                // TODO: surface flush failures into health/metrics telemetry so
-                // operators have a durable signal beyond log lines when logs are
-                // being dropped (e.g. increment a statsd counter or set a gauge).
-                warn!(
-                    "log agent flush failed for {} batch(es); will retry next cycle",
-                    failed.len()
-                );
-                pending_log_retries = failed;
+                if let Some(log_flusher) = log_flusher.as_ref() {
+                    debug!("Flushing log agent");
+                    let retry_in = std::mem::take(&mut pending_log_retries);
+                    let failed = log_flusher.flush(retry_in).await;
+                    if !failed.is_empty() {
+                        // TODO: surface flush failures into health/metrics telemetry so
+                        // operators have a durable signal beyond log lines when logs are
+                        // being dropped (e.g. increment a statsd counter or set a gauge).
+                        warn!(
+                            "log agent flush failed for {} batch(es); will retry next cycle",
+                            failed.len()
+                        );
+                        pending_log_retries = failed;
+                    }
+                }
+            }
+            _ = instance_metrics_collection_interval.tick(), if instance_collector.is_some() => {
+                if let Some(ref collector) = instance_collector {
+                    collector.collect_and_submit();
+                }
             }
         }
     }
 }
 
-async fn start_dogstatsd(
-    port: u16,
+/// Starts the metrics aggregator service and creates a flusher to send
+/// aggregated metrics to the Datadog intake.
+async fn start_aggregator(
     dd_api_key: Option<String>,
     dd_site: String,
     https_proxy: Option<String>,
     dogstatsd_tags: &str,
-    metric_namespace: Option<String>,
-    #[cfg(all(windows, feature = "windows-pipes"))] windows_pipe_name: Option<String>,
-) -> (CancellationToken, Option<Flusher>, AggregatorHandle) {
-    // 1. Create the aggregator service
+) -> (Option<Flusher>, AggregatorHandle) {
+    // Create the aggregator service
     #[allow(clippy::expect_used)]
     let (service, handle) = AggregatorService::new(
         SortedTags::parse(dogstatsd_tags).unwrap_or(EMPTY_TAGS),
@@ -305,9 +350,55 @@ async fn start_dogstatsd(
     )
     .expect("Failed to create aggregator service");
 
-    // 2. Start the aggregator service in the background
+    // Start the aggregator service in the background
     tokio::spawn(service.run());
 
+    let metrics_flusher = match dd_api_key {
+        Some(dd_api_key) => {
+            let client = match build_metrics_client(https_proxy, DOGSTATSD_TIMEOUT_DURATION) {
+                Ok(client) => client,
+                Err(e) => {
+                    error!("Failed to build HTTP client: {e}, won't flush metrics");
+                    return (None, handle);
+                }
+            };
+            let metrics_intake_url_prefix = match Site::new(dd_site)
+                .map_err(|e| e.to_string())
+                .and_then(|site| {
+                    MetricsIntakeUrlPrefix::new(Some(site), None).map_err(|e| e.to_string())
+                }) {
+                Ok(prefix) => prefix,
+                Err(e) => {
+                    error!("Failed to create metrics intake URL: {e}, won't flush metrics");
+                    return (None, handle);
+                }
+            };
+
+            let metrics_flusher = Flusher::new(FlusherConfig {
+                api_key_factory: Arc::new(ApiKeyFactory::new(&dd_api_key)),
+                aggregator_handle: handle.clone(),
+                metrics_intake_url_prefix,
+                client,
+                retry_strategy: RetryStrategy::LinearBackoff(3, 1),
+                compression_level: CompressionLevel::try_from(6).unwrap_or_default(),
+            });
+            Some(metrics_flusher)
+        }
+        None => {
+            error!("DD_API_KEY not set, won't flush metrics");
+            None
+        }
+    };
+
+    (metrics_flusher, handle)
+}
+
+async fn start_dogstatsd_listener(
+    port: u16,
+    handle: AggregatorHandle,
+    metric_namespace: Option<String>,
+    #[cfg(all(windows, feature = "windows-pipes"))] windows_pipe_name: Option<String>,
+) -> CancellationToken {
     #[cfg(all(windows, feature = "windows-pipes"))]
     let dogstatsd_config = DogStatsDConfig {
         host: AGENT_HOST.to_string(),
@@ -330,7 +421,7 @@ async fn start_dogstatsd(
     };
     let dogstatsd_cancel_token = tokio_util::sync::CancellationToken::new();
 
-    // 3. Use handle in DogStatsD (cheap to clone)
+    // Use handle in DogStatsD (cheap to clone)
     let dogstatsd_client = DogStatsD::new(
         &dogstatsd_config,
         handle.clone(),
@@ -342,45 +433,7 @@ async fn start_dogstatsd(
         dogstatsd_client.spin().await;
     });
 
-    let metrics_flusher = match dd_api_key {
-        Some(dd_api_key) => {
-            let client = match build_metrics_client(https_proxy, DOGSTATSD_TIMEOUT_DURATION) {
-                Ok(client) => client,
-                Err(e) => {
-                    error!("Failed to build HTTP client: {e}, won't flush metrics");
-                    return (dogstatsd_cancel_token, None, handle);
-                }
-            };
-
-            let metrics_intake_url_prefix = match Site::new(dd_site)
-                .map_err(|e| e.to_string())
-                .and_then(|site| {
-                    MetricsIntakeUrlPrefix::new(Some(site), None).map_err(|e| e.to_string())
-                }) {
-                Ok(prefix) => prefix,
-                Err(e) => {
-                    error!("Failed to create metrics intake URL: {e}, won't flush metrics");
-                    return (dogstatsd_cancel_token, None, handle);
-                }
-            };
-
-            let metrics_flusher = Flusher::new(FlusherConfig {
-                api_key_factory: Arc::new(ApiKeyFactory::new(&dd_api_key)),
-                aggregator_handle: handle.clone(),
-                metrics_intake_url_prefix,
-                client,
-                retry_strategy: RetryStrategy::LinearBackoff(3, 1),
-                compression_level: CompressionLevel::try_from(6).unwrap_or_default(),
-            });
-            Some(metrics_flusher)
-        }
-        None => {
-            error!("DD_API_KEY not set, won't flush metrics");
-            None
-        }
-    };
-
-    (dogstatsd_cancel_token, metrics_flusher, handle)
+    dogstatsd_cancel_token
 }
 
 fn build_metrics_client(
@@ -469,6 +522,34 @@ fn start_log_agent(
 
     let flusher = LogFlusher::new(config, client, handle.clone());
     Some((flusher, handle))
+}
+
+/// Records which metrics components are enabled and should be started.
+#[derive(Debug, PartialEq)]
+struct EnabledMetricsComponents {
+    start_metrics_aggregator_and_flusher: bool,
+    start_dogstatsd_listener: bool,
+    start_instance_metrics_collector: bool,
+}
+
+/// Determines which components should be started based on configuration.
+///
+/// The metrics aggregator and flusher are started together and shared between dogstatsd and enhanced metrics,
+/// so they are started if either is enabled.
+fn decide_metrics_components(
+    dd_use_dogstatsd: bool,
+    instance_metric_enabled: bool,
+) -> EnabledMetricsComponents {
+    let start_dogstatsd_listener = dd_use_dogstatsd;
+    let start_instance_metrics_collector = instance_metric_enabled;
+    let start_metrics_aggregator_and_flusher =
+        start_dogstatsd_listener || start_instance_metrics_collector;
+
+    EnabledMetricsComponents {
+        start_metrics_aggregator_and_flusher,
+        start_dogstatsd_listener,
+        start_instance_metrics_collector,
+    }
 }
 
 #[cfg(test)]
@@ -575,5 +656,60 @@ mod log_agent_integration_tests {
         assert_eq!(arr[0]["service"], "my-fn");
 
         handle.shutdown().expect("shutdown");
+    }
+}
+
+#[cfg(test)]
+mod metrics_components_tests {
+    use super::{EnabledMetricsComponents, decide_metrics_components};
+
+    #[test]
+    fn test_decide_metrics_components() {
+        let cases: &[(bool, bool, EnabledMetricsComponents)] = &[
+            (
+                false,
+                false,
+                EnabledMetricsComponents {
+                    start_metrics_aggregator_and_flusher: false,
+                    start_dogstatsd_listener: false,
+                    start_instance_metrics_collector: false,
+                },
+            ),
+            (
+                true,
+                false,
+                EnabledMetricsComponents {
+                    start_metrics_aggregator_and_flusher: true,
+                    start_dogstatsd_listener: true,
+                    start_instance_metrics_collector: false,
+                },
+            ),
+            (
+                false,
+                true,
+                EnabledMetricsComponents {
+                    start_metrics_aggregator_and_flusher: true,
+                    start_dogstatsd_listener: false,
+                    start_instance_metrics_collector: true,
+                },
+            ),
+            (
+                true,
+                true,
+                EnabledMetricsComponents {
+                    start_metrics_aggregator_and_flusher: true,
+                    start_dogstatsd_listener: true,
+                    start_instance_metrics_collector: true,
+                },
+            ),
+        ];
+
+        for (dogstatsd, instance, expected) in cases {
+            let actual = decide_metrics_components(*dogstatsd, *instance);
+            assert_eq!(
+                &actual, expected,
+                "case (dd_use_dogstatsd={dogstatsd}, instance_metric_enabled={instance})"
+            );
+        }
     }
 }

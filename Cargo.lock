@@ -488,6 +488,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-metrics-collector"
+version = "0.1.0"
+dependencies = [
+ "dogstatsd",
+ "libdd-common 4.0.0",
+ "tracing",
+]
+
+[[package]]
 name = "datadog-opentelemetry"
 version = "0.3.0"
 source = "git+https://github.com/DataDog/dd-trace-rs?rev=f51cefc4ad24bec81b38fb2f36b1ed93f21ae913#f51cefc4ad24bec81b38fb2f36b1ed93f21ae913"
@@ -540,6 +549,7 @@ version = "0.1.0"
 dependencies = [
  "datadog-fips",
  "datadog-logs-agent",
+ "datadog-metrics-collector",
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils 3.0.1",
