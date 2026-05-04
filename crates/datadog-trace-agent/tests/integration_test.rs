@@ -179,7 +179,7 @@ async fn test_mini_agent_tcp_handles_requests() {
 
     // Start the mini agent
     let agent_handle = tokio::spawn(async move {
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
     });
 
@@ -240,7 +240,7 @@ async fn test_mini_agent_tcp_handles_requests() {
     );
 
     // Test /v0.4/traces endpoint with real trace data
-    let trace_payload = create_test_trace_payload();
+    let trace_payload = create_test_trace_payload(None);
     let trace_response =
         send_tcp_request(test_port, "/v0.4/traces", "POST", Some(trace_payload), &[])
             .await
@@ -279,7 +279,7 @@ async fn test_mini_agent_named_pipe_handles_requests() {
 
     // Start the mini agent
     let agent_handle = tokio::spawn(async move {
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
     });
 
@@ -322,7 +322,7 @@ async fn test_mini_agent_named_pipe_handles_requests() {
     );
 
     // Test /v0.4/traces endpoint with real trace data
-    let trace_payload = create_test_trace_payload();
+    let trace_payload = create_test_trace_payload(None);
     let trace_response =
         send_named_pipe_request(&pipe_path, "/v0.4/traces", "POST", Some(trace_payload))
             .await
@@ -353,7 +353,7 @@ async fn test_mini_agent_tcp_with_real_flushers() {
     let (mini_agent, stats_concentrator_service_handle) =
         create_mini_agent_with_real_flushers(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let agent_handle = tokio::spawn(async move {
         let _ = mini_agent
             .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
@@ -377,7 +377,7 @@ async fn test_mini_agent_tcp_with_real_flushers() {
     );
 
     // Send trace data
-    let trace_payload = create_test_trace_payload();
+    let trace_payload = create_test_trace_payload(None);
     let trace_response =
         send_tcp_request(test_port, "/v0.4/traces", "POST", Some(trace_payload), &[])
             .await
@@ -389,7 +389,7 @@ async fn test_mini_agent_tcp_with_real_flushers() {
     verify_trace_request(&mock_server);
 
     // Trigger shutdown to force flush in progress concentrator buckets
-    let _ = shutdown_tx.send(());
+    let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
     verify_stats_request(&mock_server); // Stats generator should generate stats from trace payload
 }
@@ -410,7 +410,7 @@ async fn test_concentrator_task_death_shuts_down_mini_agent() {
         create_mini_agent_with_real_flushers(config);
     let abort_handle = stats_concentrator_service_handle.abort_handle();
 
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let agent_handle = tokio::spawn(async move {
         mini_agent
             .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
@@ -463,7 +463,7 @@ async fn test_mini_agent_tcp_with_real_flushers_and_tracer_computed_stats() {
         create_mini_agent_with_real_flushers(config);
 
     let agent_handle = tokio::spawn(async move {
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
     });
 
@@ -484,7 +484,7 @@ async fn test_mini_agent_tcp_with_real_flushers_and_tracer_computed_stats() {
     );
 
     // Send trace data
-    let trace_payload = create_test_trace_payload();
+    let trace_payload = create_test_trace_payload(None);
     let trace_response = send_tcp_request(
         test_port,
         "/v0.4/traces",
@@ -524,7 +524,7 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     let (mini_agent, _stats_concentrator_service_handle) =
         create_mini_agent_with_real_flushers(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let agent_handle = tokio::spawn(async move {
         let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
     });
@@ -546,7 +546,7 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     );
 
     // Send trace data via named pipe
-    let trace_payload = create_test_trace_payload();
+    let trace_payload = create_test_trace_payload(None);
     let trace_response =
         send_named_pipe_request(pipe_name, "/v0.4/traces", "POST", Some(trace_payload))
             .await
@@ -558,7 +558,114 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     verify_trace_request(&mock_server);
 
     // Trigger shutdown to force flush in progress concentrator buckets
-    let _ = shutdown_tx.send(());
+    let _ = shutdown_tx.send(true);
+    let _ = agent_handle.await;
+    verify_stats_request(&mock_server);
+}
+
+#[cfg(all(test, windows, feature = "windows-pipes"))]
+#[tokio::test]
+#[serial]
+async fn test_mini_agent_dual_transport_with_real_flushers() {
+    let mock_server = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let pipe_name = r"\\.\pipe\dd_trace_dual_transport_test";
+    let tcp_port: u16 = 8130;
+
+    let mut config = create_tcp_test_config(tcp_port);
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    config.dd_apm_windows_pipe_name = Some(pipe_name.to_string());
+    // Both transports are deliberately set on the same agent: a non-zero TCP
+    // port AND a pipe name. They must come up concurrently.
+    config.agent_stats_computation_enabled = true;
+    let config = Arc::new(config);
+
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let agent_handle = tokio::spawn(async move {
+        let _ = mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await;
+    });
+
+    // Readiness on each transport, sequentially (TCP then pipe).
+    let mut tcp_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(tcp_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            tcp_ready = true;
+            break;
+        }
+    }
+    assert!(
+        tcp_ready,
+        "TCP listener did not bind on port {tcp_port} when pipe is also configured \
+         — config may be overriding receiver_port to 0 when a pipe name is set"
+    );
+
+    let mut pipe_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_named_pipe_request(pipe_name, "/info", "GET", None).await
+            && response.status().is_success()
+        {
+            pipe_ready = true;
+            break;
+        }
+    }
+    assert!(
+        pipe_ready,
+        "Named pipe listener did not come up at {pipe_name} when TCP is also configured"
+    );
+
+    // One trace per transport, distinguishable by service name.
+    let tcp_payload = create_test_trace_payload(Some("dual-tcp-svc"));
+    let pipe_payload = create_test_trace_payload(Some("dual-pipe-svc"));
+
+    let tcp_response = send_tcp_request(tcp_port, "/v0.4/traces", "POST", Some(tcp_payload), &[])
+        .await
+        .expect("Failed to send /v0.4/traces request over TCP");
+    assert_eq!(tcp_response.status(), StatusCode::OK);
+
+    let pipe_response =
+        send_named_pipe_request(pipe_name, "/v0.4/traces", "POST", Some(pipe_payload))
+            .await
+            .expect("Failed to send /v0.4/traces request over named pipe");
+    assert_eq!(pipe_response.status(), StatusCode::OK);
+
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+
+    // Both payloads must reach the same backend through the shared flusher
+    // pipeline. The flusher may batch them into one POST or two; either is
+    // fine, what matters is that both service-name needles show up.
+    let trace_reqs = mock_server.get_requests_for_path("/api/v0.2/traces");
+    assert!(
+        !trace_reqs.is_empty(),
+        "no trace POST reached backend; expected traces from both transports"
+    );
+    let mut all_bytes = Vec::new();
+    for req in &trace_reqs {
+        assert_eq!(req.method, "POST");
+        all_bytes.extend_from_slice(&req.body);
+    }
+    assert!(
+        all_bytes.windows(12).any(|w| w == b"dual-tcp-svc"),
+        "TCP-side trace did not reach backend"
+    );
+    assert!(
+        all_bytes.windows(13).any(|w| w == b"dual-pipe-svc"),
+        "pipe-side trace did not reach backend"
+    );
+
+    // Trigger graceful shutdown. The watch fan-out must reach BOTH accept
+    // loops; each drains its in-flight handlers; the supervisor then
+    // signals the stats flusher to do its final emit. If fan-out skipped
+    // a transport, agent_handle would hang or stats wouldn't arrive.
+    let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
     verify_stats_request(&mock_server);
 }
