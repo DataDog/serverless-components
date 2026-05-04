@@ -276,6 +276,7 @@ mod tests {
             },
             tags: Tags::from_env_string("env:test,service:my-service"),
             env: "test-env".to_string(),
+            version: String::new(),
             agent_stats_computation_enabled: false,
         }
     }

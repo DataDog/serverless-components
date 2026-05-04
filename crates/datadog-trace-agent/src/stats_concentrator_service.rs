@@ -137,7 +137,12 @@ impl StatsConcentratorService {
                         .clone()
                         .filter(|s| !s.is_empty())
                         .unwrap_or_else(|| self.config.env.clone()),
-                    version: metadata.service_version.clone().unwrap_or_default(),
+                    // Prefer version from the tracer payload, fall back to agent config
+                    version: metadata
+                        .service_version
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| self.config.version.clone()),
                     lang: metadata.tracer_language.clone(),
                     tracer_version: metadata.tracer_version.clone(),
                     // Not set for agent-computed stats; runtime_id identifies tracer-computed payloads
