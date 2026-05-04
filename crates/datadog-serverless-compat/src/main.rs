@@ -18,8 +18,7 @@ use zstd::zstd_safe::CompressionLevel;
 
 use datadog_trace_agent::{
     aggregator::TraceAggregator,
-    config, env_verifier, metrics_collector, mini_agent, proxy_flusher, stats_concentrator_service, stats_flusher,
-   
+    config, env_verifier, mini_agent, proxy_flusher, stats_concentrator_service, stats_flusher,
     stats_processor,
     trace_flusher::{self, TraceFlusher},
     trace_processor,
@@ -275,15 +274,15 @@ pub async fn main() {
 
     // Skip enhanced metrics collection if we can't flush metrics
     let instance_collector: Option<InstanceMetricsCollector> =
-    if enabled_metrics_components.start_instance_metrics_collector && metrics_flusher.is_some()
-    {
-        aggregator_handle.as_ref().and_then(|handle| {
-            let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
-            InstanceMetricsCollector::new(handle.clone(), tags)
-        })
-    } else {
-        None
-    };
+        if enabled_metrics_components.start_instance_metrics_collector && metrics_flusher.is_some()
+        {
+            aggregator_handle.as_ref().and_then(|handle| {
+                let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
+                InstanceMetricsCollector::new(handle.clone(), tags)
+            })
+        } else {
+            None
+        };
 
     let (log_flusher, _log_aggregator_handle): (Option<LogFlusher>, Option<LogAggregatorHandle>) =
         if dd_logs_enabled {
@@ -370,7 +369,6 @@ pub async fn main() {
                 }
             }
         }
-        
     }
 }
 
@@ -698,46 +696,6 @@ mod log_agent_integration_tests {
         handle.shutdown().expect("shutdown");
     }
 }
-
-fn build_cpu_metrics_tags() -> Option<SortedTags> {
-    let mut tag_parts = Vec::new();
-    // Azure tags from ddcommon
-    if let Some(aas_metadata) = &*azure_app_services::AAS_METADATA_FUNCTION {
-        let aas_tags = [
-            ("resource_id", aas_metadata.get_resource_id()),
-            ("resource_group", aas_metadata.get_resource_group()),
-            ("subscription_id", aas_metadata.get_subscription_id()),
-            ("name", aas_metadata.get_site_name()),
-        ];
-        for (name, value) in aas_tags {
-            if value != "unknown" {
-                tag_parts.push(format!("{}:{}", name, value));
-            }
-        }
-    }
-
-    // Tags from env vars (not in ddcommon) - origin tag is added by DogStatsD
-    for (tag_name, env_var) in [
-        ("region", "REGION_NAME"),
-        ("plan_tier", "WEBSITE_SKU"),
-        ("service", "DD_SERVICE"),
-        ("env", "DD_ENV"),
-        ("version", "DD_VERSION"),
-        ("serverless_compat_version", "DD_SERVERLESS_COMPAT_VERSION"),
-    ] {
-        if let Ok(val) = env::var(env_var) {
-            if !val.is_empty() {
-                tag_parts.push(format!("{}:{}", tag_name, val));
-            }
-        }
-    }
-
-    if tag_parts.is_empty() {
-        return None;
-    }
-    SortedTags::parse(&tag_parts.join(",")).ok()
-}
-
 #[cfg(test)]
 mod metrics_components_tests {
     use super::{EnabledMetricsComponents, decide_metrics_components};
