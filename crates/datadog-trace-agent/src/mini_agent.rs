@@ -33,6 +33,10 @@ const TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const STATS_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 
+/// JoinHandle type for a transport accept loop (TCP or named pipe).
+type TransportHandle =
+    tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
+
 pub struct MiniAgent {
     pub config: Arc<config::Config>,
     pub trace_processor: Arc<dyn trace_processor::TraceProcessor + Send + Sync>,
@@ -46,7 +50,7 @@ pub struct MiniAgent {
 impl MiniAgent {
     pub async fn start_mini_agent(
         &self,
-        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
         stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
@@ -86,9 +90,9 @@ impl MiniAgent {
             Receiver<pb::ClientStatsPayload>,
         ) = mpsc::channel(STATS_PAYLOAD_CHANNEL_BUFFER_SIZE);
 
-        // Create a separate shutdown channel for the stats flusher so that serve_tcp
-        // can drain all in-flight HTTP handlers before triggering the final flush,
-        // preventing AddChunk/ClientStatsPayload messages from being missed.
+        // Separate shutdown channel for the stats flusher: serve() drains all
+        // in-flight HTTP handlers before triggering the final flush, preventing
+        // AddChunk/ClientStatsPayload messages from being missed.
         let (flusher_shutdown_tx, flusher_shutdown_rx) = oneshot::channel::<()>();
 
         // start our stats flusher.
@@ -138,78 +142,203 @@ impl MiniAgent {
             )
         });
 
-        // Determine which transport to use based on configuration
-        #[cfg(any(all(windows, feature = "windows-pipes"), test))]
-        let pipe_name_opt = self.config.dd_apm_windows_pipe_name.as_ref();
-        #[cfg(not(any(all(windows, feature = "windows-pipes"), test)))]
-        let pipe_name_opt: Option<&String> = None;
-
-        if let Some(pipe_name) = pipe_name_opt {
-            debug!("Mini Agent started: listening on named pipe {}", pipe_name);
-        } else {
-            debug!(
-                "Mini Agent started: listening on port {}",
-                self.config.dd_apm_receiver_port
-            );
-        }
         debug!(
             "Time taken to start the Mini Agent: {} ms",
             now.elapsed().as_millis()
         );
 
-        if let Some(pipe_name) = pipe_name_opt {
-            // Windows named pipe transport
+        // TCP listener is always started; legacy tracers without named-pipe
+        // support reach the agent here even when a pipe is also configured.
+        let addr = SocketAddr::from(([127, 0, 0, 1], self.config.dd_apm_receiver_port));
+        let tcp_listener = tokio::net::TcpListener::bind(&addr).await?;
+        debug!(
+            "Mini Agent listening on TCP port {}",
+            self.config.dd_apm_receiver_port
+        );
+
+        // Named pipe is only spawned on Windows with the feature enabled and a
+        // pipe name configured. On all other builds, the pipe code is absent
+        // entirely (no symbols, no select arm, no cost).
+        #[cfg(all(windows, feature = "windows-pipes"))]
+        let pipe_handle = self
+            .config
+            .dd_apm_windows_pipe_name
+            .as_ref()
+            .map(|pipe_name| {
+                debug!("Mini Agent also listening on named pipe {}", pipe_name);
+                let pipe_service = service.clone();
+                let pipe_shutdown_rx = shutdown_rx.clone();
+                tokio::spawn(Self::serve_accept_loop_named_pipe(
+                    pipe_name.clone(),
+                    pipe_service,
+                    pipe_shutdown_rx,
+                ))
+            });
+
+        let tcp_shutdown_rx = shutdown_rx.clone();
+        let tcp_handle = tokio::spawn(Self::serve_accept_loop_tcp(
+            tcp_listener,
+            service,
+            tcp_shutdown_rx,
+        ));
+
+        Self::serve(
+            tcp_handle,
             #[cfg(all(windows, feature = "windows-pipes"))]
-            {
-                Self::serve_named_pipe(
-                    pipe_name,
-                    service,
-                    trace_flusher_handle,
-                    stats_flusher_handle,
-                    stats_concentrator_service_handle,
-                    shutdown_rx,
-                    flusher_shutdown_tx,
-                )
-                .await?;
-            }
-            #[cfg(not(all(windows, feature = "windows-pipes")))]
-            {
-                let _ = pipe_name; // Suppress unused variable warning
-                unreachable!(
-                    "Named pipes are only supported on Windows with the windows-pipes feature \
-                    enabled, cannot use pipe: {}.",
-                    pipe_name
-                );
-            }
-        } else {
-            // TCP transport
-            let addr = SocketAddr::from(([127, 0, 0, 1], self.config.dd_apm_receiver_port));
-            let listener = tokio::net::TcpListener::bind(&addr).await?;
-
-            Self::serve_tcp(
-                listener,
-                service,
-                trace_flusher_handle,
-                stats_flusher_handle,
-                stats_concentrator_service_handle,
-                shutdown_rx,
-                flusher_shutdown_tx,
-            )
-            .await?;
-        }
-
-        Ok(())
+            pipe_handle,
+            trace_flusher_handle,
+            stats_flusher_handle,
+            stats_concentrator_service_handle,
+            shutdown_rx,
+            flusher_shutdown_tx,
+        )
+        .await
     }
 
-    async fn serve_tcp<S>(
+    /// Supervises the long-lived tasks. Any task dying unexpectedly is fatal:
+    /// a tracer picks one transport at startup and stays on it, so silently
+    /// dropping a transport can strand the tracer. Handle shutdowns.
+    #[allow(clippy::too_many_arguments)]
+    async fn serve(
+        mut tcp_handle: TransportHandle,
+        #[cfg(all(windows, feature = "windows-pipes"))] mut pipe_handle: Option<TransportHandle>,
+        mut trace_flusher_handle: tokio::task::JoinHandle<()>,
+        mut stats_flusher_handle: tokio::task::JoinHandle<()>,
+        mut stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        flusher_shutdown_tx: oneshot::Sender<()>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+
+        // task supervision cases: we react if...
+        enum Event {
+            TcpDied(String),
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            PipeDied(String),
+            TraceFlusherDied(String),
+            StatsFlusherDied(String),
+            ConcentratorDied(String),
+            Shutdown,
+        }
+
+        // Gated cases of tokio:select, handling named pipe behavior.
+        // tokio::pin! used to let us take &mut from exit futures
+        // so they can be polled across select! iterations and then
+        // awaited again in the shutdown branch.
+        #[cfg(all(windows, feature = "windows-pipes"))]
+        let event = {
+            let pipe_exit = async {
+                match pipe_handle.as_mut() {
+                    Some(h) => h.await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::pin!(pipe_exit);
+            let concentrator_exit = async {
+                match stats_concentrator_service_handle.as_mut() {
+                    Some(h) => h.await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::pin!(concentrator_exit);
+
+            tokio::select! {
+                r = &mut tcp_handle => Event::TcpDied(format!("{r:?}")),
+                r = &mut pipe_exit => Event::PipeDied(format!("{r:?}")),
+                r = &mut trace_flusher_handle => Event::TraceFlusherDied(format!("{r:?}")),
+                r = &mut stats_flusher_handle => Event::StatsFlusherDied(format!("{r:?}")),
+                r = &mut concentrator_exit => Event::ConcentratorDied(format!("{r:?}")),
+                _ = shutdown_rx.changed() => Event::Shutdown,
+            }
+        };
+        #[cfg(not(all(windows, feature = "windows-pipes")))]
+        let event = {
+            let concentrator_exit = async {
+                match stats_concentrator_service_handle.as_mut() {
+                    Some(h) => h.await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::pin!(concentrator_exit);
+
+            tokio::select! {
+                r = &mut tcp_handle => Event::TcpDied(format!("{r:?}")),
+                r = &mut trace_flusher_handle => Event::TraceFlusherDied(format!("{r:?}")),
+                r = &mut stats_flusher_handle => Event::StatsFlusherDied(format!("{r:?}")),
+                r = &mut concentrator_exit => Event::ConcentratorDied(format!("{r:?}")),
+                _ = shutdown_rx.changed() => Event::Shutdown,
+            }
+        };
+
+        let result: Result<(), Box<dyn std::error::Error>> = match event {
+            Event::Shutdown => {
+                // The same shutdown_rx fan-out has already fired in each
+                // accept loop concurrently with our select arm here.
+                // Awaiting the transport handles waits for them to drain.
+                if let Err(e) = (&mut tcp_handle).await {
+                    error!("TCP accept loop failed during shutdown: {e:?}");
+                }
+                #[cfg(all(windows, feature = "windows-pipes"))]
+                if let Some(h) = pipe_handle.as_mut() {
+                    if let Err(e) = h.await {
+                        error!("Named pipe accept loop failed during shutdown: {e:?}");
+                    }
+                }
+                // Now all handlers have written to the channels. Force-flush
+                // the stats flusher.
+                let _ = flusher_shutdown_tx.send(());
+                match (&mut stats_flusher_handle).await {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        Err(format!("Stats flusher task failed during shutdown: {e:?}").into())
+                    }
+                }
+            }
+            Event::TcpDied(s) => {
+                error!("TCP accept loop died: {s}");
+                Err("TCP accept loop terminated unexpectedly".into())
+            }
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            Event::PipeDied(s) => {
+                error!("Named pipe accept loop died: {s}");
+                Err("Named pipe accept loop terminated unexpectedly".into())
+            }
+            Event::TraceFlusherDied(s) => {
+                error!("Trace flusher task died: {s}");
+                Err("Trace flusher task terminated unexpectedly".into())
+            }
+            Event::StatsFlusherDied(s) => {
+                error!("Stats flusher task died: {s}");
+                Err("Stats flusher task terminated unexpectedly".into())
+            }
+            Event::ConcentratorDied(s) => {
+                error!("Stats concentrator service task died: {s}");
+                Err("Stats concentrator service task terminated unexpectedly".into())
+            }
+        };
+
+        // Abort surviving tasks so they don't detach and hold sockets,
+        // named pipes, or buffered channel state. abort() is &self and a
+        // no-op on already-finished tasks, so calling it on whichever
+        // handle resolved in the select! above is harmless.
+        tcp_handle.abort();
+        #[cfg(all(windows, feature = "windows-pipes"))]
+        if let Some(h) = pipe_handle.as_ref() {
+            h.abort();
+        }
+        trace_flusher_handle.abort();
+        stats_flusher_handle.abort();
+        if let Some(h) = stats_concentrator_service_handle.as_ref() {
+            h.abort();
+        }
+
+        result
+    }
+
+    async fn serve_accept_loop_tcp<S>(
         listener: tokio::net::TcpListener,
         service: S,
-        mut trace_flusher_handle: tokio::task::JoinHandle<()>,
-        stats_flusher_handle: tokio::task::JoinHandle<()>,
-        mut stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
-        mut shutdown_rx: oneshot::Receiver<()>,
-        flusher_shutdown_tx: oneshot::Sender<()>,
-    ) -> Result<(), Box<dyn std::error::Error>>
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     where
         S: hyper::service::Service<
                 hyper::Request<hyper::body::Incoming>,
@@ -222,7 +351,6 @@ impl MiniAgent {
     {
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
-        let mut stats_flusher_handle = stats_flusher_handle;
 
         loop {
             let conn = tokio::select! {
@@ -238,7 +366,7 @@ impl MiniAgent {
                         continue;
                     }
                     Err(e) => {
-                        error!("Server error: {e}");
+                        error!("TCP server error: {e}");
                         return Err(e.into());
                     }
                     Ok((conn, _)) => conn,
@@ -254,35 +382,14 @@ impl MiniAgent {
                     },
                     Ok(()) | Err(_) => continue,
                 },
-                // If there's some error in the background tasks, we can't send data
-                result = &mut trace_flusher_handle => {
-                    return Err(format!("Trace flusher task terminated unexpectedly: {result:?}").into());
-                },
-                result = &mut stats_flusher_handle => {
-                    return Err(format!("Stats flusher task terminated unexpectedly: {result:?}").into());
-                },
-                result = async {
-                    match stats_concentrator_service_handle {
-                        Some(ref mut h) => h.await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    return Err(format!("Stats concentrator service task terminated unexpectedly: {result:?}").into());
-                },
-                _ = &mut shutdown_rx => {
-                    // Drain all in-flight connections so every handler has finished
-                    // writing to the stats/trace channels before we trigger the flush.
+                _ = shutdown_rx.changed() => {
+                    // drains every in-flight handler to completion here
+                    // before the supervisor triggers the final flush.
                     while let Some(result) = joinset.join_next().await {
                         if let Err(e) = result
                             && e.is_panic() {
                                 std::panic::resume_unwind(e.into_panic());
                             }
-                    }
-                    // Signal the stats flusher to force-flush now that all handlers
-                    // have finished writing to the channel.
-                    let _ = flusher_shutdown_tx.send(());
-                    if let Err(e) = stats_flusher_handle.await {
-                        return Err(format!("Stats flusher task failed during shutdown: {e:?}").into());
                     }
                     return Ok(());
                 },
@@ -292,22 +399,18 @@ impl MiniAgent {
             let service = service.clone();
             joinset.spawn(async move {
                 if let Err(e) = server.serve_connection(conn, service).await {
-                    error!("Connection error: {e}");
+                    error!("TCP connection error: {e}");
                 }
             });
         }
     }
 
     #[cfg(all(windows, feature = "windows-pipes"))]
-    async fn serve_named_pipe<S>(
-        pipe_name: &str,
+    async fn serve_accept_loop_named_pipe<S>(
+        pipe_name: String,
         service: S,
-        mut trace_flusher_handle: tokio::task::JoinHandle<()>,
-        stats_flusher_handle: tokio::task::JoinHandle<()>,
-        mut stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
-        mut shutdown_rx: oneshot::Receiver<()>,
-        flusher_shutdown_tx: oneshot::Sender<()>,
-    ) -> Result<(), Box<dyn std::error::Error>>
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     where
         S: hyper::service::Service<
                 hyper::Request<hyper::body::Incoming>,
@@ -320,12 +423,9 @@ impl MiniAgent {
     {
         let server = hyper::server::conn::http1::Builder::new();
         let mut joinset = tokio::task::JoinSet::new();
-        let mut stats_flusher_handle = stats_flusher_handle;
 
         loop {
-            // Create a new pipe instance
-            // pipe_name already includes \\.\pipe\ prefix from config
-            let pipe = match ServerOptions::new().create(pipe_name) {
+            let pipe = match ServerOptions::new().create(&pipe_name) {
                 Ok(pipe) => {
                     debug!("Created pipe server instance '{}' in byte mode", pipe_name);
                     pipe
@@ -336,7 +436,6 @@ impl MiniAgent {
                 }
             };
 
-            // Wait for client connection
             let conn = tokio::select! {
                 connect_res = pipe.connect() => match connect_res {
                     Err(e)
@@ -369,44 +468,25 @@ impl MiniAgent {
                     },
                     Ok(()) | Err(_) => continue,
                 },
-                // If there's some error in the background tasks, we can't send data
-                result = &mut trace_flusher_handle => {
-                    return Err(format!("Trace flusher task terminated unexpectedly: {result:?}").into());
-                },
-                result = &mut stats_flusher_handle => {
-                    return Err(format!("Stats flusher task terminated unexpectedly: {result:?}").into());
-                },
-                result = async {
-                    match stats_concentrator_service_handle {
-                        Some(ref mut h) => h.await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    return Err(format!("Stats concentrator service task terminated unexpectedly: {result:?}").into());
-                },
-                _ = &mut shutdown_rx => {
+                _ = shutdown_rx.changed() => {
+                    // drains every in-flight handler to completion here
+                    // before the supervisor triggers the final flush.
                     while let Some(result) = joinset.join_next().await {
-                        if let Err(e) = result {
-                            if e.is_panic() {
+                        if let Err(e) = result
+                            && e.is_panic() {
                                 std::panic::resume_unwind(e.into_panic());
                             }
-                        }
-                    }
-                    let _ = flusher_shutdown_tx.send(());
-                    if let Err(e) = stats_flusher_handle.await {
-                        return Err(format!("Stats flusher task failed during shutdown: {e:?}").into());
                     }
                     return Ok(());
                 },
             };
 
-            // Hyper http parser handles buffering pipe data
             let conn = hyper_util::rt::TokioIo::new(conn);
             let server = server.clone();
             let service = service.clone();
             joinset.spawn(async move {
                 if let Err(e) = server.serve_connection(conn, service).await {
-                    error!("Connection error: {e}");
+                    error!("Named pipe connection error: {e}");
                 }
             });
         }

@@ -125,32 +125,22 @@ impl Config {
         })?;
 
         // Windows named pipe name for APM receiver.
-        // Normalize by adding \\.\pipe\ prefix if not present
-        let dd_apm_windows_pipe_name: Option<String> = {
-            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
-            {
-                env::var("DD_APM_WINDOWS_PIPE_NAME").ok().map(|pipe_name| {
-                    if pipe_name.starts_with("\\\\.\\pipe\\") || pipe_name.starts_with(r"\\.\pipe\")
-                    {
-                        pipe_name
-                    } else {
-                        format!(r"\\.\pipe\{}", pipe_name)
-                    }
-                })
-            }
-            #[cfg(not(any(all(windows, feature = "windows-pipes"), test)))]
-            {
-                None
-            }
-        };
-        let dd_apm_receiver_port: u16 = if dd_apm_windows_pipe_name.is_some() {
-            0 // Override to 0 when using Windows named pipe
-        } else {
-            env::var("DD_APM_RECEIVER_PORT")
-                .ok()
-                .and_then(|port| port.parse::<u16>().ok())
-                .unwrap_or(DEFAULT_APM_RECEIVER_PORT)
-        };
+        // Normalize by adding \\.\pipe\ prefix if not present.
+        #[cfg(any(all(windows, feature = "windows-pipes"), test))]
+        let dd_apm_windows_pipe_name: Option<String> =
+            env::var("DD_APM_WINDOWS_PIPE_NAME").ok().map(|pipe_name| {
+                if pipe_name.starts_with("\\\\.\\pipe\\") || pipe_name.starts_with(r"\\.\pipe\") {
+                    pipe_name
+                } else {
+                    format!(r"\\.\pipe\{}", pipe_name)
+                }
+            });
+        // TCP listener always runs so legacy tracers without named-pipe support
+        // can still reach the agent when DD_APM_WINDOWS_PIPE_NAME is also set.
+        let dd_apm_receiver_port: u16 = env::var("DD_APM_RECEIVER_PORT")
+            .ok()
+            .and_then(|port| port.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_APM_RECEIVER_PORT);
 
         let dd_dogstatsd_windows_pipe_name: Option<String> = {
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
@@ -425,8 +415,12 @@ mod tests {
                     Some(r"\\.\pipe\test_pipe".to_string())
                 );
 
-                // Port should be overridden to 0 when pipe is set
-                assert_eq!(config.dd_apm_receiver_port, 0);
+                // TCP listener still runs at the default port for legacy
+                // tracers; pipe configuration adds a transport, doesn't replace.
+                assert_eq!(
+                    config.dd_apm_receiver_port,
+                    super::DEFAULT_APM_RECEIVER_PORT
+                );
             },
         );
     }
