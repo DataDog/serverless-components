@@ -102,12 +102,11 @@ impl StatsConcentratorService {
                     // the base service and omits the version. A separate concentrator is kept per
                     // unique metadata so that each payload's stats are flushed with the metadata
                     // from the originating payload.
+                    let peer_tags = self.config.peer_tags.clone();
                     let concentrator = self
                         .concentrators
                         .entry(Arc::clone(&metadata))
-                        .or_insert_with(|| {
-                            Self::new_span_concentrator(self.config.peer_tags.clone())
-                        });
+                        .or_insert_with(|| Self::new_span_concentrator(peer_tags));
 
                     for span in &chunk.spans {
                         concentrator.add_span(span);
