@@ -10,7 +10,7 @@
 pub mod azure_instance;
 pub mod azure_tags;
 pub mod cpu;
-#[cfg(not(feature = "windows-enhanced-metrics"))]
+#[cfg(not(windows))]
 pub(crate) mod linux;
-#[cfg(feature = "windows-enhanced-metrics")]
+#[cfg(all(windows, feature = "windows-enhanced-metrics"))]
 pub(crate) mod windows;
