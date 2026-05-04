@@ -307,7 +307,7 @@ pub async fn main() {
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
     let mut cpu_collector = if dd_enhanced_metrics && metrics_flusher.is_some() {
         aggregator_handle.as_ref().map(|handle| {
-            let tags = datadog_metrics_collector::cpu::build_cpu_metrics_tags();
+            let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
             CpuMetricsCollector::new(handle.clone(), tags)
         })
     } else {
