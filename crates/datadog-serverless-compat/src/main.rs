@@ -121,14 +121,14 @@ pub async fn main() {
         .and_then(|val| parse_metric_namespace(&val));
 
     // Only enable enhanced metrics for Linux Azure Functions
-    #[cfg(not(feature = "windows-enhanced-metrics"))]
+    #[cfg(not(windows))]
     let dd_enhanced_metrics = env_type == EnvironmentType::AzureFunction
         && env::var("DD_ENHANCED_METRICS_ENABLED")
             .map(|val| val.to_lowercase() != "false")
             .unwrap_or(true);
 
     // Enhanced metrics are not yet supported in Windows environments
-    #[cfg(feature = "windows-enhanced-metrics")]
+    #[cfg(all(windows, feature = "windows-enhanced-metrics"))]
     let dd_enhanced_metrics = false;
 
     let https_proxy = env::var("DD_PROXY_HTTPS")
