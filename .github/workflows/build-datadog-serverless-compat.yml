@@ -69,7 +69,7 @@ jobs:
           rustup target add i686-pc-windows-msvc
           cargo build --release -p datadog-serverless-compat \
             --target i686-pc-windows-msvc \
-            --features windows-pipes
+            --features windows-pipes,windows-enhanced-metrics
       - if: ${{ inputs.runner == 'windows-2022' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # 4.6.2
         with:
