@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 figment = { version = "0.10", default-features = false, features = ["yaml", "env"] }
-libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
-libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "d7eef8031192d0ee79ba64cd824804c5a57abacf" }
+libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "0a70516d66314efdd7115644b0da4b3b3e0958e0" }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "0a70516d66314efdd7115644b0da4b3b3e0958e0" }
 log = { version = "0.4", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde-aux = { version = "4.7", default-features = false }
