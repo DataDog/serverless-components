@@ -231,8 +231,11 @@ pub async fn main() {
         }
     });
 
-    let enabled_metrics_components =
-        decide_metrics_components(dd_use_dogstatsd, instance_metric_enabled);
+    let enabled_metrics_components = decide_metrics_components(
+        dd_use_dogstatsd,
+        instance_metric_enabled,
+        dd_enhanced_metrics,
+    );
 
     // The metrics aggregator and flusher are started together and shared between dogstatsd and enhanced metrics,
     // so they are started if either is enabled.
@@ -305,19 +308,20 @@ pub async fn main() {
     // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
     // Use the existing aggregator handle
     // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
-    let mut cpu_collector = if dd_enhanced_metrics && metrics_flusher.is_some() {
-        aggregator_handle.as_ref().map(|handle| {
-            let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
-            CpuMetricsCollector::new(handle.clone(), tags)
-        })
-    } else {
-        if !dd_enhanced_metrics {
-            info!("Enhanced metrics disabled");
+    let mut cpu_collector =
+        if enabled_metrics_components.start_cpu_metrics_collector && metrics_flusher.is_some() {
+            aggregator_handle.as_ref().map(|handle| {
+                let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
+                CpuMetricsCollector::new(handle.clone(), tags)
+            })
         } else {
-            info!("Enhanced metrics enabled but metrics flusher not found");
-        }
-        None
-    };
+            if !enabled_metrics_components.start_cpu_metrics_collector {
+                info!("Enhanced metrics disabled");
+            } else {
+                info!("Enhanced metrics enabled but metrics flusher not found");
+            }
+            None
+        };
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));
     let mut instance_metrics_collection_interval = interval(Duration::from_secs(
@@ -342,6 +346,7 @@ pub async fn main() {
                         metrics_flusher.flush().await;
                     });
                 }
+
                 if let Some(log_flusher) = log_flusher.as_ref() {
                     debug!("Flushing log agent");
                     let retry_in = std::mem::take(&mut pending_log_retries);
@@ -568,6 +573,7 @@ struct EnabledMetricsComponents {
     start_metrics_aggregator_and_flusher: bool,
     start_dogstatsd_listener: bool,
     start_instance_metrics_collector: bool,
+    start_cpu_metrics_collector: bool,
 }
 
 /// Determines which components should be started based on configuration.
@@ -577,16 +583,19 @@ struct EnabledMetricsComponents {
 fn decide_metrics_components(
     dd_use_dogstatsd: bool,
     instance_metric_enabled: bool,
+    dd_enhanced_metrics: bool,
 ) -> EnabledMetricsComponents {
     let start_dogstatsd_listener = dd_use_dogstatsd;
     let start_instance_metrics_collector = instance_metric_enabled;
+    let start_cpu_metrics_collector = dd_enhanced_metrics;
     let start_metrics_aggregator_and_flusher =
-        start_dogstatsd_listener || start_instance_metrics_collector;
+        start_dogstatsd_listener || start_instance_metrics_collector || start_cpu_metrics_collector;
 
     EnabledMetricsComponents {
         start_metrics_aggregator_and_flusher,
         start_dogstatsd_listener,
         start_instance_metrics_collector,
+        start_cpu_metrics_collector,
     }
 }
 
@@ -696,56 +705,87 @@ mod log_agent_integration_tests {
         handle.shutdown().expect("shutdown");
     }
 }
+
 #[cfg(test)]
 mod metrics_components_tests {
     use super::{EnabledMetricsComponents, decide_metrics_components};
 
     #[test]
     fn test_decide_metrics_components() {
-        let cases: &[(bool, bool, EnabledMetricsComponents)] = &[
+        let cases: &[(bool, bool, bool, EnabledMetricsComponents)] = &[
             (
+                false,
                 false,
                 false,
                 EnabledMetricsComponents {
                     start_metrics_aggregator_and_flusher: false,
                     start_dogstatsd_listener: false,
                     start_instance_metrics_collector: false,
+                    start_cpu_metrics_collector: false,
                 },
             ),
             (
                 true,
+                false,
                 false,
                 EnabledMetricsComponents {
                     start_metrics_aggregator_and_flusher: true,
                     start_dogstatsd_listener: true,
                     start_instance_metrics_collector: false,
+                    start_cpu_metrics_collector: false,
                 },
             ),
             (
                 false,
                 true,
+                false,
                 EnabledMetricsComponents {
                     start_metrics_aggregator_and_flusher: true,
                     start_dogstatsd_listener: false,
                     start_instance_metrics_collector: true,
+                    start_cpu_metrics_collector: false,
                 },
             ),
             (
+                true,
+                true,
+                false,
+                EnabledMetricsComponents {
+                    start_metrics_aggregator_and_flusher: true,
+                    start_dogstatsd_listener: true,
+                    start_instance_metrics_collector: true,
+                    start_cpu_metrics_collector: false,
+                },
+            ),
+            (
+                false,
+                true,
+                true,
+                EnabledMetricsComponents {
+                    start_metrics_aggregator_and_flusher: true,
+                    start_dogstatsd_listener: false,
+                    start_instance_metrics_collector: true,
+                    start_cpu_metrics_collector: true,
+                },
+            ),
+            (
+                true,
                 true,
                 true,
                 EnabledMetricsComponents {
                     start_metrics_aggregator_and_flusher: true,
                     start_dogstatsd_listener: true,
                     start_instance_metrics_collector: true,
+                    start_cpu_metrics_collector: true,
                 },
             ),
         ];
 
-        for (dogstatsd, instance, expected) in cases {
-            let actual = decide_metrics_components(*dogstatsd, *instance);
+        for (dogstatsd, instance, enhanced, expected) in cases {
+            let actual = decide_metrics_components(*dogstatsd, *instance, *enhanced);
             assert_eq!(
                 &actual, expected,
-                "case (dd_use_dogstatsd={dogstatsd}, instance_metric_enabled={instance})"
+                "case (dd_use_dogstatsd={dogstatsd}, instance_metric_enabled={instance}, dd_enhanced_metrics={enhanced})"
             );
         }
     }
