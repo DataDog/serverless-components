@@ -23,7 +23,26 @@ use std::time::Duration;
 #[cfg(all(windows, feature = "windows-pipes"))]
 use common::helpers::send_named_pipe_request;
 
+// Used by negative assertions ("no stats request arrived"): we have to
+// wait some bounded time before declaring absence. Positive assertions
+// poll the mock server directly via verify_*_request and don't need this.
 const FLUSH_WAIT_DURATION: Duration = Duration::from_millis(1500);
+
+// Hard ceiling on verify_trace_request / verify_stats_request polling. The
+// poll returns as soon as the request lands so steady-state cost is small;
+// the timeout exists to fail loudly rather than hang indefinitely.
+const VERIFY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn wait_for_request_at_path(mock_server: &common::mock_server::MockServer, path: &str) {
+    let deadline = tokio::time::Instant::now() + VERIFY_REQUEST_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        if !mock_server.get_requests_for_path(path).is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("Timed out after {VERIFY_REQUEST_TIMEOUT:?} waiting for request at {path}");
+}
 
 /// Helper to configure a config with mock server endpoints
 pub fn configure_mock_endpoints(config: &mut Config, mock_server_url: &str) {
@@ -78,7 +97,8 @@ pub fn create_mini_agent_with_real_flushers(
 }
 
 /// Helper to verify trace request sent to mock server
-pub fn verify_trace_request(mock_server: &common::mock_server::MockServer) {
+pub async fn verify_trace_request(mock_server: &common::mock_server::MockServer) {
+    wait_for_request_at_path(mock_server, "/api/v0.2/traces").await;
     let trace_reqs = mock_server.get_requests_for_path("/api/v0.2/traces");
 
     assert!(
@@ -114,7 +134,8 @@ pub fn verify_trace_request(mock_server: &common::mock_server::MockServer) {
 }
 
 /// Helper to verify stats request sent to mock server
-pub fn verify_stats_request(mock_server: &common::mock_server::MockServer) {
+pub async fn verify_stats_request(mock_server: &common::mock_server::MockServer) {
+    wait_for_request_at_path(mock_server, "/api/v0.2/stats").await;
     let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
 
     assert!(
@@ -384,14 +405,12 @@ async fn test_mini_agent_tcp_with_real_flushers() {
             .expect("Failed to send /v0.4/traces request");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
-    // Wait for trace flush
-    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
-    verify_trace_request(&mock_server);
+    verify_trace_request(&mock_server).await;
 
     // Trigger shutdown to force flush in progress concentrator buckets
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
-    verify_stats_request(&mock_server); // Stats generator should generate stats from trace payload
+    verify_stats_request(&mock_server).await; // Stats generator should generate stats from trace payload
 }
 
 #[cfg(test)]
@@ -496,11 +515,11 @@ async fn test_mini_agent_tcp_with_real_flushers_and_tracer_computed_stats() {
     .expect("Failed to send /v0.4/traces request");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
-    // Wait for flush
+    verify_trace_request(&mock_server).await;
+    // Bounded wait to confirm absence of stats request — stats wouldn't
+    // be generated when Datadog-Client-Computed-Stats is set on the trace.
     tokio::time::sleep(FLUSH_WAIT_DURATION).await;
-
-    verify_trace_request(&mock_server);
-    verify_no_stats_request(&mock_server); // Stats generator should not generate stats from trace payload when Datadog-Client-Computed-Stats header is present in trace payload
+    verify_no_stats_request(&mock_server);
 
     // Clean up
     agent_handle.abort();
@@ -553,14 +572,12 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
             .expect("Failed to send /v0.4/traces request over named pipe");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
-    // Wait for trace flush
-    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
-    verify_trace_request(&mock_server);
+    verify_trace_request(&mock_server).await;
 
     // Trigger shutdown to force flush in progress concentrator buckets
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
-    verify_stats_request(&mock_server);
+    verify_stats_request(&mock_server).await;
 }
 
 #[cfg(all(test, windows, feature = "windows-pipes"))]
@@ -637,7 +654,7 @@ async fn test_mini_agent_dual_transport_with_real_flushers() {
             .expect("Failed to send /v0.4/traces request over named pipe");
     assert_eq!(pipe_response.status(), StatusCode::OK);
 
-    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+    wait_for_request_at_path(&mock_server, "/api/v0.2/traces").await;
 
     // Both payloads must reach the same backend through the shared flusher
     // pipeline. The flusher may batch them into one POST or two; either is
@@ -667,5 +684,5 @@ async fn test_mini_agent_dual_transport_with_real_flushers() {
     // a transport, agent_handle would hang or stats wouldn't arrive.
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
-    verify_stats_request(&mock_server);
+    verify_stats_request(&mock_server).await;
 }
