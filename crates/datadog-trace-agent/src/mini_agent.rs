@@ -208,7 +208,6 @@ impl MiniAgent {
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
         flusher_shutdown_tx: oneshot::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-
         // task supervision cases: we react if...
         enum Event {
             TcpDied(String),
