@@ -24,7 +24,7 @@ use datadog_trace_agent::{
     trace_processor,
 };
 
-use datadog_metrics_collector::cpu::CpuMetricsCollector;
+use datadog_metrics_collector::azure_cpu::CpuMetricsCollector;
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 

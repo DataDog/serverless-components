@@ -9,7 +9,7 @@
 //!
 //! All CPU metrics will be reported in nanocores (1 core = 1,000,000,000 nanocores).
 
-use crate::cpu::{CpuStats, CpuStatsReader};
+use crate::azure_cpu::{CpuStats, CpuStatsReader};
 
 pub struct WindowsCpuStatsReader;
 

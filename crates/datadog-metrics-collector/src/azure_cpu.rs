@@ -40,9 +40,9 @@ impl CpuMetricsCollector {
     /// * `tags` - Optional tags to attach to all metrics
     pub fn new(aggregator: AggregatorHandle, tags: Option<SortedTags>) -> Self {
         #[cfg(all(windows, feature = "windows-enhanced-metrics"))]
-        let reader: Box<dyn CpuStatsReader> = Box::new(crate::windows::WindowsCpuStatsReader);
+        let reader: Box<dyn CpuStatsReader> = Box::new(crate::azure_windows::WindowsCpuStatsReader);
         #[cfg(not(windows))]
-        let reader: Box<dyn CpuStatsReader> = Box::new(crate::linux::LinuxCpuStatsReader);
+        let reader: Box<dyn CpuStatsReader> = Box::new(crate::azure_linux::LinuxCpuStatsReader);
         Self {
             reader,
             aggregator,

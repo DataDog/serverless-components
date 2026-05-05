@@ -8,7 +8,7 @@
 //!
 //! All CPU metrics are reported in nanocores (1 core = 1,000,000,000 nanocores).
 
-use crate::cpu::{CpuStats, CpuStatsReader};
+use crate::azure_cpu::{CpuStats, CpuStatsReader};
 use std::fs;
 use tracing::debug;
 
