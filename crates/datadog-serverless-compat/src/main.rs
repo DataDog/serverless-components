@@ -287,6 +287,21 @@ pub async fn main() {
             None
         };
 
+    let mut cpu_collector =
+        if enabled_metrics_components.start_cpu_metrics_collector && metrics_flusher.is_some() {
+            aggregator_handle.as_ref().map(|handle| {
+                let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
+                CpuMetricsCollector::new(handle.clone(), tags)
+            })
+        } else {
+            if !enabled_metrics_components.start_cpu_metrics_collector {
+                info!("Enhanced metrics disabled");
+            } else {
+                info!("Enhanced metrics enabled but metrics flusher not found");
+            }
+            None
+        };
+
     let (log_flusher, _log_aggregator_handle): (Option<LogFlusher>, Option<LogAggregatorHandle>) =
         if dd_logs_enabled {
             debug!("Starting log agent");
@@ -303,21 +318,6 @@ pub async fn main() {
         } else {
             info!("log agent disabled");
             (None, None)
-        };
-
-    let mut cpu_collector =
-        if enabled_metrics_components.start_cpu_metrics_collector && metrics_flusher.is_some() {
-            aggregator_handle.as_ref().map(|handle| {
-                let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
-                CpuMetricsCollector::new(handle.clone(), tags)
-            })
-        } else {
-            if !enabled_metrics_components.start_cpu_metrics_collector {
-                info!("Enhanced metrics disabled");
-            } else {
-                info!("Enhanced metrics enabled but metrics flusher not found");
-            }
-            None
         };
 
     let mut flush_interval = interval(Duration::from_secs(DOGSTATSD_FLUSH_INTERVAL));

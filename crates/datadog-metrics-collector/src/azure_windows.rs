@@ -5,7 +5,7 @@
 //!
 //! NOTE: Windows CPU enhanced metrics are not yet supported.
 //! WindowsCpuStatsReader currently always returns None, so no CPU
-//! usage or limit information is reported in Windows environments.
+//! usage information is reported in Windows environments.
 //!
 //! All CPU metrics will be reported in nanocores (1 core = 1,000,000,000 nanocores).
 
