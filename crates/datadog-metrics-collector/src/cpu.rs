@@ -4,7 +4,7 @@
 //! CPU metrics collector for Azure Functions
 //!
 //! This module provides OS-agnostic CPU stats collection, CPU usage
-//! and limit computation, and metrics submission to Datadog.
+//! computation, and metrics submission to Datadog.
 //!
 //! All CPU metrics are reported in nanocores (1 core = 1,000,000,000 nanocores).
 
@@ -13,13 +13,10 @@ use dogstatsd::metric::{Metric, MetricValue, SortedTags};
 use tracing::{debug, error};
 
 const CPU_USAGE_METRIC: &str = "azure.functions.enhanced.cpu.usage";
-const CPU_LIMIT_METRIC: &str = "azure.functions.enhanced.cpu.limit";
 
-/// Computed CPU total and limit metrics
+/// Computed CPU total usage metric
 pub struct CpuStats {
-    pub total: u64,            // Cumulative CPU usage in nanoseconds
-    pub limit: Option<f64>,    // CPU limit in nanocores
-    pub defaulted_limit: bool, // Whether CPU limit was defaulted to host CPU count
+    pub total: u64, // Cumulative CPU usage in nanoseconds
 }
 
 pub trait CpuStatsReader {
@@ -106,24 +103,9 @@ impl CpuMetricsCollector {
             if let Err(e) = self.aggregator.insert_batch(vec![usage_metric]) {
                 error!("Failed to insert CPU usage metric: {}", e);
             }
-
-            if let Some(limit) = cpu_stats.limit {
-                if cpu_stats.defaulted_limit {
-                    debug!("CPU limit defaulted to host CPU count");
-                }
-                let limit_metric = Metric::new(
-                    CPU_LIMIT_METRIC.into(),
-                    MetricValue::distribution(limit),
-                    self.tags.clone(),
-                    Some(now),
-                );
-                if let Err(e) = self.aggregator.insert_batch(vec![limit_metric]) {
-                    error!("Failed to insert CPU limit metric: {}", e);
-                }
-            }
         } else {
             debug!(
-                "Skipping CPU metrics collection - could not find data to generate CPU usage and limit enhanced metrics"
+                "Skipping CPU enhanced metrics collection - could not find data to generate CPU usage metrics"
             );
         }
     }

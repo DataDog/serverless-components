@@ -305,9 +305,6 @@ pub async fn main() {
             (None, None)
         };
 
-    // If DD_ENHANCED_METRICS is true, start the CPU metrics collector
-    // Use the existing aggregator handle
-    // TODO: See if this works in Google Cloud Functions Gen 1. If not, only enable this for Azure Functions.
     let mut cpu_collector =
         if enabled_metrics_components.start_cpu_metrics_collector && metrics_flusher.is_some() {
             aggregator_handle.as_ref().map(|handle| {
