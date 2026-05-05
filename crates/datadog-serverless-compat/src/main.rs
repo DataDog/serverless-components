@@ -365,7 +365,7 @@ pub async fn main() {
                     collector.collect_and_submit();
                 }
             }
-            _ = cpu_collection_interval.tick() => {
+            _ = cpu_collection_interval.tick(), if cpu_collector.is_some() => {
                 if let Some(ref mut collector) = cpu_collector {
                     collector.collect_and_submit();
                 }
