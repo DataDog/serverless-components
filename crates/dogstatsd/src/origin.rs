@@ -310,10 +310,7 @@ mod tests {
             timestamp: 0,
         };
         let origin = metric.find_origin(tags).unwrap();
-        assert_eq!(
-            origin.origin_product,
-            OriginProduct::Serverless as u32
-        );
+        assert_eq!(origin.origin_product, OriginProduct::Serverless as u32);
         assert_eq!(
             origin.origin_category,
             OriginCategory::AzureFunctionsMetrics as u32
