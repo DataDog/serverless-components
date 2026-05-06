@@ -397,9 +397,22 @@ impl MiniAgent {
             let conn = hyper_util::rt::TokioIo::new(conn);
             let server = server.clone();
             let service = service.clone();
+            let mut conn_shutdown = shutdown_rx.clone();
             joinset.spawn(async move {
-                if let Err(e) = server.serve_connection(conn, service).await {
-                    error!("TCP connection error: {e}");
+                let conn = server.serve_connection(conn, service);
+                tokio::pin!(conn);
+                tokio::select! {
+                    result = conn.as_mut() => {
+                        if let Err(e) = result {
+                            error!("TCP connection error: {e}");
+                        }
+                    }
+                    _ = conn_shutdown.changed() => {
+                        conn.as_mut().graceful_shutdown();
+                        if let Err(e) = conn.await {
+                            error!("TCP connection error during graceful shutdown: {e}");
+                        }
+                    }
                 }
             });
         }
@@ -484,9 +497,22 @@ impl MiniAgent {
             let conn = hyper_util::rt::TokioIo::new(conn);
             let server = server.clone();
             let service = service.clone();
+            let mut conn_shutdown = shutdown_rx.clone();
             joinset.spawn(async move {
-                if let Err(e) = server.serve_connection(conn, service).await {
-                    error!("Named pipe connection error: {e}");
+                let conn = server.serve_connection(conn, service);
+                tokio::pin!(conn);
+                tokio::select! {
+                    result = conn.as_mut() => {
+                        if let Err(e) = result {
+                            error!("Named pipe connection error: {e}");
+                        }
+                    }
+                    _ = conn_shutdown.changed() => {
+                        conn.as_mut().graceful_shutdown();
+                        if let Err(e) = conn.await {
+                            error!("Named pipe connection error during graceful shutdown: {e}");
+                        }
+                    }
                 }
             });
         }
