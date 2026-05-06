@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo ">>> [pre-push] Running cargo fmt --check..."
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "HOOK FAILED: cargo fmt check failed."
+    echo "LLM FIX: run 'cargo fmt --all' then re-attempt the push."
+    exit 1
+fi
+
+echo ">>> [pre-push] Running cargo clippy..."
+if ! cargo clippy --all-targets --all-features -- -D warnings; then
+    echo ""
+    echo "HOOK FAILED: cargo clippy reported warnings or errors."
+    echo "LLM FIX: fix the clippy diagnostics above, then re-attempt the push."
+    exit 1
+fi
+
+echo ">>> [pre-push] All checks passed."
