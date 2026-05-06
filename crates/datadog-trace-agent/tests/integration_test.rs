@@ -596,7 +596,7 @@ async fn test_internal_span_kind_does_not_produce_stats() {
     let (mini_agent, stats_concentrator_service_handle) =
         create_mini_agent_with_real_flushers(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let agent_handle = tokio::spawn(async move {
         let _ = mini_agent
             .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
@@ -631,7 +631,7 @@ async fn test_internal_span_kind_does_not_produce_stats() {
 
     tokio::time::sleep(FLUSH_WAIT_DURATION).await;
 
-    let _ = shutdown_tx.send(());
+    let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
 
     let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
@@ -687,7 +687,7 @@ async fn test_peer_tags_in_flushed_stats() {
     let (mini_agent, stats_concentrator_service_handle) =
         create_mini_agent_with_real_flushers(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let agent_handle = tokio::spawn(async move {
         let _ = mini_agent
             .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
@@ -722,7 +722,7 @@ async fn test_peer_tags_in_flushed_stats() {
 
     tokio::time::sleep(FLUSH_WAIT_DURATION).await;
 
-    let _ = shutdown_tx.send(());
+    let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
 
     let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
