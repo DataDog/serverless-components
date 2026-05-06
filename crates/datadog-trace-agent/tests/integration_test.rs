@@ -587,7 +587,7 @@ async fn test_internal_span_kind_does_not_produce_stats() {
     let mock_server = MockServer::start().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let mut config = create_tcp_test_config(8130);
+    let mut config = create_tcp_test_config(8132);
     configure_mock_endpoints(&mut config, &mock_server.url());
     config.agent_stats_computation_enabled = true;
     let config = Arc::new(config);
