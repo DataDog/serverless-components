@@ -311,15 +311,15 @@ mod tests {
         };
         let origin = metric.find_origin(tags).unwrap();
         assert_eq!(
-            origin.origin_product as u32,
+            origin.origin_product,
             OriginProduct::Serverless as u32
         );
         assert_eq!(
-            origin.origin_category as u32,
+            origin.origin_category,
             OriginCategory::AzureFunctionsMetrics as u32
         );
         assert_eq!(
-            origin.origin_service as u32,
+            origin.origin_service,
             OriginService::ServerlessEnhanced as u32
         );
     }
