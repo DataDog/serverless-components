@@ -10,11 +10,18 @@ use libdd_trace_utils::test_utils::create_test_json_span;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::time::timeout;
 
-/// Create a simple test trace payload as msgpack bytes
-pub fn create_test_trace_payload() -> Vec<u8> {
+/// Create a simple test trace payload as msgpack bytes. Pass `Some(name)` to
+/// override the default service ("test-service"); dual-transport tests use
+/// distinct service names to distinguish payloads that flow through
+/// different listeners but share a single flusher pipeline.
+pub fn create_test_trace_payload(service: Option<&str>) -> Vec<u8> {
     let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
-    let json_span = create_test_json_span(11, 222, 0, start, false);
-    rmp_serde::to_vec(&vec![vec![json_span]]).expect("Failed to serialize test trace")
+    let mut span = create_test_json_span(11, 222, 0, start, false);
+    if let Some(name) = service {
+        span["service"] = serde_json::Value::String(name.into());
+        span["meta"]["service"] = serde_json::Value::String(name.into());
+    }
+    rmp_serde::to_vec(&vec![vec![span]]).expect("Failed to serialize test trace")
 }
 
 /// Send an HTTP request over TCP and return the response

@@ -207,7 +207,7 @@ pub async fn main() {
         proxy_flusher,
     });
 
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
         let res = mini_agent
             .start_mini_agent(shutdown_rx, stats_concentrator.map(|c| c.service_handle))
