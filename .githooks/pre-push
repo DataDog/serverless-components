@@ -10,7 +10,7 @@ if ! cargo fmt --all -- --check; then
 fi
 
 echo ">>> [pre-push] Running cargo clippy..."
-if ! cargo clippy --all-targets --all-features -- -D warnings; then
+if ! cargo clippy --workspace --all-targets --all-features -- -D warnings; then
     echo ""
     echo "HOOK FAILED: cargo clippy reported warnings or errors."
     echo "LLM FIX: fix the clippy diagnostics above, then re-attempt the push."
