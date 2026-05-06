@@ -13,6 +13,8 @@ use std::time::Instant;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::oneshot;
 use tracing::{debug, error};
+#[cfg(all(windows, feature = "windows-pipes"))]
+use tracing::warn;
 
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
 use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
@@ -147,18 +149,79 @@ impl MiniAgent {
             now.elapsed().as_millis()
         );
 
-        // TCP listener is always started; legacy tracers without named-pipe
-        // support reach the agent here even when a pipe is also configured.
         let addr = SocketAddr::from(([127, 0, 0, 1], self.config.dd_apm_receiver_port));
-        let tcp_listener = tokio::net::TcpListener::bind(&addr).await?;
-        debug!(
-            "Mini Agent listening on TCP port {}",
-            self.config.dd_apm_receiver_port
-        );
 
-        // Named pipe is only spawned on Windows with the feature enabled and a
-        // pipe name configured. On all other builds, the pipe code is absent
-        // entirely (no symbols, no select arm, no cost).
+        // TCP listener: required when no named pipe is configured (the only transport),
+        // best-effort when a named pipe is also active.
+        //
+        // Background: on Windows Elastic Premium hosting plans (EP1/EP2/EP3), multiple
+        // Azure Function apps share the same VM. Each spawns its own mini-agent, and all
+        // of them try to bind port 8126. Only the first agent to start can own the port.
+        //
+        // When DD_APM_WINDOWS_PIPE_NAME is set, the named pipe is this agent's primary
+        // transport. A port-8126 bind failure is therefore not fatal — we log a clear
+        // warning and continue. New tracers (those that support DD_APM_WINDOWS_PIPE_NAME)
+        // will still deliver traces via the pipe. Legacy tracers (without named-pipe
+        // support) on secondary functions lose TCP and therefore cannot deliver traces on
+        // shared plans; upgrading those tracers to a named-pipe-capable version resolves
+        // the problem.
+        //
+        // When no named pipe is configured, TCP is the sole transport. A bind failure
+        // here means the agent cannot receive any traces, so we propagate the error and
+        // shut down.
+        #[cfg(all(windows, feature = "windows-pipes"))]
+        let tcp_listener: Option<tokio::net::TcpListener> =
+            if self.config.dd_apm_windows_pipe_name.is_some() {
+                match tokio::net::TcpListener::bind(&addr).await {
+                    Ok(l) => {
+                        debug!(
+                            "Mini Agent listening on TCP port {}",
+                            self.config.dd_apm_receiver_port
+                        );
+                        Some(l)
+                    }
+                    Err(e) => {
+                        // Another mini-agent on this host already owns port 8126.
+                        // This is expected when multiple Azure Functions share an
+                        // Elastic Premium plan. The named pipe is active, so
+                        // named-pipe-capable tracers are unaffected. Legacy tracers
+                        // targeting this function will not be able to deliver traces
+                        // on this shared plan — they must upgrade to a tracer version
+                        // that supports DD_APM_WINDOWS_PIPE_NAME.
+                        warn!(
+                            "Mini Agent could not bind TCP port {} for APM receiver: {}. \
+                             Another agent on this host likely holds the port (common on \
+                             shared Elastic Premium hosting plans). Named-pipe transport \
+                             (DD_APM_WINDOWS_PIPE_NAME) is active; traces from \
+                             named-pipe-capable tracers will still flow normally.",
+                            self.config.dd_apm_receiver_port, e
+                        );
+                        None
+                    }
+                }
+            } else {
+                // No named pipe — TCP is the only transport; a bind failure is fatal.
+                let l = tokio::net::TcpListener::bind(&addr).await?;
+                debug!(
+                    "Mini Agent listening on TCP port {}",
+                    self.config.dd_apm_receiver_port
+                );
+                Some(l)
+            };
+
+        #[cfg(not(all(windows, feature = "windows-pipes")))]
+        let tcp_listener: Option<tokio::net::TcpListener> = {
+            // Non-Windows has no named-pipe alternative; TCP bind is always required.
+            let l = tokio::net::TcpListener::bind(&addr).await?;
+            debug!(
+                "Mini Agent listening on TCP port {}",
+                self.config.dd_apm_receiver_port
+            );
+            Some(l)
+        };
+
+        // Named pipe: only on Windows when feature-enabled and explicitly configured.
+        // On all other builds the code is absent entirely (no symbols, no select arm).
         #[cfg(all(windows, feature = "windows-pipes"))]
         let pipe_handle = self
             .config
@@ -175,12 +238,11 @@ impl MiniAgent {
                 ))
             });
 
-        let tcp_shutdown_rx = shutdown_rx.clone();
-        let tcp_handle = tokio::spawn(Self::serve_accept_loop_tcp(
-            tcp_listener,
-            service,
-            tcp_shutdown_rx,
-        ));
+        // Spawn the TCP accept loop only if we successfully bound the port.
+        let tcp_handle: Option<TransportHandle> = tcp_listener.map(|l| {
+            let tcp_shutdown_rx = shutdown_rx.clone();
+            tokio::spawn(Self::serve_accept_loop_tcp(l, service, tcp_shutdown_rx))
+        });
 
         Self::serve(
             tcp_handle,
@@ -195,12 +257,16 @@ impl MiniAgent {
         .await
     }
 
-    /// Supervises the long-lived tasks. Any task dying unexpectedly is fatal:
-    /// a tracer picks one transport at startup and stays on it, so silently
-    /// dropping a transport can strand the tracer. Handle shutdowns.
+    /// Supervises the long-lived tasks. Most task deaths are fatal because a
+    /// tracer picks one transport at startup and stays on it — silently losing
+    /// that transport would strand the tracer permanently.
+    ///
+    /// Exception: `tcp_handle` is `None` when the TCP bind was skipped (see
+    /// `start_mini_agent`). In that case the named pipe is the active transport
+    /// and a missing TCP listener is not an error.
     #[allow(clippy::too_many_arguments)]
     async fn serve(
-        mut tcp_handle: TransportHandle,
+        mut tcp_handle: Option<TransportHandle>,
         #[cfg(all(windows, feature = "windows-pipes"))] mut pipe_handle: Option<TransportHandle>,
         mut trace_flusher_handle: tokio::task::JoinHandle<()>,
         mut stats_flusher_handle: tokio::task::JoinHandle<()>,
@@ -223,6 +289,17 @@ impl MiniAgent {
         // tokio::pin! used to let us take &mut from exit futures
         // so they can be polled across select! iterations and then
         // awaited again in the shutdown branch.
+        // tcp_exit resolves only when TCP was actually started (Some). When the
+        // TCP bind was skipped (None) this future is permanently pending — the
+        // TcpDied arm in the select below will never fire in that case.
+        let tcp_exit = async {
+            match tcp_handle.as_mut() {
+                Some(h) => h.await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(tcp_exit);
+
         #[cfg(all(windows, feature = "windows-pipes"))]
         let event = {
             let pipe_exit = async {
@@ -241,7 +318,7 @@ impl MiniAgent {
             tokio::pin!(concentrator_exit);
 
             tokio::select! {
-                r = &mut tcp_handle => Event::TcpDied(format!("{r:?}")),
+                r = &mut tcp_exit => Event::TcpDied(format!("{r:?}")),
                 r = &mut pipe_exit => Event::PipeDied(format!("{r:?}")),
                 r = &mut trace_flusher_handle => Event::TraceFlusherDied(format!("{r:?}")),
                 r = &mut stats_flusher_handle => Event::StatsFlusherDied(format!("{r:?}")),
@@ -260,7 +337,7 @@ impl MiniAgent {
             tokio::pin!(concentrator_exit);
 
             tokio::select! {
-                r = &mut tcp_handle => Event::TcpDied(format!("{r:?}")),
+                r = &mut tcp_exit => Event::TcpDied(format!("{r:?}")),
                 r = &mut trace_flusher_handle => Event::TraceFlusherDied(format!("{r:?}")),
                 r = &mut stats_flusher_handle => Event::StatsFlusherDied(format!("{r:?}")),
                 r = &mut concentrator_exit => Event::ConcentratorDied(format!("{r:?}")),
@@ -273,8 +350,10 @@ impl MiniAgent {
                 // The same shutdown_rx fan-out has already fired in each
                 // accept loop concurrently with our select arm here.
                 // Awaiting the transport handles waits for them to drain.
-                if let Err(e) = (&mut tcp_handle).await {
-                    error!("TCP accept loop failed during shutdown: {e:?}");
+                if let Some(h) = tcp_handle.as_mut() {
+                    if let Err(e) = h.await {
+                        error!("TCP accept loop failed during shutdown: {e:?}");
+                    }
                 }
                 #[cfg(all(windows, feature = "windows-pipes"))]
                 if let Some(h) = pipe_handle.as_mut() {
@@ -319,7 +398,9 @@ impl MiniAgent {
         // named pipes, or buffered channel state. abort() is &self and a
         // no-op on already-finished tasks, so calling it on whichever
         // handle resolved in the select! above is harmless.
-        tcp_handle.abort();
+        if let Some(h) = tcp_handle.as_ref() {
+            h.abort();
+        }
         #[cfg(all(windows, feature = "windows-pipes"))]
         if let Some(h) = pipe_handle.as_ref() {
             h.abort();
