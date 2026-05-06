@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::oneshot;
-use tracing::{debug, error};
 #[cfg(all(windows, feature = "windows-pipes"))]
 use tracing::warn;
+use tracing::{debug, error};
 
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
 use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
@@ -285,23 +285,24 @@ impl MiniAgent {
             Shutdown,
         }
 
-        // Gated cases of tokio:select, handling named pipe behavior.
-        // tokio::pin! used to let us take &mut from exit futures
-        // so they can be polled across select! iterations and then
-        // awaited again in the shutdown branch.
-        // tcp_exit resolves only when TCP was actually started (Some). When the
-        // TCP bind was skipped (None) this future is permanently pending — the
-        // TcpDied arm in the select below will never fire in that case.
-        let tcp_exit = async {
-            match tcp_handle.as_mut() {
-                Some(h) => h.await,
-                None => std::future::pending().await,
-            }
-        };
-        tokio::pin!(tcp_exit);
-
+        // Each tcp_exit / pipe_exit future is scoped INSIDE its cfg block so it
+        // is dropped before the match on `event` below. This matters for
+        // tcp_handle: the async block borrows it mutably while it lives, and the
+        // Shutdown arm needs to borrow it again to drain the accept loop. Keeping
+        // the exit future alive across the drain would alias the mutable borrow.
+        // pipe_exit uses the same pattern for the same reason.
         #[cfg(all(windows, feature = "windows-pipes"))]
         let event = {
+            // tcp_exit resolves only when TCP was actually started (Some). When
+            // the bind was skipped (None) this future is permanently pending and
+            // TcpDied never fires.
+            let tcp_exit = async {
+                match tcp_handle.as_mut() {
+                    Some(h) => h.await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::pin!(tcp_exit);
             let pipe_exit = async {
                 match pipe_handle.as_mut() {
                     Some(h) => h.await,
@@ -328,6 +329,14 @@ impl MiniAgent {
         };
         #[cfg(not(all(windows, feature = "windows-pipes")))]
         let event = {
+            // On non-Windows, tcp_handle is always Some (TCP bind is required).
+            let tcp_exit = async {
+                match tcp_handle.as_mut() {
+                    Some(h) => h.await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::pin!(tcp_exit);
             let concentrator_exit = async {
                 match stats_concentrator_service_handle.as_mut() {
                     Some(h) => h.await,
