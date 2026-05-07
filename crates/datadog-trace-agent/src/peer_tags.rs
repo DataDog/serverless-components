@@ -44,14 +44,12 @@ struct Fallback {
 pub fn peer_tag_keys() -> Result<Vec<String>, serde_json::Error> {
     let mappings: Mappings = serde_json::from_str(include_str!("peer_tags_mappings.json"))?;
 
-    let mut seen = HashSet::new();
-    let mut keys: Vec<String> = PEER_TAG_CONCEPTS
+    let set: HashSet<String> = PEER_TAG_CONCEPTS
         .iter()
         .filter_map(|concept| mappings.concepts.get(*concept))
         .flat_map(|c| c.fallbacks.iter().map(|f| f.name.clone()))
-        .filter(|key| seen.insert(key.clone()))
         .collect();
-
+    let mut keys: Vec<String> = set.into_iter().collect();
     keys.sort();
     Ok(keys)
 }
