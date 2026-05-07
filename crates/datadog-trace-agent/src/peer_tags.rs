@@ -40,7 +40,7 @@ struct Fallback {
 }
 
 /// Returns the sorted, deduplicated list of peer tag keys, derived from the embedded
-/// peer_tags_mappings.json.
+/// peer_tags_mappings.json filtered to the concepts listed in `PEER_TAG_CONCEPTS`.
 pub fn peer_tag_keys() -> Result<Vec<String>, serde_json::Error> {
     let mappings: Mappings = serde_json::from_str(include_str!("peer_tags_mappings.json"))?;
 
@@ -71,6 +71,20 @@ mod tests {
             keys.len(),
             unique.len(),
             "peer tag keys should be deduplicated"
+        );
+    }
+
+    #[test]
+    fn test_peer_tag_concepts_all_present_in_json() {
+        let mappings: Mappings =
+            serde_json::from_str(include_str!("peer_tags_mappings.json")).unwrap();
+        let missing: Vec<&&str> = PEER_TAG_CONCEPTS
+            .iter()
+            .filter(|c| !mappings.concepts.contains_key(**c))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "PEER_TAG_CONCEPTS entries missing from peer_tags_mappings.json: {missing:?}"
         );
     }
 
