@@ -40,9 +40,8 @@ pub fn create_trace_with_span_kind_children_payload() -> Vec<u8> {
     let mut internal_child = create_test_json_span(300, 303, 301, start, false);
     internal_child["name"] = json!("internal_op");
     internal_child["meta"]["span.kind"] = json!("internal");
-    let payload = rmp_serde::to_vec(&vec![vec![root, server_child, internal_child]])
-        .expect("Failed to serialize span kind children trace");
-    payload
+    rmp_serde::to_vec(&vec![vec![root, server_child, internal_child]])
+        .expect("Failed to serialize span kind children trace")
 }
 
 /// Create a trace payload with a single client span that carries a `peer.service` peer tag.
