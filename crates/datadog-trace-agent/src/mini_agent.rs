@@ -295,13 +295,19 @@ impl MiniAgent {
             };
             tokio::pin!(concentrator_exit);
 
+            // biased: when shutdown_tx fires, the accept loops also see
+            // shutdown_rx and exit cleanly. Their JoinHandles resolve in the
+            // same poll cycle as our shutdown_rx.changed(); without biased,
+            // a *Died arm can win the race and abort the supervisor before
+            // it has a chance to signal the stats flusher to flush.
             tokio::select! {
+                biased;
+                _ = shutdown_rx.changed() => Event::Shutdown,
                 r = &mut tcp_exit => Event::TcpDied(format!("{r:?}")),
                 r = &mut pipe_exit => Event::PipeDied(format!("{r:?}")),
                 r = &mut trace_flusher_handle => Event::TraceFlusherDied(format!("{r:?}")),
                 r = &mut stats_flusher_handle => Event::StatsFlusherDied(format!("{r:?}")),
                 r = &mut concentrator_exit => Event::ConcentratorDied(format!("{r:?}")),
-                _ = shutdown_rx.changed() => Event::Shutdown,
             }
         };
         #[cfg(not(all(windows, feature = "windows-pipes")))]
@@ -322,12 +328,14 @@ impl MiniAgent {
             };
             tokio::pin!(concentrator_exit);
 
+            // biased: see Windows branch above for rationale.
             tokio::select! {
+                biased;
+                _ = shutdown_rx.changed() => Event::Shutdown,
                 r = &mut tcp_exit => Event::TcpDied(format!("{r:?}")),
                 r = &mut trace_flusher_handle => Event::TraceFlusherDied(format!("{r:?}")),
                 r = &mut stats_flusher_handle => Event::StatsFlusherDied(format!("{r:?}")),
                 r = &mut concentrator_exit => Event::ConcentratorDied(format!("{r:?}")),
-                _ = shutdown_rx.changed() => Event::Shutdown,
             }
         };
 
