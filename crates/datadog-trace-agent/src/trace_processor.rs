@@ -224,6 +224,7 @@ mod tests {
 
     use crate::{
         config::{Config, Tags},
+        peer_tags::peer_tag_keys,
         trace_processor::{self, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY, TraceProcessor},
     };
     use libdd_common::{Endpoint, http_common};
@@ -276,6 +277,7 @@ mod tests {
             },
             tags: Tags::from_env_string("env:test,service:my-service"),
             env: "test-env".to_string(),
+            peer_tags: peer_tag_keys().unwrap(),
             agent_stats_computation_enabled: false,
         }
     }

@@ -1,0 +1,128 @@
+{
+  "version": "0.1.0",
+  "concepts": {
+    "_dd.base_service": {
+      "canonical": "_dd.base_service",
+      "fallbacks": [
+        { "name": "_dd.base_service", "provider": "datadog", "type": "string" }
+      ]
+    },
+    "peer.service": {
+      "canonical": "peer.service",
+      "fallbacks": [
+        { "name": "peer.service", "provider": "datadog", "type": "string" }
+      ]
+    },
+    "peer.hostname": {
+      "canonical": "peer.hostname",
+      "fallbacks": [
+        { "name": "peer.hostname", "provider": "datadog", "type": "string" },
+        { "name": "hostname", "provider": "datadog", "type": "string" },
+        { "name": "net.peer.name", "provider": "otel", "type": "string" },
+        { "name": "db.hostname", "provider": "datadog", "type": "string" },
+        { "name": "network.destination.name", "provider": "otel", "type": "string" },
+        { "name": "grpc.host", "provider": "datadog", "type": "string" },
+        { "name": "http.host", "provider": "datadog", "type": "string" },
+        { "name": "server.address", "provider": "otel", "type": "string" },
+        { "name": "http.server_name", "provider": "datadog", "type": "string" },
+        { "name": "out.host", "provider": "datadog", "type": "string" },
+        { "name": "dns.hostname", "provider": "datadog", "type": "string" },
+        { "name": "network.destination.ip", "provider": "otel", "type": "string" }
+      ]
+    },
+    "peer.db.name": {
+      "canonical": "peer.db.name",
+      "fallbacks": [
+        { "name": "db.name", "provider": "otel", "type": "string" },
+        { "name": "mongodb.db", "provider": "datadog", "type": "string" },
+        { "name": "db.instance", "provider": "otel", "type": "string" },
+        { "name": "cassandra.keyspace", "provider": "datadog", "type": "string" },
+        { "name": "db.namespace", "provider": "otel", "type": "string" }
+      ]
+    },
+    "peer.db.system": {
+      "canonical": "peer.db.system",
+      "fallbacks": [
+        { "name": "db.system", "provider": "otel", "type": "string" },
+        { "name": "active_record.db.vendor", "provider": "datadog", "type": "string" },
+        { "name": "db.type", "provider": "datadog", "type": "string" },
+        { "name": "sequel.db.vendor", "provider": "datadog", "type": "string" }
+      ]
+    },
+    "peer.cassandra.contact.points": {
+      "canonical": "peer.cassandra.contact.points",
+      "fallbacks": [
+        { "name": "db.cassandra.contact.points", "provider": "otel", "type": "string" }
+      ]
+    },
+    "peer.couchbase.seed.nodes": {
+      "canonical": "peer.couchbase.seed.nodes",
+      "fallbacks": [
+        { "name": "db.couchbase.seed.nodes", "provider": "otel", "type": "string" }
+      ]
+    },
+    "peer.messaging.destination": {
+      "canonical": "peer.messaging.destination",
+      "fallbacks": [
+        { "name": "topicname", "provider": "datadog", "type": "string" },
+        { "name": "messaging.destination", "provider": "otel", "type": "string" },
+        { "name": "messaging.destination.name", "provider": "otel", "type": "string" },
+        { "name": "messaging.rabbitmq.exchange", "provider": "otel", "type": "string" },
+        { "name": "amqp.destination", "provider": "datadog", "type": "string" },
+        { "name": "amqp.queue", "provider": "datadog", "type": "string" },
+        { "name": "amqp.exchange", "provider": "datadog", "type": "string" },
+        { "name": "msmq.queue.path", "provider": "datadog", "type": "string" },
+        { "name": "aws.queue.name", "provider": "datadog", "type": "string" }
+      ]
+    },
+    "peer.messaging.system": {
+      "canonical": "peer.messaging.system",
+      "fallbacks": [
+        { "name": "messaging.system", "provider": "otel", "type": "string" }
+      ]
+    },
+    "peer.kafka.bootstrap.servers": {
+      "canonical": "peer.kafka.bootstrap.servers",
+      "fallbacks": [
+        { "name": "messaging.kafka.bootstrap.servers", "provider": "otel", "type": "string" }
+      ]
+    },
+    "peer.rpc.service": {
+      "canonical": "peer.rpc.service",
+      "fallbacks": [
+        { "name": "rpc.service", "provider": "otel", "type": "string" }
+      ]
+    },
+    "peer.rpc.system": {
+      "canonical": "peer.rpc.system",
+      "fallbacks": [
+        { "name": "rpc.system", "provider": "otel", "type": "string" }
+      ]
+    },
+    "peer.aws.s3.bucket": {
+      "canonical": "peer.aws.s3.bucket",
+      "fallbacks": [
+        { "name": "bucketname", "provider": "datadog", "type": "string" },
+        { "name": "aws.s3.bucket", "provider": "otel", "type": "string" }
+      ]
+    },
+    "peer.aws.sqs.queue": {
+      "canonical": "peer.aws.sqs.queue",
+      "fallbacks": [
+        { "name": "queuename", "provider": "datadog", "type": "string" }
+      ]
+    },
+    "peer.aws.dynamodb.table": {
+      "canonical": "peer.aws.dynamodb.table",
+      "fallbacks": [
+        { "name": "tablename", "provider": "datadog", "type": "string" }
+      ]
+    },
+    "peer.aws.kinesis.stream": {
+      "canonical": "peer.aws.kinesis.stream",
+      "fallbacks": [
+        { "name": "streamname", "provider": "datadog", "type": "string" }
+      ]
+    }
+  }
+}

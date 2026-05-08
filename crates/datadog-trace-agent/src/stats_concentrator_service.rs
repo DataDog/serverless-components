@@ -14,6 +14,7 @@ use tracing::error;
 
 const S_TO_NS: u64 = 1_000_000_000;
 const BUCKET_DURATION_NS: u64 = 10 * S_TO_NS; // 10 seconds
+pub const SPAN_KINDS_STATS_COMPUTED: &[&str] = &["server", "client", "producer", "consumer"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum StatsError {
@@ -60,16 +61,6 @@ impl StatsConcentratorHandle {
     }
 }
 
-fn new_concentrator() -> SpanConcentrator {
-    // TODO: set span_kinds_stats_computed and peer_tag_keys
-    SpanConcentrator::new(
-        Duration::from_nanos(BUCKET_DURATION_NS),
-        SystemTime::now(),
-        vec![],
-        vec![],
-    )
-}
-
 pub struct StatsConcentratorService {
     /// One concentrator per unique TracerMetadata.
     concentrators: HashMap<Arc<TracerMetadata>, SpanConcentrator>,
@@ -90,6 +81,18 @@ impl StatsConcentratorService {
         (service, handle)
     }
 
+    fn new_span_concentrator(peer_tags: Vec<String>) -> SpanConcentrator {
+        SpanConcentrator::new(
+            Duration::from_nanos(BUCKET_DURATION_NS),
+            SystemTime::now(),
+            SPAN_KINDS_STATS_COMPUTED
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            peer_tags,
+        )
+    }
+
     pub async fn run(mut self) {
         while let Some(command) = self.rx.recv().await {
             match command {
@@ -99,10 +102,11 @@ impl StatsConcentratorService {
                     // the base service and omits the version. A separate concentrator is kept per
                     // unique metadata so that each payload's stats are flushed with the metadata
                     // from the originating payload.
+                    let config = Arc::clone(&self.config);
                     let concentrator = self
                         .concentrators
                         .entry(Arc::clone(&metadata))
-                        .or_insert_with(new_concentrator);
+                        .or_insert_with(|| Self::new_span_concentrator(config.peer_tags.clone()));
 
                     for span in &chunk.spans {
                         concentrator.add_span(span);

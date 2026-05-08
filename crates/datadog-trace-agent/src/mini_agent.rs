@@ -22,6 +22,7 @@ use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
 #[cfg(all(windows, feature = "windows-pipes"))]
 use tokio::net::windows::named_pipe::ServerOptions;
 
+use crate::stats_concentrator_service::SPAN_KINDS_STATS_COMPUTED;
 use crate::{config, env_verifier, stats_flusher, stats_processor, trace_flusher, trace_processor};
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils;
@@ -471,9 +472,22 @@ impl MiniAgent {
             let conn = hyper_util::rt::TokioIo::new(conn);
             let server = server.clone();
             let service = service.clone();
+            let mut conn_shutdown = shutdown_rx.clone();
             joinset.spawn(async move {
-                if let Err(e) = server.serve_connection(conn, service).await {
-                    error!("TCP connection error: {e}");
+                let conn = server.serve_connection(conn, service);
+                tokio::pin!(conn);
+                tokio::select! {
+                    result = conn.as_mut() => {
+                        if let Err(e) = result {
+                            error!("TCP connection error: {e}");
+                        }
+                    }
+                    _ = conn_shutdown.changed() => {
+                        conn.as_mut().graceful_shutdown();
+                        if let Err(e) = conn.await {
+                            error!("TCP connection error during graceful shutdown: {e}");
+                        }
+                    }
                 }
             });
         }
@@ -558,9 +572,22 @@ impl MiniAgent {
             let conn = hyper_util::rt::TokioIo::new(conn);
             let server = server.clone();
             let service = service.clone();
+            let mut conn_shutdown = shutdown_rx.clone();
             joinset.spawn(async move {
-                if let Err(e) = server.serve_connection(conn, service).await {
-                    error!("Named pipe connection error: {e}");
+                let conn = server.serve_connection(conn, service);
+                tokio::pin!(conn);
+                tokio::select! {
+                    result = conn.as_mut() => {
+                        if let Err(e) = result {
+                            error!("Named pipe connection error: {e}");
+                        }
+                    }
+                    _ = conn_shutdown.changed() => {
+                        conn.as_mut().graceful_shutdown();
+                        if let Err(e) = conn.await {
+                            error!("Named pipe connection error during graceful shutdown: {e}");
+                        }
+                    }
                 }
             });
         }
@@ -615,6 +642,7 @@ impl MiniAgent {
                 #[cfg(not(all(windows, feature = "windows-pipes")))]
                 None,
                 config.dd_dogstatsd_port,
+                &config.peer_tags,
                 config.agent_stats_computation_enabled,
             ) {
                 Ok(res) => Ok(res),
@@ -688,6 +716,7 @@ impl MiniAgent {
         dd_apm_receiver_port: u16,
         dd_apm_windows_pipe_name: Option<&str>,
         dd_dogstatsd_port: u16,
+        peer_tags: &[String],
         agent_stats_computation_enabled: bool,
     ) -> http::Result<http_common::HttpResponse> {
         // pipe_name already includes \\.\pipe\ prefix from config
@@ -713,6 +742,8 @@ impl MiniAgent {
                     PROFILING_ENDPOINT_PATH
                 ],
                 "client_drop_p0s": client_drop_p0s,
+                "span_kinds_stats_computed": SPAN_KINDS_STATS_COMPUTED,
+                "peer_tags": peer_tags,
                 "config": config_json
             }
         );
