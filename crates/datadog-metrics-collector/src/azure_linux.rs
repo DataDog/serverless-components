@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn test_returns_none_for_missing_file() {
-        let result = read_cpuacct_usage_from_path(&fixture_path("/nonexistent/path/cpuacct.usage"));
+        let result = read_cpuacct_usage_from_path(&fixture_path("tests/cgroup/nonexistent_file"));
         assert!(result.is_none());
     }
 

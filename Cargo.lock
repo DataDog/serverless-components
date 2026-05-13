@@ -493,6 +493,7 @@ version = "0.1.0"
 dependencies = [
  "dogstatsd",
  "libdd-common 4.0.0",
+ "tokio",
  "tracing",
 ]
 
