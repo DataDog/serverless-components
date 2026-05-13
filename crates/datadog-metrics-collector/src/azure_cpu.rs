@@ -62,6 +62,12 @@ impl CpuMetricsCollector {
 
         let current_usage_ns = cpu_stats.total;
         let now_instant = std::time::Instant::now();
+        let now = std::time::UNIX_EPOCH
+            .elapsed()
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .try_into()
+            .unwrap_or(0);
 
         // Skip first collection
         let Some(last_usage_ns) = self.last_usage_ns else {
@@ -84,13 +90,6 @@ impl CpuMetricsCollector {
         else {
             return;
         };
-
-        let now = std::time::UNIX_EPOCH
-            .elapsed()
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            .try_into()
-            .unwrap_or(0);
 
         let usage_metric = Metric::new(
             CPU_USAGE_METRIC.into(),
