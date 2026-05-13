@@ -7,5 +7,10 @@
 #![cfg_attr(not(test), deny(clippy::todo))]
 #![cfg_attr(not(test), deny(clippy::unimplemented))]
 
+pub mod azure_cpu;
 pub mod azure_instance;
+#[cfg(not(windows))]
+pub(crate) mod azure_linux;
 pub mod azure_tags;
+#[cfg(all(windows, feature = "windows-enhanced-metrics"))]
+pub(crate) mod azure_windows;

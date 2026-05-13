@@ -24,6 +24,8 @@ use datadog_trace_agent::{
     trace_processor,
 };
 
+use datadog_metrics_collector::azure_cpu::CpuMetricsCollector;
+
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
@@ -45,6 +47,7 @@ use datadog_metrics_collector::azure_instance::InstanceMetricsCollector;
 use dogstatsd::metric::{EMPTY_TAGS, SortedTags};
 use tokio_util::sync::CancellationToken;
 
+const CPU_METRICS_COLLECTION_INTERVAL_SECS: u64 = 1;
 const DOGSTATSD_FLUSH_INTERVAL: u64 = 10;
 const INSTANCE_METRICS_COLLECTION_INTERVAL_SECS: u64 = 3;
 const DOGSTATSD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
@@ -116,6 +119,17 @@ pub async fn main() {
     let dd_statsd_metric_namespace: Option<String> = env::var("DD_STATSD_METRIC_NAMESPACE")
         .ok()
         .and_then(|val| parse_metric_namespace(&val));
+
+    // Only enable enhanced metrics for Linux Azure Functions
+    #[cfg(not(windows))]
+    let dd_enhanced_metrics = env_type == EnvironmentType::AzureFunction
+        && env::var("DD_ENHANCED_METRICS_ENABLED")
+            .map(|val| val.to_lowercase() != "false")
+            .unwrap_or(true);
+
+    // Enhanced metrics are not yet supported in Windows environments
+    #[cfg(all(windows, feature = "windows-enhanced-metrics"))]
+    let dd_enhanced_metrics = false;
 
     let https_proxy = env::var("DD_PROXY_HTTPS")
         .or_else(|_| env::var("HTTPS_PROXY"))
@@ -217,8 +231,11 @@ pub async fn main() {
         }
     });
 
-    let enabled_metrics_components =
-        decide_metrics_components(dd_use_dogstatsd, instance_metric_enabled);
+    let enabled_metrics_components = decide_metrics_components(
+        dd_use_dogstatsd,
+        instance_metric_enabled,
+        dd_enhanced_metrics,
+    );
 
     // The metrics aggregator and flusher are started together and shared between dogstatsd and enhanced metrics,
     // so they are started if either is enabled.
@@ -270,6 +287,21 @@ pub async fn main() {
             None
         };
 
+    let mut cpu_collector =
+        if enabled_metrics_components.start_cpu_metrics_collector && metrics_flusher.is_some() {
+            aggregator_handle.as_ref().map(|handle| {
+                let tags = datadog_metrics_collector::azure_tags::build_enhanced_metrics_tags();
+                CpuMetricsCollector::new(handle.clone(), tags)
+            })
+        } else {
+            if !enabled_metrics_components.start_cpu_metrics_collector {
+                info!("Enhanced metrics disabled");
+            } else {
+                info!("Enhanced metrics enabled but metrics flusher not found");
+            }
+            None
+        };
+
     let (log_flusher, _log_aggregator_handle): (Option<LogFlusher>, Option<LogAggregatorHandle>) =
         if dd_logs_enabled {
             debug!("Starting log agent");
@@ -292,8 +324,11 @@ pub async fn main() {
     let mut instance_metrics_collection_interval = interval(Duration::from_secs(
         INSTANCE_METRICS_COLLECTION_INTERVAL_SECS,
     ));
+    let mut cpu_collection_interval =
+        interval(Duration::from_secs(CPU_METRICS_COLLECTION_INTERVAL_SECS));
     flush_interval.tick().await; // discard first tick, which is instantaneous
     instance_metrics_collection_interval.tick().await;
+    cpu_collection_interval.tick().await;
 
     // Builders for log batches that failed transiently in the previous flush
     // cycle. They are redriven on the next cycle before new batches are sent.
@@ -327,6 +362,11 @@ pub async fn main() {
             }
             _ = instance_metrics_collection_interval.tick(), if instance_collector.is_some() => {
                 if let Some(ref collector) = instance_collector {
+                    collector.collect_and_submit();
+                }
+            }
+            _ = cpu_collection_interval.tick(), if cpu_collector.is_some() => {
+                if let Some(ref mut collector) = cpu_collector {
                     collector.collect_and_submit();
                 }
             }
@@ -530,6 +570,7 @@ struct EnabledMetricsComponents {
     start_metrics_aggregator_and_flusher: bool,
     start_dogstatsd_listener: bool,
     start_instance_metrics_collector: bool,
+    start_cpu_metrics_collector: bool,
 }
 
 /// Determines which components should be started based on configuration.
@@ -539,16 +580,19 @@ struct EnabledMetricsComponents {
 fn decide_metrics_components(
     dd_use_dogstatsd: bool,
     instance_metric_enabled: bool,
+    dd_enhanced_metrics: bool,
 ) -> EnabledMetricsComponents {
     let start_dogstatsd_listener = dd_use_dogstatsd;
     let start_instance_metrics_collector = instance_metric_enabled;
+    let start_cpu_metrics_collector = dd_enhanced_metrics;
     let start_metrics_aggregator_and_flusher =
-        start_dogstatsd_listener || start_instance_metrics_collector;
+        start_dogstatsd_listener || start_instance_metrics_collector || start_cpu_metrics_collector;
 
     EnabledMetricsComponents {
         start_metrics_aggregator_and_flusher,
         start_dogstatsd_listener,
         start_instance_metrics_collector,
+        start_cpu_metrics_collector,
     }
 }
 
@@ -665,50 +709,80 @@ mod metrics_components_tests {
 
     #[test]
     fn test_decide_metrics_components() {
-        let cases: &[(bool, bool, EnabledMetricsComponents)] = &[
+        let cases: &[(bool, bool, bool, EnabledMetricsComponents)] = &[
             (
+                false,
                 false,
                 false,
                 EnabledMetricsComponents {
                     start_metrics_aggregator_and_flusher: false,
                     start_dogstatsd_listener: false,
                     start_instance_metrics_collector: false,
+                    start_cpu_metrics_collector: false,
                 },
             ),
             (
                 true,
+                false,
                 false,
                 EnabledMetricsComponents {
                     start_metrics_aggregator_and_flusher: true,
                     start_dogstatsd_listener: true,
                     start_instance_metrics_collector: false,
+                    start_cpu_metrics_collector: false,
                 },
             ),
             (
                 false,
                 true,
+                false,
                 EnabledMetricsComponents {
                     start_metrics_aggregator_and_flusher: true,
                     start_dogstatsd_listener: false,
                     start_instance_metrics_collector: true,
+                    start_cpu_metrics_collector: false,
                 },
             ),
             (
+                true,
+                true,
+                false,
+                EnabledMetricsComponents {
+                    start_metrics_aggregator_and_flusher: true,
+                    start_dogstatsd_listener: true,
+                    start_instance_metrics_collector: true,
+                    start_cpu_metrics_collector: false,
+                },
+            ),
+            (
+                false,
+                true,
+                true,
+                EnabledMetricsComponents {
+                    start_metrics_aggregator_and_flusher: true,
+                    start_dogstatsd_listener: false,
+                    start_instance_metrics_collector: true,
+                    start_cpu_metrics_collector: true,
+                },
+            ),
+            (
+                true,
                 true,
                 true,
                 EnabledMetricsComponents {
                     start_metrics_aggregator_and_flusher: true,
                     start_dogstatsd_listener: true,
                     start_instance_metrics_collector: true,
+                    start_cpu_metrics_collector: true,
                 },
             ),
         ];
 
-        for (dogstatsd, instance, expected) in cases {
-            let actual = decide_metrics_components(*dogstatsd, *instance);
+        for (dogstatsd, instance, enhanced, expected) in cases {
+            let actual = decide_metrics_components(*dogstatsd, *instance, *enhanced);
             assert_eq!(
                 &actual, expected,
-                "case (dd_use_dogstatsd={dogstatsd}, instance_metric_enabled={instance})"
+                "case (dd_use_dogstatsd={dogstatsd}, instance_metric_enabled={instance}, dd_enhanced_metrics={enhanced})"
             );
         }
     }

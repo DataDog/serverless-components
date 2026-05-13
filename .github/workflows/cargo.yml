@@ -32,7 +32,12 @@ jobs:
         shell: bash
         run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
       - shell: bash
-        run: cargo check --workspace
+        run: |
+          if [[ "${{ inputs.runner }}" == "windows-2022" ]]; then
+            cargo check --workspace --features datadog-serverless-compat/windows-pipes,datadog-serverless-compat/windows-enhanced-metrics
+          else
+            cargo check --workspace
+          fi
 
   format:
     name: Format
@@ -72,7 +77,12 @@ jobs:
         shell: bash
         run: chmod +x ./scripts/install-protoc.sh && ./scripts/install-protoc.sh $HOME
       - shell: bash
-        run: cargo build --all
+        run: |
+          if [[ "${{ inputs.runner }}" == "windows-2022" ]]; then
+            cargo build --all --features datadog-serverless-compat/windows-pipes,datadog-serverless-compat/windows-enhanced-metrics
+          else
+            cargo build --all
+          fi
 
   build-datadog-serverless-compat:
     name: Build Datadog Serverless Compat
@@ -95,7 +105,7 @@ jobs:
       - shell: bash
         run: |
           if [[ "${{ inputs.runner }}" == "windows-2022" ]]; then
-            cargo nextest run --workspace --features datadog-serverless-compat/windows-pipes
+            cargo nextest run --workspace --features datadog-serverless-compat/windows-pipes,datadog-serverless-compat/windows-enhanced-metrics
           else
             cargo nextest run --workspace
           fi
