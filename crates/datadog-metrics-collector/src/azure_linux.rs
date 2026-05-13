@@ -18,12 +18,8 @@ pub struct LinuxCpuStatsReader;
 
 impl CpuStatsReader for LinuxCpuStatsReader {
     fn read(&self) -> Option<CpuStats> {
-        read_cpuacct_usage()
+        read_cpuacct_usage_from_path(CGROUP_CPU_USAGE_PATH)
     }
-}
-
-fn read_cpuacct_usage() -> Option<CpuStats> {
-    read_cpuacct_usage_from_path(CGROUP_CPU_USAGE_PATH)
 }
 
 fn read_cpuacct_usage_from_path(path: &str) -> Option<CpuStats> {
