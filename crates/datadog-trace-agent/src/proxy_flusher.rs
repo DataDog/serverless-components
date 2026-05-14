@@ -86,6 +86,57 @@ impl ProxyFlusher {
         }
     }
 
+    fn parse_additional_tags(tag_string: &str) -> impl Iterator<Item = &str> {
+        tag_string
+            .split([',', ';'])
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+    }
+
+    fn push_unique_tag(tags: &mut Vec<String>, tag: impl Into<String>) {
+        let tag = tag.into();
+        if !tags.iter().any(|existing| existing == &tag) {
+            tags.push(tag);
+        }
+    }
+
+    fn merged_additional_tags(&self, headers: &HeaderMap) -> Result<Option<String>, String> {
+        let mut tags = Vec::new();
+
+        if let Some(existing_tags) = headers.get(DD_ADDITIONAL_TAGS_HEADER) {
+            let existing_tags = existing_tags
+                .to_str()
+                .map_err(|e| format!("Failed to parse existing additional tags header: {e}"))?;
+            for tag in Self::parse_additional_tags(existing_tags) {
+                Self::push_unique_tag(&mut tags, tag.to_string());
+            }
+        }
+
+        if let Some(function_tags) = self.config.tags.function_tags() {
+            for tag in Self::parse_additional_tags(function_tags) {
+                Self::push_unique_tag(&mut tags, tag.to_string());
+            }
+        }
+
+        Self::push_unique_tag(
+            &mut tags,
+            format!(
+                "functionname:{}",
+                self.config.app_name.as_deref().unwrap_or_default()
+            ),
+        );
+        Self::push_unique_tag(
+            &mut tags,
+            format!("_dd.origin:{}", get_dd_origin(&self.config.env_type)),
+        );
+
+        if tags.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(tags.join(",")))
+        }
+    }
+
     async fn create_request(
         &self,
         request: &ProxyRequest,
@@ -102,16 +153,9 @@ impl ProxyFlusher {
         headers.remove("host");
         headers.remove("content-length");
 
-        if matches!(request.kind, ProxyRequestKind::Profiling) {
-            // Profiling intake expects serverless-specific origin metadata.
-            let additional_tags = [
-                format!(
-                    "functionname:{}",
-                    self.config.app_name.as_deref().unwrap_or_default()
-                ),
-                format!("_dd.origin:{}", get_dd_origin(&self.config.env_type)),
-            ]
-            .join(",");
+        // Preserve any incoming additional tags and augment them with the
+        // serverless tags this mini-agent is responsible for adding.
+        if let Some(additional_tags) = self.merged_additional_tags(&headers)? {
             match additional_tags.parse() {
                 Ok(parsed_tags) => {
                     headers.insert(DD_ADDITIONAL_TAGS_HEADER, parsed_tags);
@@ -162,14 +206,16 @@ impl ProxyFlusher {
                 Ok(r) => {
                     let url = r.url().to_string();
                     let status = r.status();
-                    let body = r.text().await;
                     if status.is_success() {
                         debug!(
                             "Successfully sent request in {} ms to {url}",
                             elapsed.as_millis()
                         );
                     } else {
-                        error!("Request failed with status {status}: {body:?}");
+                        error!(
+                            "Request failed with status {status} after {} ms to {url}; response body omitted",
+                            elapsed.as_millis()
+                        );
                     }
                     return;
                 }

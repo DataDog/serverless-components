@@ -10,7 +10,7 @@ use common::helpers::{
 use common::mock_server::MockServer;
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
-    config::{Config, test_helpers::create_tcp_test_config},
+    config::{Config, Tags, test_helpers::create_tcp_test_config},
     mini_agent::MiniAgent,
     peer_tags::peer_tag_keys,
     proxy_flusher::ProxyFlusher,
@@ -201,6 +201,7 @@ pub fn verify_no_stats_request(mock_server: &common::mock_server::MockServer) {
 pub async fn verify_dsm_request(
     mock_server: &common::mock_server::MockServer,
     expected_body: &[u8],
+    expected_additional_tags: &[&str],
 ) {
     wait_for_request_at_path(mock_server, "/api/v0.1/pipeline_stats").await;
     let dsm_reqs = mock_server.get_requests_for_path("/api/v0.1/pipeline_stats");
@@ -228,10 +229,15 @@ pub async fn verify_dsm_request(
         .headers
         .iter()
         .find(|(k, _)| k.to_lowercase() == "x-datadog-additional-tags");
-    assert!(
-        additional_tags.is_none(),
-        "DSM requests should not inherit profiling-only additional tags"
-    );
+    let additional_tags = additional_tags
+        .map(|(_, v)| v.as_str())
+        .expect("Expected DSM requests to include additional tags");
+    for expected_tag in expected_additional_tags {
+        assert!(
+            additional_tags.contains(expected_tag),
+            "Expected DSM additional tags to contain {expected_tag:?}, got: {additional_tags:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -526,6 +532,7 @@ async fn test_mini_agent_tcp_proxies_dsm_requests() {
 
     let mut config = create_tcp_test_config(8133);
     configure_mock_endpoints(&mut config, &mock_server.url());
+    config.tags = Tags::from_env_string("env:test,service:payments");
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
 
@@ -567,13 +574,31 @@ async fn test_mini_agent_tcp_proxies_dsm_requests() {
         "/v0.1/pipeline_stats",
         "POST",
         Some(dsm_payload.clone()),
-        &[("X-Datadog-Test-Header", "dsm")],
+        &[
+            ("X-Datadog-Test-Header", "dsm"),
+            (
+                "X-Datadog-Additional-Tags",
+                "host:worker-1,default_env:prod",
+            ),
+        ],
     )
     .await
     .expect("Failed to send /v0.1/pipeline_stats request");
     assert_eq!(response.status(), StatusCode::OK);
 
-    verify_dsm_request(&mock_server, &dsm_payload).await;
+    verify_dsm_request(
+        &mock_server,
+        &dsm_payload,
+        &[
+            "host:worker-1",
+            "default_env:prod",
+            "env:test",
+            "service:payments",
+            "functionname:test-app",
+            "_dd.origin:azurefunction",
+        ],
+    )
+    .await;
 
     agent_handle.abort();
 }
