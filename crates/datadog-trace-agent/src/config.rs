@@ -18,6 +18,7 @@ use libdd_trace_utils::trace_utils;
 
 const DEFAULT_APM_RECEIVER_PORT: u16 = 8126;
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
+const DSM_PIPELINE_STATS_ROUTE: &str = "/api/v0.1/pipeline_stats";
 
 #[derive(Debug)]
 pub struct Tags {
@@ -181,14 +182,18 @@ impl Config {
         // trace stats to)
         let mut trace_intake_url = trace_intake_url(&dd_site);
         let mut trace_stats_intake_url = trace_stats_url(&dd_site);
-        let mut dsm_intake_url = format!("https://trace.agent.{dd_site}/api/v0.1/pipeline_stats");
+
+        // TODO: Upstream DSM URL in libdatadog and use that instead of constructing here
+        let mut dsm_intake_url = format!("https://trace.agent.{dd_site}{DSM_PIPELINE_STATS_ROUTE}");
 
         // DD_APM_DD_URL env var will primarily be used for integration tests
         // overrides the entire trace/trace stats intake url prefix
         if let Ok(endpoint_prefix) = env::var("DD_APM_DD_URL") {
             trace_intake_url = trace_intake_url_prefixed(&endpoint_prefix);
             trace_stats_intake_url = trace_stats_url_prefixed(&endpoint_prefix);
-            dsm_intake_url = format!("{endpoint_prefix}/api/v0.1/pipeline_stats");
+
+            // TODO: Upstream DSM URL in libdatadog and use that instead of constructing here
+            dsm_intake_url = format!("{endpoint_prefix}{DSM_PIPELINE_STATS_ROUTE}");
         };
 
         // TODO: Create helper functions for this in libdatadog
