@@ -100,7 +100,7 @@ impl ProxyFlusher {
         }
     }
 
-    fn merged_additional_tags(&self, headers: &HeaderMap) -> Result<Option<String>, String> {
+    fn merged_additional_tags(&self, headers: &HeaderMap) -> Result<Vec<String>, String> {
         let mut tags = Vec::new();
 
         if let Some(existing_tags) = headers.get(DD_ADDITIONAL_TAGS_HEADER) {
@@ -118,23 +118,7 @@ impl ProxyFlusher {
             }
         }
 
-        Self::push_unique_tag(
-            &mut tags,
-            format!(
-                "functionname:{}",
-                self.config.app_name.as_deref().unwrap_or_default()
-            ),
-        );
-        Self::push_unique_tag(
-            &mut tags,
-            format!("_dd.origin:{}", get_dd_origin(&self.config.env_type)),
-        );
-
-        if tags.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(tags.join(",")))
-        }
+        Ok(tags)
     }
 
     async fn create_request(
@@ -154,9 +138,25 @@ impl ProxyFlusher {
         headers.remove("content-length");
 
         // Preserve any incoming additional tags and augment them with the
-        // serverless tags this mini-agent is responsible for adding.
-        if let Some(additional_tags) = self.merged_additional_tags(&headers)? {
-            match additional_tags.parse() {
+        // function tags configured for the serverless app.
+        let mut additional_tags = self.merged_additional_tags(&headers)?;
+
+        // Add the serverless-specific tags that power billing and product
+        // attribution for proxied requests.
+        Self::push_unique_tag(
+            &mut additional_tags,
+            format!(
+                "functionname:{}",
+                self.config.app_name.as_deref().unwrap_or_default()
+            ),
+        );
+        Self::push_unique_tag(
+            &mut additional_tags,
+            format!("_dd.origin:{}", get_dd_origin(&self.config.env_type)),
+        );
+
+        if !additional_tags.is_empty() {
+            match additional_tags.join(",").parse() {
                 Ok(parsed_tags) => {
                     headers.insert(DD_ADDITIONAL_TAGS_HEADER, parsed_tags);
                 }
