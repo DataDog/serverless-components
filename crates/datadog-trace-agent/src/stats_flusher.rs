@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
-use libdd_capabilities_impl::DefaultHttpClient;
+use libdd_capabilities_impl::NativeHttpClient;
 use std::{sync::Arc, time};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot;
@@ -25,7 +25,7 @@ async fn send_stats_payload(config: &Arc<Config>, payload: pb::StatsPayload) {
         }
     };
     #[allow(clippy::unwrap_used)]
-    match stats_utils::send_stats_payload::<DefaultHttpClient>(
+    match stats_utils::send_stats_payload::<NativeHttpClient>(
         serialized,
         &config.trace_stats_intake,
         config.trace_stats_intake.api_key.as_ref().unwrap(),

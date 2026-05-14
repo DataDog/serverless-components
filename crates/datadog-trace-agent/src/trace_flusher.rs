@@ -7,8 +7,9 @@ use tokio::sync::{Mutex, mpsc::Receiver};
 use tracing::{debug, error};
 
 use http_body_util::BodyExt;
-use libdd_capabilities::http::{HttpClientTrait, HttpError};
-use libdd_capabilities::{MaybeSend, Request, Response};
+use libdd_capabilities::http::{HttpClientCapability, HttpError};
+use libdd_capabilities::{MaybeSend, Request, Response, SleepCapability};
+use libdd_capabilities_impl::NativeSleepCapability;
 use libdd_common::connector::Connector;
 use libdd_common::http_common::{self, Body, GenericHttpClient};
 use libdd_trace_utils::trace_utils;
@@ -132,7 +133,7 @@ impl ProxyHttpClient {
     }
 }
 
-impl HttpClientTrait for ProxyHttpClient {
+impl HttpClientCapability for ProxyHttpClient {
     #[allow(clippy::expect_used)]
     fn new_client() -> Self {
         Self::with_proxy(None).expect("building proxy connector with default TLS should not fail")
@@ -158,5 +159,19 @@ impl HttpClientTrait for ProxyHttpClient {
                 .to_bytes();
             Ok(Response::from_parts(parts, collected))
         }
+    }
+}
+
+impl SleepCapability for ProxyHttpClient {
+    #[allow(clippy::expect_used)]
+    fn new() -> Self {
+        Self::with_proxy(None).expect("building proxy connector with default TLS should not fail")
+    }
+
+    fn sleep(
+        &self,
+        duration: std::time::Duration,
+    ) -> impl std::future::Future<Output = ()> + MaybeSend {
+        NativeSleepCapability.sleep(duration)
     }
 }
