@@ -37,6 +37,29 @@ pub enum ProxyRequestKind {
     Profiling,
 }
 
+impl ProxyRequestKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            ProxyRequestKind::DataStreams => "data streams",
+            ProxyRequestKind::Profiling => "profiling",
+        }
+    }
+
+    pub fn request_name(self) -> &'static str {
+        match self {
+            ProxyRequestKind::DataStreams => "data streams request",
+            ProxyRequestKind::Profiling => "profiling request",
+        }
+    }
+
+    pub fn intake_url(self, config: &Config) -> String {
+        match self {
+            ProxyRequestKind::DataStreams => config.dsm_intake.url.to_string(),
+            ProxyRequestKind::Profiling => config.profiling_intake.url.to_string(),
+        }
+    }
+}
+
 pub struct ProxyFlusher {
     pub config: Arc<Config>,
     client: reqwest::Client,
@@ -76,13 +99,6 @@ impl ProxyFlusher {
         match kind {
             ProxyRequestKind::DataStreams => self.config.dsm_intake.api_key.as_deref(),
             ProxyRequestKind::Profiling => self.config.profiling_intake.api_key.as_deref(),
-        }
-    }
-
-    fn kind_name(kind: ProxyRequestKind) -> &'static str {
-        match kind {
-            ProxyRequestKind::DataStreams => "data streams",
-            ProxyRequestKind::Profiling => "profiling",
         }
     }
 
@@ -126,12 +142,9 @@ impl ProxyFlusher {
         request: &ProxyRequest,
     ) -> Result<reqwest::RequestBuilder, String> {
         let mut headers = request.headers.clone();
-        let api_key = self.api_key_for_kind(request.kind).ok_or_else(|| {
-            format!(
-                "No API key configured for {}",
-                Self::kind_name(request.kind)
-            )
-        })?;
+        let api_key = self
+            .api_key_for_kind(request.kind)
+            .ok_or_else(|| format!("No API key configured for {}", request.kind.name()))?;
 
         // Remove headers that are not needed for the proxy request
         headers.remove("host");

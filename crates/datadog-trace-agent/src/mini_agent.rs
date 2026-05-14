@@ -108,7 +108,8 @@ impl MiniAgent {
                 .await;
         });
 
-        // channel used to forward proxied payloads (for example profiling and DSM)
+        // channel used to forward proxied payloads (for example profiling and
+        // Data Streams Monitoring)
         let (proxy_tx, proxy_rx): (Sender<ProxyRequest>, Receiver<ProxyRequest>) =
             mpsc::channel(PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE);
 
@@ -627,36 +628,29 @@ impl MiniAgent {
                     ),
                 }
             }
-            (&Method::POST, DSM_ENDPOINT_PATH) => match Self::proxy_handler(
-                config,
-                req,
-                proxy_tx,
-                ProxyRequestKind::DataStreams,
-                "data streams request",
-                |cfg| cfg.dsm_intake.url.to_string(),
-            )
-            .await
-            {
-                Ok(res) => Ok(res),
-                Err(err) => log_and_create_http_response(
-                    &format!("Error processing data streams request: {err}"),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                ),
-            },
-            (&Method::POST, PROFILING_ENDPOINT_PATH) => {
-                match Self::proxy_handler(
-                    config,
-                    req,
-                    proxy_tx,
-                    ProxyRequestKind::Profiling,
-                    "profiling request",
-                    |cfg| cfg.profiling_intake.url.to_string(),
-                )
-                .await
+            (&Method::POST, DSM_ENDPOINT_PATH) => {
+                match Self::proxy_handler(config, req, proxy_tx, ProxyRequestKind::DataStreams)
+                    .await
                 {
                     Ok(res) => Ok(res),
                     Err(err) => log_and_create_http_response(
-                        &format!("Error processing profiling request: {err}"),
+                        &format!(
+                            "Error processing {}: {err}",
+                            ProxyRequestKind::DataStreams.request_name()
+                        ),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                }
+            }
+            (&Method::POST, PROFILING_ENDPOINT_PATH) => {
+                match Self::proxy_handler(config, req, proxy_tx, ProxyRequestKind::Profiling).await
+                {
+                    Ok(res) => Ok(res),
+                    Err(err) => log_and_create_http_response(
+                        &format!(
+                            "Error processing {}: {err}",
+                            ProxyRequestKind::Profiling.request_name()
+                        ),
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 }
@@ -685,26 +679,23 @@ impl MiniAgent {
         }
     }
 
-    /// Handles incoming proxy requests such as profiling or DSM payloads.
-    async fn proxy_handler<F>(
+    /// Handles incoming proxy requests such as profiling or Data Streams
+    /// Monitoring payloads.
+    async fn proxy_handler(
         config: Arc<config::Config>,
         request: http_common::HttpRequest,
         proxy_tx: Sender<ProxyRequest>,
-        kind: ProxyRequestKind,
-        context: &str,
-        target_url: F,
-    ) -> http::Result<http_common::HttpResponse>
-    where
-        F: FnOnce(&config::Config) -> String,
-    {
-        debug!("Received {context}");
+        proxy_kind: ProxyRequestKind,
+    ) -> http::Result<http_common::HttpResponse> {
+        let request_name = proxy_kind.request_name();
+        debug!("Received {request_name}");
 
         // Extract headers and body
         let (parts, body) = request.into_parts();
         if let Some(response) = verify_request_content_length(
             &parts.headers,
             config.max_request_content_length,
-            &format!("Error processing {context}"),
+            &format!("Error processing {request_name}"),
         ) {
             return response;
         }
@@ -713,7 +704,7 @@ impl MiniAgent {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 return log_and_create_http_response(
-                    &format!("Error reading {context} body: {e}"),
+                    &format!("Error reading {request_name} body: {e}"),
                     StatusCode::BAD_REQUEST,
                 );
             }
@@ -723,23 +714,23 @@ impl MiniAgent {
         let proxy_request = ProxyRequest {
             headers: parts.headers,
             body: body_bytes,
-            target_url: target_url(config.as_ref()),
-            kind,
+            target_url: proxy_kind.intake_url(config.as_ref()),
+            kind: proxy_kind,
         };
 
         debug!(
-            "Sending {context} to channel, target: {}",
+            "Sending {request_name} to channel, target: {}",
             proxy_request.target_url
         );
 
         // Send to channel
         match proxy_tx.send(proxy_request).await {
             Ok(_) => log_and_create_http_response(
-                &format!("Successfully buffered {context} to be flushed"),
+                &format!("Successfully buffered {request_name} to be flushed"),
                 StatusCode::OK,
             ),
             Err(err) => log_and_create_http_response(
-                &format!("Error sending {context} to the proxy flusher: {err}"),
+                &format!("Error sending {request_name} to the proxy flusher: {err}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         }
