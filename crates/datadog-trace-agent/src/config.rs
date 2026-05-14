@@ -99,6 +99,8 @@ pub struct Config {
     pub trace_flush_interval_secs: u64,
     pub trace_intake: Endpoint,
     pub trace_stats_intake: Endpoint,
+    /// Data Streams Monitoring intake endpoint (for proxying pipeline stats to Datadog)
+    pub dsm_intake: Endpoint,
     /// Profiling intake endpoint (for proxying profiling data to Datadog)
     pub profiling_intake: Endpoint,
     /// Timeout for each proxy request, in seconds
@@ -179,12 +181,14 @@ impl Config {
         // trace stats to)
         let mut trace_intake_url = trace_intake_url(&dd_site);
         let mut trace_stats_intake_url = trace_stats_url(&dd_site);
+        let mut dsm_intake_url = format!("https://trace.agent.{dd_site}/api/v0.1/pipeline_stats");
 
         // DD_APM_DD_URL env var will primarily be used for integration tests
         // overrides the entire trace/trace stats intake url prefix
         if let Ok(endpoint_prefix) = env::var("DD_APM_DD_URL") {
             trace_intake_url = trace_intake_url_prefixed(&endpoint_prefix);
             trace_stats_intake_url = trace_stats_url_prefixed(&endpoint_prefix);
+            dsm_intake_url = format!("{endpoint_prefix}/api/v0.1/pipeline_stats");
         };
 
         // TODO: Create helper functions for this in libdatadog
@@ -233,6 +237,11 @@ impl Config {
             },
             trace_stats_intake: Endpoint {
                 url: hyper::Uri::from_str(&trace_stats_intake_url).unwrap(),
+                api_key: Some(api_key.clone()),
+                ..Default::default()
+            },
+            dsm_intake: Endpoint {
+                url: hyper::Uri::from_str(&dsm_intake_url).unwrap(),
                 api_key: Some(api_key.clone()),
                 ..Default::default()
             },
@@ -309,6 +318,10 @@ mod tests {
                 assert_eq!(
                     config.trace_stats_intake.url,
                     "https://trace.agent.datadoghq.com/api/v0.2/stats"
+                );
+                assert_eq!(
+                    config.dsm_intake.url,
+                    "https://trace.agent.datadoghq.com/api/v0.1/pipeline_stats"
                 );
             },
         );
@@ -392,6 +405,38 @@ mod tests {
                     config.trace_stats_intake.url,
                     "http://127.0.0.1:3333/api/v0.2/stats"
                 );
+                assert_eq!(
+                    config.dsm_intake.url,
+                    "http://127.0.0.1:3333/api/v0.1/pipeline_stats"
+                );
+            },
+        );
+    }
+
+    #[duplicate_item(
+        test_name                            dd_site                 expected_url;
+        [test_us1_dsm_intake_url]            ["datadoghq.com"]       ["https://trace.agent.datadoghq.com/api/v0.1/pipeline_stats"];
+        [test_us3_dsm_intake_url]            ["us3.datadoghq.com"]   ["https://trace.agent.us3.datadoghq.com/api/v0.1/pipeline_stats"];
+        [test_us5_dsm_intake_url]            ["us5.datadoghq.com"]   ["https://trace.agent.us5.datadoghq.com/api/v0.1/pipeline_stats"];
+        [test_eu_dsm_intake_url]             ["datadoghq.eu"]        ["https://trace.agent.datadoghq.eu/api/v0.1/pipeline_stats"];
+        [test_ap1_dsm_intake_url]            ["ap1.datadoghq.com"]   ["https://trace.agent.ap1.datadoghq.com/api/v0.1/pipeline_stats"];
+        [test_gov_dsm_intake_url]            ["ddog-gov.com"]        ["https://trace.agent.ddog-gov.com/api/v0.1/pipeline_stats"];
+    )]
+    #[test]
+    #[serial]
+    fn test_name() {
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("K_SERVICE", Some("function_name")),
+                ("FUNCTION_TARGET", Some("function_target")),
+                ("DD_SITE", Some(dd_site)),
+            ],
+            || {
+                let config_res = config::Config::new();
+                assert!(config_res.is_ok());
+                let config = config_res.unwrap();
+                assert_eq!(config.dsm_intake.url, expected_url);
             },
         );
     }
@@ -723,6 +768,7 @@ pub mod test_helpers {
             trace_flush_interval_secs: 5,
             trace_intake: Endpoint::default(),
             trace_stats_intake: Endpoint::default(),
+            dsm_intake: Endpoint::default(),
             profiling_intake: Endpoint::default(),
             proxy_request_timeout_secs: 30,
             proxy_request_max_retries: 3,
