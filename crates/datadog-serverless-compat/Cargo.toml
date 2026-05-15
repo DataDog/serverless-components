@@ -14,7 +14,7 @@ windows-enhanced-metrics = ["datadog-metrics-collector/windows-enhanced-metrics"
 datadog-logs-agent = { path = "../datadog-logs-agent" }
 datadog-metrics-collector = { path = "../datadog-metrics-collector" }
 datadog-trace-agent = { path = "../datadog-trace-agent" }
-libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "4ae8ebe252451374c292efd159ce254c3f5a72e0" }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "0a3304c6aaf84738786b670d706a01edc22dab81" }
 datadog-fips = { path = "../datadog-fips", default-features = false }
 dogstatsd = { path = "../dogstatsd", default-features = true }
 reqwest = { version = "0.12.4", default-features = false }
