@@ -10,7 +10,7 @@ use common::helpers::{
 use common::mock_server::MockServer;
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_trace_agent::{
-    config::{Config, test_helpers::create_tcp_test_config},
+    config::{Config, Tags, test_helpers::create_tcp_test_config},
     mini_agent::MiniAgent,
     peer_tags::peer_tag_keys,
     proxy_flusher::ProxyFlusher,
@@ -53,6 +53,8 @@ async fn wait_for_request_at_path(mock_server: &common::mock_server::MockServer,
 pub fn configure_mock_endpoints(config: &mut Config, mock_server_url: &str) {
     let trace_url = format!("{}/api/v0.2/traces", mock_server_url);
     let stats_url = format!("{}/api/v0.2/stats", mock_server_url);
+    let dsm_url = format!("{}/api/v0.1/pipeline_stats", mock_server_url);
+    let profiling_url = format!("{}/api/v2/profile", mock_server_url);
 
     config.trace_intake = libdd_common::Endpoint {
         url: trace_url.parse().unwrap(),
@@ -61,6 +63,16 @@ pub fn configure_mock_endpoints(config: &mut Config, mock_server_url: &str) {
     };
     config.trace_stats_intake = libdd_common::Endpoint {
         url: stats_url.parse().unwrap(),
+        api_key: Some("test-api-key".into()),
+        ..Default::default()
+    };
+    config.dsm_intake = libdd_common::Endpoint {
+        url: dsm_url.parse().unwrap(),
+        api_key: Some("test-api-key".into()),
+        ..Default::default()
+    };
+    config.profiling_intake = libdd_common::Endpoint {
+        url: profiling_url.parse().unwrap(),
         api_key: Some("test-api-key".into()),
         ..Default::default()
     };
@@ -185,6 +197,49 @@ pub fn verify_no_stats_request(mock_server: &common::mock_server::MockServer) {
     );
 }
 
+/// Helper to verify a DSM request sent to the mock server
+pub async fn verify_dsm_request(
+    mock_server: &common::mock_server::MockServer,
+    expected_body: &[u8],
+    expected_additional_tags: &[&str],
+) {
+    wait_for_request_at_path(mock_server, "/api/v0.1/pipeline_stats").await;
+    let dsm_reqs = mock_server.get_requests_for_path("/api/v0.1/pipeline_stats");
+
+    assert!(
+        !dsm_reqs.is_empty(),
+        "Expected at least one DSM request to mock server"
+    );
+
+    let dsm_req = &dsm_reqs[0];
+    assert_eq!(dsm_req.method, "POST", "Expected POST method");
+    assert_eq!(
+        dsm_req.body, expected_body,
+        "Expected DSM payload body to be forwarded unchanged"
+    );
+
+    let api_key = dsm_req
+        .headers
+        .iter()
+        .find(|(k, _)| k.to_lowercase() == "dd-api-key")
+        .map(|(_, v)| v.as_str());
+    assert_eq!(api_key, Some("test-api-key"), "Expected API key header");
+
+    let additional_tags = dsm_req
+        .headers
+        .iter()
+        .find(|(k, _)| k.to_lowercase() == "x-datadog-additional-tags");
+    let additional_tags = additional_tags
+        .map(|(_, v)| v.as_str())
+        .expect("Expected DSM requests to include additional tags");
+    for expected_tag in expected_additional_tags {
+        assert!(
+            additional_tags.contains(expected_tag),
+            "Expected DSM additional tags to contain {expected_tag:?}, got: {additional_tags:?}"
+        );
+    }
+}
+
 #[cfg(test)]
 #[tokio::test]
 #[serial]
@@ -239,6 +294,7 @@ async fn test_mini_agent_tcp_handles_requests() {
             "/v0.4/traces",
             "/v0.6/stats",
             "/info",
+            "/v0.1/pipeline_stats",
             "/profiling/v1/input"
         ]),
         "Expected endpoints array"
@@ -354,6 +410,7 @@ async fn test_mini_agent_named_pipe_handles_requests() {
             "/v0.4/traces",
             "/v0.6/stats",
             "/info",
+            "/v0.1/pipeline_stats",
             "/profiling/v1/input"
         ]),
         "Expected endpoints array"
@@ -464,6 +521,86 @@ async fn test_mini_agent_tcp_with_real_flushers() {
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
     verify_stats_request(&mock_server).await; // Stats generator should generate stats from trace payload
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[serial]
+async fn test_mini_agent_tcp_proxies_dsm_requests() {
+    let mock_server: MockServer = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut config = create_tcp_test_config(8133);
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    config.tags = Tags::from_env_string("env:test,service:payments");
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let mini_agent = MiniAgent {
+        config: config.clone(),
+        trace_processor: Arc::new(ServerlessTraceProcessor {
+            stats_concentrator: None,
+        }),
+        trace_flusher: Arc::new(MockTraceFlusher),
+        stats_processor: Arc::new(MockStatsProcessor),
+        stats_flusher: Arc::new(MockStatsFlusher),
+        env_verifier: Arc::new(MockEnvVerifier),
+        proxy_flusher: Arc::new(ProxyFlusher::new(config)),
+    };
+
+    let agent_handle = tokio::spawn(async move {
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
+    });
+
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    let dsm_payload = br#"{"Stats":[{"EdgeTags":["direction:out","type:kafka"]}]}"#.to_vec();
+    let response = send_tcp_request(
+        test_port,
+        "/v0.1/pipeline_stats",
+        "POST",
+        Some(dsm_payload.clone()),
+        &[
+            ("X-Datadog-Test-Header", "dsm"),
+            (
+                "X-Datadog-Additional-Tags",
+                "host:worker-1,default_env:prod",
+            ),
+        ],
+    )
+    .await
+    .expect("Failed to send /v0.1/pipeline_stats request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    verify_dsm_request(
+        &mock_server,
+        &dsm_payload,
+        &[
+            "host:worker-1",
+            "default_env:prod",
+            "env:test",
+            "service:payments",
+            "functionname:test-app",
+            "_dd.origin:azurefunction",
+        ],
+    )
+    .await;
+
+    agent_handle.abort();
 }
 
 #[cfg(test)]

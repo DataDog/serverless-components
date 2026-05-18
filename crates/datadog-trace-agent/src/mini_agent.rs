@@ -17,7 +17,7 @@ use tracing::warn;
 use tracing::{debug, error};
 
 use crate::http_utils::{log_and_create_http_response, verify_request_content_length};
-use crate::proxy_flusher::{ProxyFlusher, ProxyRequest};
+use crate::proxy_flusher::{ProxyFlusher, ProxyRequest, ProxyRequestKind};
 
 #[cfg(all(windows, feature = "windows-pipes"))]
 use tokio::net::windows::named_pipe::ServerOptions;
@@ -31,6 +31,7 @@ use libdd_trace_utils::trace_utils::SendData;
 const TRACE_ENDPOINT_PATH: &str = "/v0.4/traces";
 const STATS_ENDPOINT_PATH: &str = "/v0.6/stats";
 const INFO_ENDPOINT_PATH: &str = "/info";
+const DSM_ENDPOINT_PATH: &str = "/v0.1/pipeline_stats";
 const PROFILING_ENDPOINT_PATH: &str = "/profiling/v1/input";
 const TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 const STATS_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
@@ -107,11 +108,12 @@ impl MiniAgent {
                 .await;
         });
 
-        // channels to send processed profiling requests to our proxy flusher
+        // channel used to forward proxied payloads (for example profiling and
+        // Data Streams Monitoring)
         let (proxy_tx, proxy_rx): (Sender<ProxyRequest>, Receiver<ProxyRequest>) =
             mpsc::channel(PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE);
 
-        // start our proxy flusher for profiling requests
+        // start our proxy flusher for proxied requests
         let proxy_flusher = self.proxy_flusher.clone();
         tokio::spawn(async move {
             proxy_flusher.start_proxy_flusher(proxy_rx).await;
@@ -626,11 +628,29 @@ impl MiniAgent {
                     ),
                 }
             }
-            (&Method::POST, PROFILING_ENDPOINT_PATH) => {
-                match Self::profiling_proxy_handler(config, req, proxy_tx).await {
+            (&Method::POST, DSM_ENDPOINT_PATH) => {
+                match Self::proxy_handler(config, req, proxy_tx, ProxyRequestKind::DataStreams)
+                    .await
+                {
                     Ok(res) => Ok(res),
                     Err(err) => log_and_create_http_response(
-                        &format!("Error processing profiling request: {err}"),
+                        &format!(
+                            "Error processing {}: {err}",
+                            ProxyRequestKind::DataStreams.request_name()
+                        ),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                }
+            }
+            (&Method::POST, PROFILING_ENDPOINT_PATH) => {
+                match Self::proxy_handler(config, req, proxy_tx, ProxyRequestKind::Profiling).await
+                {
+                    Ok(res) => Ok(res),
+                    Err(err) => log_and_create_http_response(
+                        &format!(
+                            "Error processing {}: {err}",
+                            ProxyRequestKind::Profiling.request_name()
+                        ),
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 }
@@ -659,20 +679,23 @@ impl MiniAgent {
         }
     }
 
-    /// Handles incoming proxy requests for profiling - can be abstracted into a generic proxy handler for other proxy requests in the future
-    async fn profiling_proxy_handler(
+    /// Handles incoming proxy requests such as profiling or Data Streams
+    /// Monitoring payloads.
+    async fn proxy_handler(
         config: Arc<config::Config>,
         request: http_common::HttpRequest,
         proxy_tx: Sender<ProxyRequest>,
+        proxy_kind: ProxyRequestKind,
     ) -> http::Result<http_common::HttpResponse> {
-        debug!("Received profiling request");
+        let request_name = proxy_kind.request_name();
+        debug!("Received {request_name}");
 
         // Extract headers and body
         let (parts, body) = request.into_parts();
         if let Some(response) = verify_request_content_length(
             &parts.headers,
             config.max_request_content_length,
-            "Error processing profiling request",
+            &format!("Error processing {request_name}"),
         ) {
             return response;
         }
@@ -681,7 +704,7 @@ impl MiniAgent {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 return log_and_create_http_response(
-                    &format!("Error reading profiling request body: {e}"),
+                    &format!("Error reading {request_name} body: {e}"),
                     StatusCode::BAD_REQUEST,
                 );
             }
@@ -691,22 +714,23 @@ impl MiniAgent {
         let proxy_request = ProxyRequest {
             headers: parts.headers,
             body: body_bytes,
-            target_url: config.profiling_intake.url.to_string(),
+            target_url: proxy_kind.intake_url(config.as_ref()),
+            kind: proxy_kind,
         };
 
         debug!(
-            "Sending profiling request to channel, target: {}",
+            "Sending {request_name} to channel, target: {}",
             proxy_request.target_url
         );
 
         // Send to channel
         match proxy_tx.send(proxy_request).await {
             Ok(_) => log_and_create_http_response(
-                "Successfully buffered profiling request to be flushed",
+                &format!("Successfully buffered {request_name} to be flushed"),
                 StatusCode::OK,
             ),
             Err(err) => log_and_create_http_response(
-                &format!("Error sending profiling request to the proxy flusher: {err}"),
+                &format!("Error sending {request_name} to the proxy flusher: {err}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         }
@@ -739,6 +763,7 @@ impl MiniAgent {
                     TRACE_ENDPOINT_PATH,
                     STATS_ENDPOINT_PATH,
                     INFO_ENDPOINT_PATH,
+                    DSM_ENDPOINT_PATH,
                     PROFILING_ENDPOINT_PATH
                 ],
                 "client_drop_p0s": client_drop_p0s,

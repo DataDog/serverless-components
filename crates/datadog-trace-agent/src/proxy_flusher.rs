@@ -28,6 +28,36 @@ pub struct ProxyRequest {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub target_url: String,
+    pub kind: ProxyRequestKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProxyRequestKind {
+    DataStreams,
+    Profiling,
+}
+
+impl ProxyRequestKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            ProxyRequestKind::DataStreams => "data streams",
+            ProxyRequestKind::Profiling => "profiling",
+        }
+    }
+
+    pub fn request_name(self) -> &'static str {
+        match self {
+            ProxyRequestKind::DataStreams => "data streams request",
+            ProxyRequestKind::Profiling => "profiling request",
+        }
+    }
+
+    pub fn intake_url(self, config: &Config) -> String {
+        match self {
+            ProxyRequestKind::DataStreams => config.dsm_intake.url.to_string(),
+            ProxyRequestKind::Profiling => config.profiling_intake.url.to_string(),
+        }
+    }
 }
 
 pub struct ProxyFlusher {
@@ -37,10 +67,7 @@ pub struct ProxyFlusher {
 
 impl ProxyFlusher {
     pub fn new(config: Arc<Config>) -> Self {
-        debug!(
-            "Creating new proxy flusher with target URL: {}",
-            config.profiling_intake.url
-        );
+        debug!("Creating new proxy flusher");
         let client = build_client(
             config.proxy_url.as_deref(),
             Duration::from_secs(config.proxy_request_timeout_secs),
@@ -57,11 +84,6 @@ impl ProxyFlusher {
 
     /// Starts the proxy flusher that listens for proxy payloads from the channel and forwards them to Datadog
     pub async fn start_proxy_flusher(&self, mut rx: Receiver<ProxyRequest>) {
-        let Some(api_key) = self.config.profiling_intake.api_key.as_ref() else {
-            error!("No API key configured, cannot start");
-            return;
-        };
-
         debug!("Started, listening for requests");
 
         while let Some(proxy_payload) = rx.recv().await {
@@ -69,43 +91,93 @@ impl ProxyFlusher {
                 "Received request from channel, body size: {} bytes",
                 proxy_payload.body.len()
             );
-            self.send_request(proxy_payload, api_key).await;
+            self.send_request(proxy_payload).await;
         }
+    }
+
+    fn api_key_for_kind(&self, kind: ProxyRequestKind) -> Option<&str> {
+        match kind {
+            ProxyRequestKind::DataStreams => self.config.dsm_intake.api_key.as_deref(),
+            ProxyRequestKind::Profiling => self.config.profiling_intake.api_key.as_deref(),
+        }
+    }
+
+    fn parse_additional_tags(tag_string: &str) -> impl Iterator<Item = &str> {
+        tag_string
+            .split([',', ';'])
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+    }
+
+    fn push_unique_tag(tags: &mut Vec<String>, tag: impl Into<String>) {
+        let tag = tag.into();
+        if !tags.iter().any(|existing| existing == &tag) {
+            tags.push(tag);
+        }
+    }
+
+    fn merged_additional_tags(&self, headers: &HeaderMap) -> Result<Vec<String>, String> {
+        let mut tags = Vec::new();
+
+        if let Some(existing_tags) = headers.get(DD_ADDITIONAL_TAGS_HEADER) {
+            let existing_tags = existing_tags
+                .to_str()
+                .map_err(|e| format!("Failed to parse existing additional tags header: {e}"))?;
+            for tag in Self::parse_additional_tags(existing_tags) {
+                Self::push_unique_tag(&mut tags, tag.to_string());
+            }
+        }
+
+        if let Some(function_tags) = self.config.tags.function_tags() {
+            for tag in Self::parse_additional_tags(function_tags) {
+                Self::push_unique_tag(&mut tags, tag.to_string());
+            }
+        }
+
+        Ok(tags)
     }
 
     async fn create_request(
         &self,
         request: &ProxyRequest,
-        api_key: &str,
     ) -> Result<reqwest::RequestBuilder, String> {
         let mut headers = request.headers.clone();
+        let api_key = self
+            .api_key_for_kind(request.kind)
+            .ok_or_else(|| format!("No API key configured for {}", request.kind.name()))?;
 
         // Remove headers that are not needed for the proxy request
         headers.remove("host");
         headers.remove("content-length");
 
-        // Add headers to the request
-        let mut tag_parts = vec![];
+        // Preserve any incoming additional tags and augment them with the
+        // function tags configured for the serverless app.
+        let mut additional_tags = self.merged_additional_tags(&headers)?;
 
-        // Add serverless-specific tags for profiling
-        tag_parts.push(format!(
-            "functionname:{}",
-            self.config.app_name.as_deref().unwrap_or_default()
-        ));
-        tag_parts.push(format!(
-            "_dd.origin:{}",
-            get_dd_origin(&self.config.env_type)
-        ));
+        // Add the serverless-specific tags that power billing and product
+        // attribution for proxied requests.
+        Self::push_unique_tag(
+            &mut additional_tags,
+            format!(
+                "functionname:{}",
+                self.config.app_name.as_deref().unwrap_or_default()
+            ),
+        );
+        Self::push_unique_tag(
+            &mut additional_tags,
+            format!("_dd.origin:{}", get_dd_origin(&self.config.env_type)),
+        );
 
-        let additional_tags = tag_parts.join(",");
-        match additional_tags.parse() {
-            Ok(parsed_tags) => {
-                headers.insert(DD_ADDITIONAL_TAGS_HEADER, parsed_tags);
-            }
-            Err(e) => {
-                return Err(format!("Failed to parse additional tags header: {}", e));
-            }
-        };
+        if !additional_tags.is_empty() {
+            match additional_tags.join(",").parse() {
+                Ok(parsed_tags) => {
+                    headers.insert(DD_ADDITIONAL_TAGS_HEADER, parsed_tags);
+                }
+                Err(e) => {
+                    return Err(format!("Failed to parse additional tags header: {}", e));
+                }
+            };
+        }
 
         match api_key.parse() {
             Ok(parsed_key) => headers.insert("DD-API-KEY", parsed_key),
@@ -122,14 +194,14 @@ impl ProxyFlusher {
             .body(request.body.clone()))
     }
 
-    async fn send_request(&self, request: ProxyRequest, api_key: &str) {
+    async fn send_request(&self, request: ProxyRequest) {
         let max_retries = self.config.proxy_request_max_retries;
         let mut attempts = 0;
 
         loop {
             attempts += 1;
 
-            let request_builder = match self.create_request(&request, api_key).await {
+            let request_builder = match self.create_request(&request).await {
                 Ok(builder) => builder,
                 Err(e) => {
                     error!("{}", e);
@@ -147,14 +219,16 @@ impl ProxyFlusher {
                 Ok(r) => {
                     let url = r.url().to_string();
                     let status = r.status();
-                    let body = r.text().await;
-                    if status == 202 {
+                    if status.is_success() {
                         debug!(
                             "Successfully sent request in {} ms to {url}",
                             elapsed.as_millis()
                         );
                     } else {
-                        error!("Request failed with status {status}: {body:?}");
+                        error!(
+                            "Request failed with status {status} after {} ms to {url}; response body omitted",
+                            elapsed.as_millis()
+                        );
                     }
                     return;
                 }

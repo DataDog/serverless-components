@@ -259,6 +259,13 @@ mod tests {
                 api_key: Some("dummy_api_key".into()),
                 ..Default::default()
             },
+            dsm_intake: Endpoint {
+                url: hyper::Uri::from_static(
+                    "https://trace.agent.notdog.com/api/v0.1/pipeline_stats",
+                ),
+                api_key: Some("dummy_api_key".into()),
+                ..Default::default()
+            },
             dd_site: "datadoghq.com".to_string(),
             dd_apm_receiver_port: 8126,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
