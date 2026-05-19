@@ -6,7 +6,7 @@
 //! This module provides functionality to read raw CPU statistics from cgroup v1 files
 //! and compute the CPU usage in Linux environments.
 //!
-//! All CPU metrics are reported in nanocores (1 core = 1,000,000,000 nanocores).
+//! Raw CPU time is read in nanoseconds. The CPU metric is reported in nanocores (1 core = 1,000,000,000 nanocores).
 
 use crate::azure_cpu::{CpuStats, CpuStatsReader};
 use std::fs;
