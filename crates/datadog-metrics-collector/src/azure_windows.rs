@@ -39,16 +39,49 @@ fn read_cpu_usage_from_job_object() -> Option<CpuStats> {
     match result {
         Ok(()) => {
             // TotalUserTime and TotalKernelTime are in 100-nanosecond units - multiply by 100 to get nanoseconds
-            let total_user_ns = u64::try_from(info.TotalUserTime).ok()?;
-            let total_kernel_ns = u64::try_from(info.TotalKernelTime).ok()?;
-            let total_ns = total_user_ns
-                .checked_add(total_kernel_ns)?
-                .checked_mul(100)?;
+            let total_ns = cpu_time_to_nanoseconds(info.TotalUserTime, info.TotalKernelTime)?;
             Some(CpuStats { total: total_ns })
         }
         Err(e) => {
             debug!("Failed to read CPU usage from Job Object: {}", e);
             None
         }
+    }
+}
+
+/// Convert CPU time from 100-nanosecond units to nanoseconds
+fn cpu_time_to_nanoseconds(user_time: i64, kernel_time: i64) -> Option<u64> {
+    let total_user = u64::try_from(user_time).ok()?;
+    let total_kernel = u64::try_from(kernel_time).ok()?;
+    total_user.checked_add(total_kernel)?.checked_mul(100)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normal_values() {
+        assert_eq!(cpu_time_to_nanoseconds(100, 200), Some(30_000));
+    }
+
+    #[test]
+    fn test_negative_user_time_returns_none() {
+        assert!(cpu_time_to_nanoseconds(-1, 100).is_none());
+    }
+
+    #[test]
+    fn test_negative_kernel_time_returns_none() {
+        assert!(cpu_time_to_nanoseconds(100, -1).is_none());
+    }
+
+    #[test]
+    fn test_overflow_user_time_returns_none() {
+        assert!(cpu_time_to_nanoseconds(i64::MAX, 100).is_none());
+    }
+
+    #[test]
+    fn test_overflow_kernel_time_returns_none() {
+        assert!(cpu_time_to_nanoseconds(100, i64::MAX).is_none());
     }
 }
