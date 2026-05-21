@@ -10,8 +10,11 @@ dogstatsd = { path = "../dogstatsd", default-features = true }
 tracing = { version = "0.1", default-features = false }
 libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "0a3304c6aaf84738786b670d706a01edc22dab81", default-features = false }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_JobObjects"], optional = true, default-features = false }
+
 [dev-dependencies]
-tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"], default-features = false }
 
 [features]
-windows-enhanced-metrics = []
+windows-enhanced-metrics = ["windows-sys"]
