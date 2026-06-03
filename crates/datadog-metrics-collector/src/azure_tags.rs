@@ -10,9 +10,6 @@ use libdd_common::{azure_app_services, tag::Tag};
 use std::env;
 use tracing::warn;
 
-/// `libdd_common::azure_app_services` returns this value when the corresponding Azure metadata isn't populated.
-const AAS_UNKNOWN_VALUE: &str = "unknown";
-
 /// Builds the common tags for all enhanced metrics.
 ///
 /// Sources:
@@ -30,15 +27,15 @@ pub fn build_enhanced_metrics_tags() -> Option<SortedTags> {
             ("subscription_id", aas_metadata.get_subscription_id()),
             ("name", aas_metadata.get_site_name()),
         ] {
-            if value != AAS_UNKNOWN_VALUE {
+            if value != azure_app_services::UNKNOWN_VALUE {
                 pairs.push((name, value.to_string()));
             }
         }
     }
 
     for (tag_name, env_var) in [
-        ("region", "REGION_NAME"),
-        ("plan_tier", "WEBSITE_SKU"),
+        ("region", azure_app_services::REGION_NAME),
+        ("plan_tier", azure_app_services::WEBSITE_SKU),
         ("service", "DD_SERVICE"),
         ("env", "DD_ENV"),
         ("version", "DD_VERSION"),
