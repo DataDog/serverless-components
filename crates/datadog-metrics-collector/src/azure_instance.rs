@@ -23,7 +23,7 @@ impl InstanceMetricsCollector {
     pub fn new(aggregator: AggregatorHandle, tags: Option<SortedTags>) -> Option<Self> {
         let instance_name = azure_app_services::AAS_METADATA_FUNCTION
             .as_ref()
-            .map(|m| m.get_instance_name().to_owned())
+            .map(|m| m.get_instance_name().to_lowercase())
             .filter(|n| n != azure_app_services::UNKNOWN_VALUE);
 
         let Some(instance_id) = instance_name else {
