@@ -6,19 +6,35 @@ license.workspace = true
 
 [dependencies]
 figment = { version = "0.10", default-features = false, features = ["yaml", "env"] }
-libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "48da0d82cb32b43d4cdece35b794c9bcbc275a03" }
-libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "48da0d82cb32b43d4cdece35b794c9bcbc275a03" }
+libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "48da0d82cb32b43d4cdece35b794c9bcbc275a03", default-features = false }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "48da0d82cb32b43d4cdece35b794c9bcbc275a03", default-features = false }
 log = { version = "0.4", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde-aux = { version = "4.7", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 tracing = { version = "0.1", default-features = false }
 datadog-opentelemetry = { git = "https://github.com/DataDog/dd-trace-rs", rev = "f51cefc4ad24bec81b38fb2f36b1ed93f21ae913", default-features = false }
-dogstatsd = { path = "../dogstatsd" }
+dogstatsd = { path = "../dogstatsd", default-features = false }
 tokio = { version = "1.47", default-features = false, features = ["time"] }
 
 [dev-dependencies]
 figment = { version = "0.10", default-features = false, features = ["yaml", "env", "test"] }
+
+[features]
+# Disabled by default. Consumers that need a TLS provider on the transitive
+# libdatadog deps (e.g. for HTTPS proxying) must enable one of these features
+# explicitly; without that, no TLS provider is pulled in and the crate stays
+# crypto-agnostic. The two are mutually exclusive — pick whichever matches
+# your consumer's crypto policy.
+default = []
+https = [
+    "libdd-trace-utils/https",
+    "libdd-trace-obfuscation/https",
+]
+fips = [
+    "libdd-trace-utils/fips",
+    "libdd-trace-obfuscation/fips",
+]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
