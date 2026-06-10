@@ -24,8 +24,9 @@ figment = { version = "0.10", default-features = false, features = ["yaml", "env
 # Disabled by default. Consumers that need a TLS provider on the transitive
 # libdatadog deps (e.g. for HTTPS proxying) must enable one of these features
 # explicitly; without that, no TLS provider is pulled in and the crate stays
-# crypto-agnostic. The two are mutually exclusive — pick whichever matches
-# your consumer's crypto policy.
+# crypto-agnostic. Pick one — Cargo doesn't enforce this, but enabling both
+# (e.g. via `--all-features`) defeats the purpose since cargo unions
+# features additively, leaving both ring and aws-lc-rs in the dep graph.
 default = []
 https = [
     "libdd-trace-utils/https",
