@@ -22,8 +22,6 @@ const AZURE_LINUX_FUNCTION_ROOT_PATH_STR: &str = "/home/site/wwwroot";
 const AZURE_WINDOWS_FUNCTION_ROOT_PATH_STR: &str = "C:\\home\\site\\wwwroot";
 const AZURE_HOST_JSON_NAME: &str = "host.json";
 const AZURE_FUNCTION_JSON_NAME: &str = "function.json";
-
-// Azure environment variables for Flex consumption plan detection
 const DD_AZURE_RESOURCE_GROUP: &str = "DD_AZURE_RESOURCE_GROUP";
 
 #[derive(Default, Debug, Deserialize, Serialize, Eq, PartialEq)]
