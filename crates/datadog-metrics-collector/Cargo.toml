@@ -8,7 +8,7 @@ description = "Collector to read, compute, and submit enhanced metrics in Server
 [dependencies]
 dogstatsd = { path = "../dogstatsd", default-features = true }
 tracing = { version = "0.1", default-features = false }
-libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "869d5709ec35410ab42c94a5904cdc8deec93bdf", default-features = false }
+libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "a820699426f28cbabb3a74d87c7309d030b52e7c", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_JobObjects"], optional = true, default-features = false }
