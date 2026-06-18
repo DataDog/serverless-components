@@ -42,6 +42,10 @@ use crate::{
 pub struct Config<E: ConfigExtension = NoExtension> {
     pub site: String,
     pub api_key: String,
+    /// Datadog organization UUID. When set, enables delegated authentication
+    /// against the Datadog SaaS auth tier without requiring an api_key in some
+    /// flows. Sourced from `DD_ORG_UUID` / `org_uuid` in datadog.yaml.
+    pub dd_org_uuid: String,
     pub log_level: LogLevel,
 
     // Timeout for the request to flush data to Datadog endpoint
@@ -160,6 +164,7 @@ impl<E: ConfigExtension> Default for Config<E> {
         Self {
             site: String::default(),
             api_key: String::default(),
+            dd_org_uuid: String::default(),
             log_level: LogLevel::default(),
             flush_timeout: 30,
 

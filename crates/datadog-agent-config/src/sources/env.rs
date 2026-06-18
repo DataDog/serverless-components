@@ -35,6 +35,13 @@ pub struct EnvConfig {
     /// The Datadog API key used to submit telemetry to Datadog
     #[serde(deserialize_with = "deserialize_optional_string")]
     pub api_key: Option<String>,
+    /// @env `DD_ORG_UUID`
+    ///
+    /// The Datadog organization UUID. When set, enables delegated auth so the
+    /// agent can submit telemetry without a long-lived API key. Accepts a
+    /// string or numeric form for backwards compatibility.
+    #[serde(deserialize_with = "deserialize_string_or_int")]
+    pub org_uuid: Option<String>,
     /// @env `DD_LOG_LEVEL`
     ///
     /// Minimum log level of the Datadog Agent.
@@ -372,6 +379,7 @@ fn merge_config<E: ConfigExtension>(config: &mut Config<E>, env_config: &EnvConf
     // Basic fields
     merge_string!(config, env_config, site);
     merge_string!(config, env_config, api_key);
+    merge_string!(config, dd_org_uuid, env_config, org_uuid);
     merge_option_to_value!(config, env_config, log_level);
     merge_option_to_value!(config, env_config, flush_timeout);
 
@@ -688,6 +696,7 @@ mod tests {
         let string_env_vars: &[(&str, &str)] = &[
             ("DD_SITE", "custom-site.example.com"),
             ("DD_API_KEY", "test-api-key-12345"),
+            ("DD_ORG_UUID", "00000000-0000-0000-0000-000000000001"),
             ("DD_PROXY_HTTPS", "https://proxy.example.com"),
             ("DD_HTTP_PROTOCOL", "http1"),
             ("DD_TLS_CERT_FILE", "/opt/ca-cert.pem"),
@@ -770,6 +779,7 @@ mod tests {
             // String fields (merge_string! → Config String)
             expected.site = "custom-site.example.com".to_string();
             expected.api_key = "test-api-key-12345".to_string();
+            expected.dd_org_uuid = "00000000-0000-0000-0000-000000000001".to_string();
             expected.dd_url = "https://custom-metrics.example.com".to_string();
             expected.url = "https://custom-app.example.com".to_string();
             expected.logs_config_logs_dd_url = "https://custom-logs.example.com".to_string();
@@ -954,6 +964,7 @@ mod tests {
             let expected_config = Config {
                 site: "test-site".to_string(),
                 api_key: "test-api-key".to_string(),
+                dd_org_uuid: String::default(),
                 log_level: LogLevel::Debug,
                 compression_level: 4,
                 flush_timeout: 42,
@@ -1108,6 +1119,37 @@ mod tests {
             assert_eq!(config.dogstatsd_so_rcvbuf, Some(1_048_576));
             assert_eq!(config.dogstatsd_buffer_size, Some(65507));
             assert_eq!(config.dogstatsd_queue_size, Some(2048));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_dd_org_uuid_from_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_ORG_UUID", "11111111-2222-3333-4444-555555555555");
+
+            let mut config: Config = Config::default();
+            EnvConfigSource
+                .load(&mut config)
+                .expect("Failed to load config");
+
+            assert_eq!(config.dd_org_uuid, "11111111-2222-3333-4444-555555555555");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_dd_org_uuid_default_empty_when_unset() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            let mut config: Config = Config::default();
+            EnvConfigSource
+                .load(&mut config)
+                .expect("Failed to load config");
+
+            assert!(config.dd_org_uuid.is_empty());
             Ok(())
         });
     }

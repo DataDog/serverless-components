@@ -29,6 +29,9 @@ pub struct YamlConfig {
     pub site: Option<String>,
     #[serde(deserialize_with = "deserialize_optional_string")]
     pub api_key: Option<String>,
+    /// Datadog organization UUID; see env.rs for full docs.
+    #[serde(deserialize_with = "deserialize_string_or_int")]
+    pub org_uuid: Option<String>,
     #[serde(deserialize_with = "deserialize_with_default")]
     pub log_level: Option<LogLevel>,
 
@@ -410,6 +413,7 @@ fn merge_config<E: ConfigExtension>(config: &mut Config<E>, yaml_config: &YamlCo
     // Basic fields
     merge_string!(config, yaml_config, site);
     merge_string!(config, yaml_config, api_key);
+    merge_string!(config, dd_org_uuid, yaml_config, org_uuid);
     merge_option_to_value!(config, yaml_config, log_level);
     merge_option_to_value!(config, yaml_config, flush_timeout);
 
@@ -747,6 +751,7 @@ mod tests {
 # Basic fields — string fields get valid non-default values
 site: "custom-site.example.com"
 api_key: "test-api-key-12345"
+org_uuid: "00000000-0000-0000-0000-000000000001"
 log_level: [1, 2, 3]
 flush_timeout: [1, 2, 3]
 compression_level: [1, 2, 3]
@@ -858,6 +863,7 @@ otlp_config:
             let mut expected: Config = Config::default();
             expected.site = "custom-site.example.com".to_string();
             expected.api_key = "test-api-key-12345".to_string();
+            expected.dd_org_uuid = "00000000-0000-0000-0000-000000000001".to_string();
             expected.dd_url = "https://custom-metrics.example.com".to_string();
             expected.logs_config_logs_dd_url = "https://custom-logs.example.com".to_string();
             expected.apm_dd_url = "https://custom-apm.example.com".to_string();
@@ -1024,6 +1030,7 @@ otlp_config:
             let expected_config = Config {
                 site: "test-site".to_string(),
                 api_key: "test-api-key".to_string(),
+                dd_org_uuid: String::default(),
                 log_level: LogLevel::Debug,
                 flush_timeout: 42,
                 compression_level: 4,
