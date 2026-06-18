@@ -29,7 +29,10 @@ pub struct YamlConfig {
     pub site: Option<String>,
     #[serde(deserialize_with = "deserialize_optional_string")]
     pub api_key: Option<String>,
-    /// Datadog organization UUID; see env.rs for full docs.
+    /// YAML key: `org_uuid`. Datadog organization UUID. When set, enables
+    /// delegated auth so the agent can submit telemetry without a long-lived
+    /// API key. Accepts a string or numeric form for backwards compatibility.
+    /// Merges into the resolved config field `dd_org_uuid`.
     #[serde(deserialize_with = "deserialize_string_or_int")]
     pub org_uuid: Option<String>,
     #[serde(deserialize_with = "deserialize_with_default")]
