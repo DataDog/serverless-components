@@ -134,6 +134,11 @@ pub struct EnvConfig {
     pub compression_level: Option<i32>,
 
     // Logs
+    /// @env `DD_LOGS_ENABLED`
+    ///
+    /// Master toggle for log collection. Default `false`.
+    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
+    pub logs_enabled: Option<bool>,
     /// @env `DD_LOGS_CONFIG_LOGS_DD_URL`
     ///
     /// Define the endpoint and port to hit when using a proxy for logs.
@@ -403,6 +408,7 @@ fn merge_config<E: ConfigExtension>(config: &mut Config<E>, env_config: &EnvConf
     merge_option_to_value!(config, env_config, compression_level);
 
     // Logs
+    merge_option_to_value!(config, env_config, logs_enabled);
     merge_string!(config, env_config, logs_config_logs_dd_url);
     merge_option!(config, env_config, logs_config_processing_rules);
     merge_option_to_value!(config, env_config, logs_config_use_compression);
@@ -628,6 +634,7 @@ mod tests {
             ),
             // Bool
             ("DD_SKIP_SSL_VALIDATION", "not_a_bool"),
+            ("DD_LOGS_ENABLED", "not_a_bool"),
             ("DD_LOGS_CONFIG_USE_COMPRESSION", "not_a_bool"),
             (
                 "DD_APM_CONFIG_OBFUSCATION_HTTP_REMOVE_QUERY_STRING",
@@ -846,6 +853,7 @@ mod tests {
             jail.set_env("DD_COMPRESSION_LEVEL", "4");
 
             // Logs
+            jail.set_env("DD_LOGS_ENABLED", "true");
             jail.set_env("DD_LOGS_CONFIG_LOGS_DD_URL", "https://logs.datadoghq.com");
             jail.set_env(
                 "DD_LOGS_CONFIG_PROCESSING_RULES",
@@ -991,6 +999,7 @@ mod tests {
                     ("team".to_string(), "test-team".to_string()),
                     ("project".to_string(), "test-project".to_string()),
                 ]),
+                logs_enabled: true,
                 logs_config_logs_dd_url: "https://logs.datadoghq.com".to_string(),
                 logs_config_processing_rules: Some(vec![ProcessingRule {
                     kind: Kind::ExcludeAtMatch,
@@ -1118,6 +1127,37 @@ mod tests {
             assert_eq!(config.dogstatsd_so_rcvbuf, Some(1_048_576));
             assert_eq!(config.dogstatsd_buffer_size, Some(65507));
             assert_eq!(config.dogstatsd_queue_size, Some(2048));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_logs_enabled_from_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_LOGS_ENABLED", "true");
+
+            let mut config: Config = Config::default();
+            EnvConfigSource
+                .load(&mut config)
+                .expect("Failed to load config");
+
+            assert!(config.logs_enabled);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_logs_enabled_defaults_false_when_unset() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            let mut config: Config = Config::default();
+            EnvConfigSource
+                .load(&mut config)
+                .expect("Failed to load config");
+
+            assert!(!config.logs_enabled);
             Ok(())
         });
     }

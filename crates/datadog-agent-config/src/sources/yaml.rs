@@ -72,6 +72,10 @@ pub struct YamlConfig {
     pub tags: HashMap<String, String>,
 
     // Logs
+    /// YAML key: `logs_enabled`. Master toggle for log collection; matches
+    /// dd-agent's top-level `logs_enabled` (default `false`).
+    #[serde(deserialize_with = "deserialize_optional_bool_from_anything")]
+    pub logs_enabled: Option<bool>,
     #[serde(deserialize_with = "deserialize_with_default")]
     pub logs_config: LogsConfig,
 
@@ -438,6 +442,7 @@ fn merge_config<E: ConfigExtension>(config: &mut Config<E>, yaml_config: &YamlCo
     merge_string!(config, yaml_config, dd_url);
 
     // Logs
+    merge_option_to_value!(config, yaml_config, logs_enabled);
     merge_string!(
         config,
         logs_config_logs_dd_url,
@@ -777,6 +782,7 @@ version: "v1.0.0"
 tags: 12345
 
 # Logs (nested)
+logs_enabled: [1, 2, 3]
 logs_config:
   logs_dd_url: "https://custom-logs.example.com"
   processing_rules: 12345
@@ -867,6 +873,7 @@ otlp_config:
             expected.api_key = "test-api-key-12345".to_string();
             expected.dd_org_uuid = "00000000-0000-0000-0000-000000000001".to_string();
             expected.dd_url = "https://custom-metrics.example.com".to_string();
+            // logs_enabled was given an invalid type above → must stay at default (false)
             expected.logs_config_logs_dd_url = "https://custom-logs.example.com".to_string();
             expected.apm_dd_url = "https://custom-apm.example.com".to_string();
             // Option<String> fields
@@ -934,6 +941,7 @@ tags:
   - "project:test-project"
 
 # Logs
+logs_enabled: true
 logs_config:
   logs_dd_url: "https://logs.datadoghq.com"
   processing_rules:
@@ -1060,6 +1068,7 @@ otlp_config:
                     ("team".to_string(), "test-team".to_string()),
                     ("project".to_string(), "test-project".to_string()),
                 ]),
+                logs_enabled: true,
                 logs_config_logs_dd_url: "https://logs.datadoghq.com".to_string(),
                 logs_config_processing_rules: Some(vec![ProcessingRule {
                     name: "test-exclude".to_string(),
