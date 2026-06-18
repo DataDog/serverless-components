@@ -782,7 +782,7 @@ version: "v1.0.0"
 tags: 12345
 
 # Logs (nested)
-logs_enabled: true
+logs_enabled: [1, 2, 3]
 logs_config:
   logs_dd_url: "https://custom-logs.example.com"
   processing_rules: 12345
@@ -873,7 +873,7 @@ otlp_config:
             expected.api_key = "test-api-key-12345".to_string();
             expected.dd_org_uuid = "00000000-0000-0000-0000-000000000001".to_string();
             expected.dd_url = "https://custom-metrics.example.com".to_string();
-            expected.logs_enabled = true;
+            // logs_enabled was given an invalid type above → must stay at default (false)
             expected.logs_config_logs_dd_url = "https://custom-logs.example.com".to_string();
             expected.apm_dd_url = "https://custom-apm.example.com".to_string();
             // Option<String> fields
