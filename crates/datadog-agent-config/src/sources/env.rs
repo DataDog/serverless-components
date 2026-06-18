@@ -38,9 +38,8 @@ pub struct EnvConfig {
     /// @env `DD_ORG_UUID`
     ///
     /// The Datadog organization UUID. When set, enables delegated auth so the
-    /// agent can submit telemetry without a long-lived API key. Accepts a
-    /// string or numeric form for backwards compatibility.
-    #[serde(deserialize_with = "deserialize_string_or_int")]
+    /// agent can submit telemetry without a long-lived API key.
+    #[serde(deserialize_with = "deserialize_optional_string")]
     pub org_uuid: Option<String>,
     /// @env `DD_LOG_LEVEL`
     ///
