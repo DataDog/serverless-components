@@ -74,6 +74,11 @@ pub struct Config<E: ConfigExtension = NoExtension> {
     pub tags: HashMap<String, String>,
 
     // Logs
+    /// Master toggle for log collection. Sourced from `DD_LOGS_ENABLED` /
+    /// `logs_enabled` in datadog.yaml. Defaults to `false` to match the
+    /// dd-agent default; consumers that want a different default should
+    /// override post-build or in their `ConfigExtension`.
+    pub logs_enabled: bool,
     pub logs_config_logs_dd_url: String,
     pub logs_config_processing_rules: Option<Vec<ProcessingRule>>,
     pub logs_config_use_compression: bool,
@@ -189,6 +194,7 @@ impl<E: ConfigExtension> Default for Config<E> {
             compression_level: 3,
 
             // Logs
+            logs_enabled: false,
             logs_config_logs_dd_url: String::default(),
             logs_config_processing_rules: None,
             logs_config_use_compression: true,
