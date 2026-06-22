@@ -493,7 +493,6 @@ version = "0.1.0"
 dependencies = [
  "dogstatsd",
  "libdd-common 4.2.0",
- "libdd-common 4.2.0",
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
@@ -515,7 +514,6 @@ dependencies = [
  "libdd-common 2.0.1",
  "libdd-data-pipeline",
  "libdd-telemetry",
- "libdd-tinybytes 1.1.0",
  "libdd-tinybytes 1.1.0",
  "libdd-trace-utils 2.0.2",
  "lru",
@@ -582,7 +580,6 @@ dependencies = [
  "hyper-util",
  "libdd-capabilities",
  "libdd-capabilities-impl",
- "libdd-common 4.2.0",
  "libdd-common 4.2.0",
  "libdd-library-config",
  "libdd-trace-obfuscation",
@@ -1468,7 +1465,6 @@ dependencies = [
  "http-body-util",
  "libdd-capabilities",
  "libdd-common 4.2.0",
- "libdd-common 4.2.0",
  "tokio",
 ]
 
@@ -1554,7 +1550,6 @@ dependencies = [
  "libdd-dogstatsd-client",
  "libdd-telemetry",
  "libdd-tinybytes 1.1.0",
- "libdd-tinybytes 1.1.0",
  "libdd-trace-protobuf 2.0.0",
  "libdd-trace-stats 1.0.3",
  "libdd-trace-utils 2.0.2",
@@ -1607,7 +1602,6 @@ dependencies = [
  "anyhow",
  "libc",
  "libdd-trace-protobuf 3.0.2",
- "libdd-trace-protobuf 3.0.2",
  "memfd",
  "prost 0.14.3",
  "rand 0.8.6",
@@ -1627,7 +1621,6 @@ dependencies = [
  "futures-util",
  "libdd-capabilities",
  "libdd-capabilities-impl",
- "libdd-common 4.2.0",
  "libdd-common 4.2.0",
  "tokio",
  "tokio-util",
@@ -1693,7 +1686,6 @@ version = "2.0.0"
 source = "git+https://github.com/DataDog/libdatadog?rev=a820699426f28cbabb3a74d87c7309d030b52e7c#a820699426f28cbabb3a74d87c7309d030b52e7c"
 dependencies = [
  "anyhow",
- "libdd-trace-protobuf 3.0.2",
  "libdd-trace-protobuf 3.0.2",
 ]
 
@@ -1786,7 +1778,6 @@ dependencies = [
  "indexmap",
  "libdd-common 2.0.1",
  "libdd-tinybytes 1.1.0",
- "libdd-tinybytes 1.1.0",
  "libdd-trace-normalization 1.0.2",
  "libdd-trace-protobuf 2.0.0",
  "prost 0.14.3",
@@ -1823,10 +1814,7 @@ dependencies = [
  "libdd-capabilities-impl",
  "libdd-common 4.2.0",
  "libdd-tinybytes 1.1.1",
- "libdd-common 4.2.0",
- "libdd-tinybytes 1.1.1",
  "libdd-trace-normalization 2.0.0",
- "libdd-trace-protobuf 3.0.2",
  "libdd-trace-protobuf 3.0.2",
  "prost 0.14.3",
  "rand 0.8.6",
