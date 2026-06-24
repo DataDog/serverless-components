@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 use http_body_util::BodyExt;
 use hyper::{Method, Request};
+use libdd_common::azure_app_services;
 use libdd_common::http_common;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -21,10 +22,7 @@ const AZURE_LINUX_FUNCTION_ROOT_PATH_STR: &str = "/home/site/wwwroot";
 const AZURE_WINDOWS_FUNCTION_ROOT_PATH_STR: &str = "C:\\home\\site\\wwwroot";
 const AZURE_HOST_JSON_NAME: &str = "host.json";
 const AZURE_FUNCTION_JSON_NAME: &str = "function.json";
-
-// Azure environment variables for Flex consumption plan detection
 const DD_AZURE_RESOURCE_GROUP: &str = "DD_AZURE_RESOURCE_GROUP";
-const WEBSITE_SKU: &str = "WEBSITE_SKU";
 
 #[derive(Default, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct GCPMetadata {
@@ -253,7 +251,7 @@ async fn get_gcp_metadata_from_body(body: http_common::Body) -> anyhow::Result<G
 /// Checks if we're running in Azure Flex Consumption plan without DD_AZURE_RESOURCE_GROUP set
 /// This would cause billing issues, so we should shut down the trace agent
 fn is_azure_flex_without_resource_group() -> bool {
-    env::var(WEBSITE_SKU)
+    env::var(azure_app_services::WEBSITE_SKU)
         .map(|sku| sku == "FlexConsumption")
         .unwrap_or(false)
         && env::var(DD_AZURE_RESOURCE_GROUP).is_err()
@@ -370,10 +368,11 @@ mod tests {
     use crate::env_verifier::{
         AZURE_FUNCTION_JSON_NAME, AZURE_HOST_JSON_NAME, AzureVerificationClient,
         AzureVerificationClientWrapper, DD_AZURE_RESOURCE_GROUP, GCPInstance, GCPMetadata,
-        GCPProject, GoogleMetadataClient, WEBSITE_SKU, ensure_azure_function_environment,
+        GCPProject, GoogleMetadataClient, ensure_azure_function_environment,
         ensure_gcp_function_environment, get_region_from_gcp_region_string,
         is_azure_flex_without_resource_group,
     };
+    use libdd_common::azure_app_services;
 
     use super::{EnvVerifier, ServerlessEnvVerifier};
 
@@ -651,7 +650,7 @@ mod tests {
         temp_env::with_vars(
             [
                 (DD_AZURE_RESOURCE_GROUP, None::<&str>),
-                (WEBSITE_SKU, Some("FlexConsumption")),
+                (azure_app_services::WEBSITE_SKU, Some("FlexConsumption")),
             ],
             || assert!(is_azure_flex_without_resource_group()),
         );
@@ -663,7 +662,7 @@ mod tests {
         temp_env::with_vars(
             [
                 (DD_AZURE_RESOURCE_GROUP, Some("test-resource-group")),
-                (WEBSITE_SKU, Some("FlexConsumption")),
+                (azure_app_services::WEBSITE_SKU, Some("FlexConsumption")),
             ],
             || assert!(!is_azure_flex_without_resource_group()),
         );
@@ -675,7 +674,7 @@ mod tests {
         temp_env::with_vars(
             [
                 (DD_AZURE_RESOURCE_GROUP, None::<&str>),
-                (WEBSITE_SKU, Some("ElasticPremium")),
+                (azure_app_services::WEBSITE_SKU, Some("ElasticPremium")),
             ],
             || assert!(!is_azure_flex_without_resource_group()),
         );
