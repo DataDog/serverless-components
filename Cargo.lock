@@ -458,6 +458,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-agent-trace-sampler"
+version = "0.1.0"
+
+[[package]]
 name = "datadog-fips"
 version = "0.1.0"
 dependencies = [
