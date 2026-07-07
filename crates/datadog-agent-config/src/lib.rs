@@ -462,9 +462,9 @@ impl<E: ConfigExtension> ConfigBuilder<E> {
                 .clone_from(&self.config.trace_propagation_style);
         }
 
-        // Trim trailing slashes so suffix-appending downstream (e.g. the APM intake path
-        // here, or the logs `/api/v2/logs` path appended by consumers) doesn't produce a
-        // double slash.
+        // Trim trailing slashes: some consumers validate `dd_url`/`url` against a strict
+        // prefix pattern (e.g. dogstatsd's `DdUrl`/`DdDdUrl`) that rejects a trailing slash
+        // with a `UrlPrefixError`.
         self.config.dd_url = trim_url(&self.config.dd_url);
         self.config.url = trim_url(&self.config.url);
 
@@ -477,7 +477,7 @@ impl<E: ConfigExtension> ConfigBuilder<E> {
         }
 
         // If APM URL is not set, set it to the default
-        if self.config.apm_dd_url.is_empty() {
+        if self.config.apm_dd_url.trim().is_empty() {
             self.config.apm_dd_url = trace_intake_url(self.config.site.clone().as_str());
         } else {
             // If APM URL is set, add the site to the URL
@@ -491,7 +491,7 @@ impl<E: ConfigExtension> ConfigBuilder<E> {
 #[inline]
 #[must_use]
 fn trim_url(url: &str) -> String {
-    url.trim_end_matches('/').to_owned()
+    url.trim().trim_end_matches('/').to_owned()
 }
 
 #[inline]
