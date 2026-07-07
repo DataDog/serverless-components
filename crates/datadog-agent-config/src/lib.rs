@@ -462,24 +462,36 @@ impl<E: ConfigExtension> ConfigBuilder<E> {
                 .clone_from(&self.config.trace_propagation_style);
         }
 
+        // Trim trailing slashes: some consumers validate `dd_url`/`url` against a strict
+        // prefix pattern (e.g. dogstatsd's `DdUrl`/`DdDdUrl`) that rejects a trailing slash
+        // with a `UrlPrefixError`.
+        self.config.dd_url = trim_url(&self.config.dd_url);
+        self.config.url = trim_url(&self.config.url);
+
         // If Logs URL is not set, set it to the default
         if self.config.logs_config_logs_dd_url.trim().is_empty() {
             self.config.logs_config_logs_dd_url = build_fqdn_logs(self.config.site.clone());
         } else {
             self.config.logs_config_logs_dd_url =
-                logs_intake_url(self.config.logs_config_logs_dd_url.as_str());
+                logs_intake_url(&trim_url(&self.config.logs_config_logs_dd_url));
         }
 
         // If APM URL is not set, set it to the default
-        if self.config.apm_dd_url.is_empty() {
+        if self.config.apm_dd_url.trim().is_empty() {
             self.config.apm_dd_url = trace_intake_url(self.config.site.clone().as_str());
         } else {
             // If APM URL is set, add the site to the URL
-            self.config.apm_dd_url = trace_intake_url_prefixed(self.config.apm_dd_url.as_str());
+            self.config.apm_dd_url = trace_intake_url_prefixed(&trim_url(&self.config.apm_dd_url));
         }
 
         self.config.clone()
     }
+}
+
+#[inline]
+#[must_use]
+fn trim_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_owned()
 }
 
 #[inline]
@@ -722,6 +734,24 @@ pub mod tests {
     }
 
     #[test]
+    fn test_logs_intake_url_trims_trailing_slash() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env(
+                "DD_LOGS_CONFIG_LOGS_DD_URL",
+                "https://custom-intake.logs.datadoghq.com/",
+            );
+
+            let config = get_config(Path::new(""));
+            assert_eq!(
+                config.logs_config_logs_dd_url,
+                "https://custom-intake.logs.datadoghq.com".to_string()
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_support_pci_traces_intake_url() {
         figment::Jail::expect_with(|jail| {
             jail.clear_env();
@@ -749,6 +779,21 @@ pub mod tests {
     }
 
     #[test]
+    fn test_dd_dd_url_trims_trailing_slash() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_DD_URL", "https://test.agent.datadoghq.com/");
+
+            let config = get_config(Path::new(""));
+            assert_eq!(
+                config.dd_url,
+                "https://test.agent.datadoghq.com".to_string()
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_support_dd_url() {
         figment::Jail::expect_with(|jail| {
             jail.clear_env();
@@ -756,6 +801,33 @@ pub mod tests {
 
             let config = get_config(Path::new(""));
             assert_eq!(config.url, "custom_proxy:3128".to_string());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_dd_url_trims_trailing_slash() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_URL", "https://test.datadoghq.com/");
+
+            let config = get_config(Path::new(""));
+            assert_eq!(config.url, "https://test.datadoghq.com".to_string());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_apm_dd_url_trims_trailing_slash() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("DD_APM_DD_URL", "https://test.agent.datadoghq.com/");
+
+            let config = get_config(Path::new(""));
+            assert_eq!(
+                config.apm_dd_url,
+                "https://test.agent.datadoghq.com/api/v0.2/traces".to_string()
+            );
             Ok(())
         });
     }
