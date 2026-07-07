@@ -789,6 +789,8 @@ pub mod tests {
                 config.dd_url,
                 "https://test.agent.datadoghq.com".to_string()
             );
+            dogstatsd::datadog::DdDdUrl::new(config.dd_url.clone())
+                .expect("DD_DD_URL with a trailing slash should still parse");
             Ok(())
         });
     }
@@ -813,6 +815,8 @@ pub mod tests {
 
             let config = get_config(Path::new(""));
             assert_eq!(config.url, "https://test.datadoghq.com".to_string());
+            dogstatsd::datadog::DdUrl::new(config.url.clone())
+                .expect("DD_URL with a trailing slash should still parse");
             Ok(())
         });
     }
