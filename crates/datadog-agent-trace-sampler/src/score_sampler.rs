@@ -124,6 +124,10 @@ impl Sampler {
     }
 
     /// Returns the sampling rate to apply to a signature.
+    ///
+    /// The result is not clamped, mirroring the Go agent's `getSignatureSampleRate`.
+    /// `extra_rate` defaults to 1.0 (Go's `ExtraSampleRate`); a value > 1.0 is an
+    /// explicit misconfiguration that the Go agent likewise does not guard against.
     fn get_signature_sample_rate(&self, sig: Signature) -> f64 {
         match self.rates.get(&sig) {
             Some(&rate) => rate * self.extra_rate,
