@@ -296,6 +296,13 @@ impl ErrorsSampler {
     /// Limits the number of stored signatures. Once cardinality exceeds
     /// `SHRINK_CARDINALITY / 2`, new signatures fold onto a fixed set of values;
     /// previously active signatures are unaffected.
+    ///
+    /// The allow-list is snapshotted from `sampler.rates`, matching the Go agent's
+    /// `shrink`. `rates` is rebuilt only on bucket rotation, so in the cold-start
+    /// case where more than `SHRINK_CARDINALITY / 2` distinct signatures arrive in
+    /// the very first bucket, `rates` is still empty and every signature is folded.
+    /// That is harmless: no signature has an individualized rate yet, so there is
+    /// nothing to protect, and the allow-list starts working after the first rotation.
     fn shrink(&mut self, sig: Signature) -> Signature {
         if self.sampler.size() < SHRINK_CARDINALITY / 2 {
             self.shrink_allow_list = None;
