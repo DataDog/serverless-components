@@ -252,6 +252,12 @@ impl ErrorsSampler {
     /// `now_unix_secs` drives the rolling-window rotation and is passed in (not
     /// read from a clock) to keep the crate dependency-free and deterministically
     /// testable.
+    ///
+    /// This does not check that the trace actually contains an error span, which
+    /// mirrors the Go agent's `ScoreSampler.Sample` (it only guards `disabled`
+    /// and empty traces). Filtering to errored traces is the caller's job: the
+    /// integration site feeds only errored P0 chunks into the error sampler, so
+    /// the error TPS budget is never spent on non-error traces.
     pub fn sample(&mut self, now_unix_secs: i64, trace: &TraceView) -> SampleDecision {
         // A malformed chunk (empty, or root_index past the end) cannot be scored;
         // do not rescue it. Guards the slice indexing in the signature computation.
