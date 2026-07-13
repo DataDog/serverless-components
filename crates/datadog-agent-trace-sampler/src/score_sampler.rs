@@ -277,6 +277,10 @@ impl ErrorsSampler {
     }
 
     fn apply_sample_rate(&self, trace: &TraceView, rate: f64) -> SampleDecision {
+        // No clamping, mirroring the Go agent's `applySampleRate`. A missing
+        // global rate is 1.0 by convention (see `TraceView::root_global_sample_rate`),
+        // and `sample_by_rate` already treats any `new_rate >= 1.0` as always-keep,
+        // so the product is well-defined without bounding it to [0, 1].
         let new_rate = trace.root_global_sample_rate * rate;
         if sample_by_rate(trace.trace_id, new_rate) {
             SampleDecision::Keep { errors_sr: rate }
