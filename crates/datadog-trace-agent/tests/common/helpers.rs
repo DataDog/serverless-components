@@ -54,6 +54,22 @@ pub fn create_client_span_with_peer_tag_payload() -> Vec<u8> {
     rmp_serde::to_vec(&vec![vec![span]]).expect("Failed to serialize client peer tag trace")
 }
 
+/// Build a raw, uncompressed, msgpack `ClientStatsPayload` body as sent by a tracer directly
+/// to `/v0.6/stats`. `service` is used to distinguish tracer computed stats from agent computed stats.
+pub fn create_test_client_stats_payload(service: &str) -> Vec<u8> {
+    let payload = pb::ClientStatsPayload {
+        service: service.to_string(),
+        stats: vec![pb::ClientStatsBucket {
+            start: 0,
+            duration: 10_000_000_000,
+            stats: vec![],
+            agent_time_shift: 0,
+        }],
+        ..Default::default()
+    };
+    rmp_serde::to_vec_named(&payload).expect("Failed to serialize client stats payload")
+}
+
 /// Decompress a gzip+msgpack stats payload and deserialize it into a `StatsPayload`.
 /// The stats flusher encodes payloads as `gzip(rmp_serde::to_vec_named(StatsPayload))`.
 pub fn decode_stats_payload(body: &[u8]) -> pb::StatsPayload {
