@@ -40,6 +40,16 @@ impl StatsProcessor for ServerlessStatsProcessor {
         tx: Sender<pb::ClientStatsPayload>,
     ) -> http::Result<http_common::HttpResponse> {
         debug!("Received trace stats to process");
+
+        // When the agent computes trace stats itself, tracer computed stats sent to this
+        // endpoint are redundant and are dropped.
+        if config.agent_stats_computation_enabled {
+            return log_and_create_http_response(
+                "Dropping trace stats: agent stats computation is enabled",
+                StatusCode::ACCEPTED,
+            );
+        }
+
         let (parts, body) = req.into_parts();
 
         if let Some(response) = http_utils::verify_request_content_length(

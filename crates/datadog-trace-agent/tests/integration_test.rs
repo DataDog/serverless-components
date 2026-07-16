@@ -4,8 +4,9 @@
 mod common;
 
 use common::helpers::{
-    create_client_span_with_peer_tag_payload, create_test_trace_payload,
-    create_trace_with_span_kind_children_payload, decode_stats_payload, send_tcp_request,
+    create_client_span_with_peer_tag_payload, create_test_client_stats_payload,
+    create_test_trace_payload, create_trace_with_span_kind_children_payload, decode_stats_payload,
+    send_tcp_request,
 };
 use common::mock_server::MockServer;
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
@@ -302,8 +303,8 @@ async fn test_mini_agent_tcp_handles_requests() {
 
     // Check client_drop_p0s flag
     assert_eq!(
-        json["client_drop_p0s"], true,
-        "Expected client_drop_p0s to be true"
+        json["client_drop_p0s"], false,
+        "Expected client_drop_p0s to be false"
     );
 
     // Check span_kinds_stats_computed
@@ -418,8 +419,8 @@ async fn test_mini_agent_named_pipe_handles_requests() {
 
     // Check client_drop_p0s flag
     assert_eq!(
-        json["client_drop_p0s"], true,
-        "Expected client_drop_p0s to be true"
+        json["client_drop_p0s"], false,
+        "Expected client_drop_p0s to be false"
     );
 
     // Check span_kinds_stats_computed
@@ -659,12 +660,13 @@ async fn test_concentrator_task_death_shuts_down_mini_agent() {
 #[cfg(test)]
 #[tokio::test]
 #[serial]
-async fn test_mini_agent_tcp_with_real_flushers_and_tracer_computed_stats() {
+async fn test_tracer_and_agent_stats_disabled_produces_no_stats() {
     let mock_server: MockServer = MockServer::start().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut config = create_tcp_test_config(8128); // use different port to avoid race condition with other tests
     configure_mock_endpoints(&mut config, &mock_server.url());
+    config.agent_stats_computation_enabled = false;
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
 
@@ -692,7 +694,133 @@ async fn test_mini_agent_tcp_with_real_flushers_and_tracer_computed_stats() {
         "Mini agent server failed to start within timeout"
     );
 
-    // Send trace data
+    // Send trace data with no Datadog-Client-Computed-Stats header to indicate tracer has not computed its own stats, and don't make a request to /v0.6/stats.
+    let trace_payload = create_test_trace_payload(None);
+    let trace_response =
+        send_tcp_request(test_port, "/v0.4/traces", "POST", Some(trace_payload), &[])
+            .await
+            .expect("Failed to send /v0.4/traces request");
+    assert_eq!(trace_response.status(), StatusCode::OK);
+
+    verify_trace_request(&mock_server).await;
+    // Bounded wait to confirm absence of stats request — neither side computed stats.
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+    verify_no_stats_request(&mock_server);
+
+    // Clean up
+    agent_handle.abort();
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[serial]
+async fn test_tracer_disabled_agent_stats_enabled_uses_agent_stats() {
+    let mock_server: MockServer = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut config = create_tcp_test_config(8136); // use different port to avoid race condition with other tests
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    config.agent_stats_computation_enabled = true;
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+
+    let agent_handle = tokio::spawn(async move {
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let _ = mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await;
+    });
+
+    // Wait for server to be ready
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    // Send trace data with no Datadog-Client-Computed-Stats header to indicate tracer has not computed its own stats, and don't make a request to /v0.6/stats.
+    let trace_payload = create_test_trace_payload(None);
+    let trace_response =
+        send_tcp_request(test_port, "/v0.4/traces", "POST", Some(trace_payload), &[])
+            .await
+            .expect("Failed to send /v0.4/traces request");
+    assert_eq!(trace_response.status(), StatusCode::OK);
+
+    verify_trace_request(&mock_server).await;
+    verify_stats_request(&mock_server).await; // Agent should compute stats
+
+    // Clean up
+    agent_handle.abort();
+}
+
+#[tokio::test]
+#[serial]
+async fn test_tracer_and_agent_stats_enabled_uses_agent_stats_no_duplicates() {
+    let mock_server: MockServer = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut config = create_tcp_test_config(8135); // use different port to avoid race condition with other tests
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    config.agent_stats_computation_enabled = true;
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+
+    let agent_handle = tokio::spawn(async move {
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let _ = mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await;
+    });
+
+    // Wait for server to be ready
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    // Send trace data with Datadog-Client-Computed-Stats header to indicate tracer has computed its own stats, and make a request to /v0.6/stats.
+    // Tag with a marker service so we can tell them apart from anything the agent computes itself.
+    let stats_response = send_tcp_request(
+        test_port,
+        "/v0.6/stats",
+        "POST",
+        Some(create_test_client_stats_payload("tracer-marker-stats")),
+        &[],
+    )
+    .await
+    .expect("Failed to send /v0.6/stats request");
+    assert_eq!(
+        stats_response.status(),
+        StatusCode::ACCEPTED,
+        "Expected /v0.6/stats to accept and drop the request"
+    );
+
+    // The agent should ignore Datadog-Client-Computed-Stats and compute stats.
     let trace_payload = create_test_trace_payload(None);
     let trace_response = send_tcp_request(
         test_port,
@@ -706,10 +834,94 @@ async fn test_mini_agent_tcp_with_real_flushers_and_tracer_computed_stats() {
     assert_eq!(trace_response.status(), StatusCode::OK);
 
     verify_trace_request(&mock_server).await;
-    // Bounded wait to confirm absence of stats request — stats wouldn't
-    // be generated when Datadog-Client-Computed-Stats is set on the trace.
-    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
-    verify_no_stats_request(&mock_server);
+    verify_stats_request(&mock_server).await;
+
+    // The tracer computed stats should never reach the backend. Only the agent computed stats should reach the backend.
+    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
+    let has_marker = stats_reqs
+        .iter()
+        .map(|req| decode_stats_payload(&req.body))
+        .any(|payload| {
+            payload
+                .stats
+                .iter()
+                .any(|csp| csp.service == "tracer-marker-stats")
+        });
+    assert!(
+        !has_marker,
+        "Expected tracer computed stats to be dropped, not forwarded to the backend"
+    );
+
+    // Clean up
+    agent_handle.abort();
+}
+
+#[tokio::test]
+#[serial]
+async fn test_tracer_stats_enabled_agent_stats_disabled_forwards_tracer_stats() {
+    let mock_server: MockServer = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut config = create_tcp_test_config(8134); // use different port to avoid race condition with other tests
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    config.agent_stats_computation_enabled = false;
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let (mini_agent, _stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+
+    let agent_handle = tokio::spawn(async move {
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
+    });
+
+    // Wait for server to be ready
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    // Send trace data with Datadog-Client-Computed-Stats header to indicate tracer has computed its own stats, and make a request to /v0.6/stats.
+    let stats_response = send_tcp_request(
+        test_port,
+        "/v0.6/stats",
+        "POST",
+        Some(create_test_client_stats_payload("tracer-marker-stats")),
+        &[],
+    )
+    .await
+    .expect("Failed to send /v0.6/stats request");
+    assert_eq!(stats_response.status(), StatusCode::ACCEPTED);
+
+    verify_stats_request(&mock_server).await;
+    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
+    let has_marker = stats_reqs
+        .iter()
+        .map(|req| decode_stats_payload(&req.body))
+        .any(|payload| {
+            payload
+                .stats
+                .iter()
+                .any(|csp| csp.service == "tracer-marker-stats")
+        });
+    assert!(
+        has_marker,
+        "Expected tracer computed stats to be forwarded to the backend"
+    );
+
+    // Clean up
+    agent_handle.abort();
 
     // Clean up
     agent_handle.abort();
