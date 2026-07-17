@@ -57,7 +57,7 @@ impl DdApi {
         let url = format!("{}/api/beta/sketches", self.metrics_intake_url_prefix);
         let safe_body = sketches
             .write_to_bytes()
-            .map_err(|e| ShippingError::Payload(format!("Failed to serialize series: {e}")))?;
+            .map_err(|e| ShippingError::Payload(format!("Failed to serialize sketches: {e}")))?;
         trace!("Sending distributions: {:?}", &sketches);
         self.ship_data(url, safe_body, "application/x-protobuf")
             .await
