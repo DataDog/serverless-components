@@ -187,10 +187,10 @@ impl TraceProcessor for ServerlessTraceProcessor {
             }
         }
 
-        // Skip agent side stats computation if disabled or if the tracer has already computed stats
+        // When agent stats computation is enabled, the agent unconditionally computes trace
+        // stats, ignoring the Datadog-Client-Computed-Stats header.
         if let Some(ref concentrator) = self.stats_concentrator
             && config.agent_stats_computation_enabled
-            && !tracer_header_tags.client_computed_stats
         {
             Self::send_to_concentrator(concentrator, &payload);
         }

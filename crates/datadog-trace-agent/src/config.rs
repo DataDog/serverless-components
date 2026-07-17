@@ -264,7 +264,7 @@ impl Config {
             peer_tags: peer_tag_keys()?,
             agent_stats_computation_enabled: env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
                 .map(|val| val.to_lowercase() == "true")
-                .unwrap_or(false),
+                .unwrap_or(true),
         })
     }
 }
@@ -782,7 +782,7 @@ pub mod test_helpers {
             proxy_url: None,
             env: "none".to_string(),
             peer_tags: peer_tag_keys().unwrap(),
-            agent_stats_computation_enabled: false,
+            agent_stats_computation_enabled: true,
         }
     }
 }
