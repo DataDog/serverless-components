@@ -40,7 +40,8 @@ pub fn parse_metric_namespace(namespace: &str) -> Option<String> {
     let mut chars = trimmed.chars();
 
     // Check first character is a letter
-    if let Some(first_char) = chars.next() {
+    {
+        let first_char = chars.next()?;
         if !first_char.is_ascii_alphabetic() {
             tracing::error!(
                 "DD_STATSD_METRIC_NAMESPACE must start with a letter, got: '{}'. Ignoring namespace.",
@@ -48,8 +49,6 @@ pub fn parse_metric_namespace(namespace: &str) -> Option<String> {
             );
             return None;
         }
-    } else {
-        return None;
     }
 
     // Check remaining characters are valid (alphanumeric, underscore, or period)

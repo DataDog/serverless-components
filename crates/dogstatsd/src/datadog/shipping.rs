@@ -43,7 +43,7 @@ impl DdApi {
 
     /// Ship a serialized series to the API, blocking
     pub async fn ship_series(&self, series: &Series) -> Result<Response, ShippingError> {
-        let url = format!("{}/api/v2/series", &self.metrics_intake_url_prefix);
+        let url = format!("{}/api/v2/series", self.metrics_intake_url_prefix);
         let safe_body = serde_json::to_vec(&series)
             .map_err(|e| ShippingError::Payload(format!("Failed to serialize series: {e}")))?;
         trace!("Sending body: {:?}", &series);
@@ -54,10 +54,10 @@ impl DdApi {
         &self,
         sketches: &SketchPayload,
     ) -> Result<Response, ShippingError> {
-        let url = format!("{}/api/beta/sketches", &self.metrics_intake_url_prefix);
+        let url = format!("{}/api/beta/sketches", self.metrics_intake_url_prefix);
         let safe_body = sketches
             .write_to_bytes()
-            .map_err(|e| ShippingError::Payload(format!("Failed to serialize series: {e}")))?;
+            .map_err(|e| ShippingError::Payload(format!("Failed to serialize sketches: {e}")))?;
         trace!("Sending distributions: {:?}", &sketches);
         self.ship_data(url, safe_body, "application/x-protobuf")
             .await
