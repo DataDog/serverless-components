@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
@@ -61,9 +62,39 @@ impl StatsConcentratorHandle {
     }
 }
 
+/// Wraps `Arc<TracerMetadata>` so it can be used as a `HashMap` key. `TracerMetadata` only derives
+/// `PartialEq` upstream in libdatadog, not `Eq` or `Hash`. All fields are `Eq` + `Hash`,
+/// so hashing them field by field is consistent with equality.
+#[derive(Debug, Clone)]
+struct MetadataKey(Arc<TracerMetadata>);
+
+impl PartialEq for MetadataKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for MetadataKey {}
+
+impl Hash for MetadataKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let metadata = &*self.0;
+        metadata.schema_version.hash(state);
+        metadata.runtime_id.hash(state);
+        metadata.tracer_language.hash(state);
+        metadata.tracer_version.hash(state);
+        metadata.hostname.hash(state);
+        metadata.service_name.hash(state);
+        metadata.service_env.hash(state);
+        metadata.service_version.hash(state);
+        metadata.process_tags.hash(state);
+        metadata.container_id.hash(state);
+    }
+}
+
 pub struct StatsConcentratorService {
     /// One concentrator per unique TracerMetadata.
-    concentrators: HashMap<Arc<TracerMetadata>, SpanConcentrator>,
+    concentrators: HashMap<MetadataKey, SpanConcentrator>,
     rx: mpsc::UnboundedReceiver<ConcentratorCommand>,
     config: Arc<Config>,
 }
@@ -81,7 +112,10 @@ impl StatsConcentratorService {
         (service, handle)
     }
 
-    fn new_span_concentrator(peer_tags: Vec<String>) -> SpanConcentrator {
+    fn new_span_concentrator(
+        peer_tags: Vec<String>,
+        additional_metric_tags: Vec<String>,
+    ) -> SpanConcentrator {
         SpanConcentrator::new(
             Duration::from_nanos(BUCKET_DURATION_NS),
             SystemTime::now(),
@@ -90,6 +124,8 @@ impl StatsConcentratorService {
                 .map(|s| s.to_string())
                 .collect(),
             peer_tags,
+            None,
+            additional_metric_tags,
         )
     }
 
@@ -105,8 +141,13 @@ impl StatsConcentratorService {
                     let config = Arc::clone(&self.config);
                     let concentrator = self
                         .concentrators
-                        .entry(Arc::clone(&metadata))
-                        .or_insert_with(|| Self::new_span_concentrator(config.peer_tags.clone()));
+                        .entry(MetadataKey(Arc::clone(&metadata)))
+                        .or_insert_with(|| {
+                            Self::new_span_concentrator(
+                                config.peer_tags.clone(),
+                                config.additional_metric_tags.clone(),
+                            )
+                        });
 
                     for span in &chunk.spans {
                         concentrator.add_span(span);
@@ -127,8 +168,10 @@ impl StatsConcentratorService {
         let payloads = self
             .concentrators
             .iter_mut()
-            .filter_map(|(metadata, concentrator)| {
-                let stats_buckets = concentrator.flush(SystemTime::now(), force_flush);
+            .filter_map(|(key, concentrator)| {
+                let metadata = &key.0;
+                let flush_result = concentrator.flush(SystemTime::now(), force_flush);
+                let stats_buckets = flush_result.unobfuscated_buckets;
                 if stats_buckets.is_empty() {
                     return None;
                 }

@@ -109,6 +109,7 @@ impl ServerlessTraceProcessor {
                 TracerPayloadCollection::V04(_) => "V04",
                 TracerPayloadCollection::V05(_) => "V05",
                 TracerPayloadCollection::V07(_) => unreachable!(),
+                TracerPayloadCollection::V1(_) => "V1",
             };
             error!("Unsupported tracer payload version {version}. Failed to send trace stats.");
         }
@@ -285,6 +286,8 @@ mod tests {
             tags: Tags::from_env_string("env:test,service:my-service"),
             env: "test-env".to_string(),
             peer_tags: peer_tag_keys().unwrap(),
+            experimental_features_enabled: false,
+            additional_metric_tags: vec![],
             agent_stats_computation_enabled: false,
         }
     }
@@ -358,6 +361,7 @@ mod tests {
             env: "test-env".to_string(),
             hostname: "".to_string(),
             app_version: "".to_string(),
+            container_debug: None,
         };
 
         let received_payload =
@@ -436,6 +440,7 @@ mod tests {
             env: "test-env".to_string(),
             hostname: "".to_string(),
             app_version: "".to_string(),
+            container_debug: None,
         };
 
         let received_payload =
