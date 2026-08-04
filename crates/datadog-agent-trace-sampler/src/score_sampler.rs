@@ -324,9 +324,18 @@ impl ErrorsSampler {
 /// Mirrors Go's `weightRoot`, using the root's global sample rate as the client
 /// rate (clamped to `(0, 1]`). Serverless has no agent pre-sampler, so the
 /// pre-sampler rate is always 1.
+///
+/// The `is_finite` check is an intentional addition over Go, whose `clientRate
+/// <= 0 || clientRate > 1` guard lets NaN through (both comparisons are false
+/// for NaN). A NaN weight propagates into the signature's seen-count and the
+/// bucket maximum, where `f32::max` and `>` silently ignore it, so the hottest
+/// signature would report zero TPS, be assigned a rate of 1.0, and then be
+/// evicted, leaving the error-TPS budget unenforced for a full window.
+/// `root_global_sample_rate` comes straight off the wire as an f64 with no
+/// finiteness contract, so the guard belongs here.
 fn weight_root(trace: &TraceView) -> f32 {
     let mut client_rate = trace.root_global_sample_rate;
-    if client_rate <= 0.0 || client_rate > 1.0 {
+    if !client_rate.is_finite() || client_rate <= 0.0 || client_rate > 1.0 {
         client_rate = 1.0;
     }
     (1.0 / client_rate) as f32
@@ -679,5 +688,31 @@ mod tests {
         let folded = s.shrink(1_000_003);
         assert_eq!(folded, 1_000_003 % half);
         assert!(folded < half);
+    }
+
+    // Non-finite and out-of-range client rates fall back to a weight of 1, so a
+    // bogus `_sample_rate` off the wire cannot NaN-poison the seen counts.
+    #[test]
+    fn weight_root_rejects_non_finite_and_out_of_range_rates() {
+        let spans = [SpanView {
+            service: "web",
+            name: "web.request",
+            resource: "GET /",
+            error: true,
+            http_status_code: None,
+            error_type: None,
+        }];
+
+        for rate in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0, 2.0] {
+            let mut trace = error_trace(1, &spans);
+            trace.root_global_sample_rate = rate;
+            let weight = weight_root(&trace);
+            assert_eq!(weight, 1.0, "rate {rate} should fall back to weight 1");
+        }
+
+        // A valid rate is still inverted.
+        let mut trace = error_trace(1, &spans);
+        trace.root_global_sample_rate = 0.25;
+        assert_eq!(weight_root(&trace), 4.0);
     }
 }
