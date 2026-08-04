@@ -112,6 +112,13 @@ pub fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
         // Integer comparison, matching Go's `traceID*samplerHasher < uint64(rate*maxTraceIDFloat)`:
         // the left side stays an exact u64 product and the right side is truncated to u64. Casting
         // the product to f64 instead would lose precision (52-bit mantissa) and flip boundary IDs.
+        //
+        // One deliberate divergence: for a negative `rate` Rust's float-to-int cast saturates to
+        // 0, dropping every trace, whereas Go's cast is undefined and on amd64 wraps to a huge
+        // value, keeping every trace. Dropping is the sane reading of a negative rate, so this
+        // keeps Rust's behavior rather than reproducing Go's. Callers should not reach here with a
+        // negative rate: `_sample_rate` is unvalidated on the wire, but `weight_root` rejects
+        // non-positive client rates and the sampler's own rates are non-negative by construction.
         return trace_id.wrapping_mul(SAMPLER_HASHER) < (rate * (u64::MAX as f64)) as u64;
     }
     true

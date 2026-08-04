@@ -68,6 +68,11 @@ pub struct SpanView<'a> {
     pub service: &'a str,
     pub name: &'a str,
     pub resource: &'a str,
+    /// Whether the span is an error. The Go agent's span `Error` field is an
+    /// `int32`, and its v0 signature hash folds the raw low byte into the hash,
+    /// so a span with `error > 1` would hash differently there. Normalizing to
+    /// a bool matches Go's newer `computeSpanHashV1`; in practice tracers only
+    /// ever emit 0 or 1, so the two agree on real traffic.
     pub error: bool,
     pub http_status_code: Option<&'a str>,
     pub error_type: Option<&'a str>,

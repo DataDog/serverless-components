@@ -293,7 +293,7 @@ impl ErrorsSampler {
         }
     }
 
-    /// Limits the number of stored signatures. Once cardinality exceeds
+    /// Limits the number of stored signatures. Once cardinality reaches
     /// `SHRINK_CARDINALITY / 2`, new signatures fold onto a fixed set of values;
     /// previously active signatures are unaffected.
     ///
@@ -602,7 +602,7 @@ mod tests {
                 saw_keep = true;
             }
         }
-        assert!(saw_keep, "expected at least one keep across 300 trace ids");
+        assert!(saw_keep, "expected at least one keep across 400 trace ids");
     }
 
     // Ports TestTargetTPS: under heavy load the keep throughput approximates
