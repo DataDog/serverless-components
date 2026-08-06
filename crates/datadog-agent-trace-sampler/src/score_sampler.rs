@@ -241,14 +241,24 @@ pub struct ErrorsSampler {
 }
 
 impl ErrorsSampler {
-    /// Creates an error sampler from config. `target_tps == 0` disables it (every
-    /// trace is dropped, i.e. never rescued).
+    /// Creates an error sampler from config. A non-positive `target_tps` disables
+    /// it (every trace is dropped, i.e. never rescued). The Go agent only checks
+    /// `== 0`, but a negative budget already drops everything through the rate
+    /// math, so treating it as disabled is the same behavior reached sooner.
     pub fn new(config: ErrorSamplerConfig) -> Self {
         ErrorsSampler {
             sampler: Sampler::new(config.extra_sample_rate, config.target_tps),
-            disabled: config.target_tps == 0.0,
+            disabled: config.target_tps <= 0.0,
             shrink_allow_list: None,
         }
+    }
+
+    /// Whether the sampler is disabled, i.e. `sample` will drop every trace
+    /// regardless of its contents. Lets callers skip the work of assembling a
+    /// [`TraceView`] for a decision that is already known.
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        self.disabled
     }
 
     /// Counts an incoming trace and decides whether to rescue it.
@@ -512,6 +522,7 @@ mod tests {
     #[test]
     fn disabled_always_drops() {
         let mut s = ErrorsSampler::new(cfg(0.0));
+        assert!(s.is_disabled());
         let spans = [SpanView {
             service: "mcnulty",
             name: "web",
@@ -523,6 +534,27 @@ mod tests {
         for _ in 0..100 {
             assert_eq!(s.sample(0, &error_trace(42, &spans)), SampleDecision::Drop);
         }
+    }
+
+    // `is_disabled` must agree with what `sample` actually does, since callers
+    // use it to skip building a TraceView for a known-Drop decision.
+    #[test]
+    fn is_disabled_matches_sample_behavior() {
+        assert!(!ErrorsSampler::new(cfg(10.0)).is_disabled());
+        assert!(ErrorsSampler::new(cfg(0.0)).is_disabled());
+        // A negative budget is a misconfiguration; it drops rather than rescuing
+        // everything, and reports itself disabled instead of taking the rate path.
+        assert!(ErrorsSampler::new(cfg(-1.0)).is_disabled());
+        let spans = [SpanView {
+            service: "mcnulty",
+            name: "web",
+            resource: "/",
+            error: true,
+            http_status_code: None,
+            error_type: None,
+        }];
+        let mut s = ErrorsSampler::new(cfg(-1.0));
+        assert_eq!(s.sample(0, &error_trace(42, &spans)), SampleDecision::Drop);
     }
 
     // A keep stamps errors_sr with the *signature* rate, not new_rate
