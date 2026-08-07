@@ -364,11 +364,10 @@ impl RateLimitedSampler {
     }
 
     fn apply_sample_rate(&self, trace: &TraceView, rate: f64) -> SampleDecision {
-        // No clamping, mirroring the Go agent's `applySampleRate`. A missing
-        // global rate is 1.0 by convention (see `TraceView::root_global_sample_rate`),
-        // and `sample_by_rate` already treats any `new_rate >= 1.0` as always-keep,
-        // so the product is well-defined without bounding it to [0, 1].
-        let new_rate = trace.root_global_sample_rate * rate;
+        // The product is not clamped, mirroring the Go agent's `applySampleRate`:
+        // `sample_by_rate` already treats any `new_rate >= 1.0` as always-keep, and
+        // both factors are in range, so the product needs no bounding.
+        let new_rate = client_rate(trace) * rate;
         if sample_by_rate(trace.trace_id, new_rate) {
             SampleDecision::Keep { errors_sr: rate }
         } else {
@@ -402,26 +401,37 @@ impl RateLimitedSampler {
     }
 }
 
+/// The client sample rate already applied upstream, sanitized to `(0, 1]`.
+///
+/// `root_global_sample_rate` comes straight off the wire (`metrics["_sample_rate"]`)
+/// as an f64 with no finiteness or range contract, so it is sanitized once here and
+/// reused by both `weight_root` and `apply_sample_rate`. Go sanitizes only in
+/// `weightRoot` and passes the raw value to `applySampleRate`; applying the same
+/// fallback to both is an intentional divergence, since a rate the sampler refuses
+/// to trust for counting should not be trusted to scale the applied rate either.
+///
+/// The `is_finite` check is a further addition over Go, whose `clientRate <= 0 ||
+/// clientRate > 1` guard lets NaN through (both comparisons are false for NaN). NaN
+/// corrupts both consumers: as a weight it propagates into the signature's seen-count
+/// and the bucket maximum, where `f32::max` and `>` silently ignore it, so the
+/// hottest signature reports zero TPS, is assigned a rate of 1.0, and is then
+/// evicted, leaving the error-TPS budget unenforced for a full window; as a factor in
+/// the applied rate it makes the product NaN, which `sample_by_rate` treats as
+/// always-keep, bypassing the budget outright.
+fn client_rate(trace: &TraceView) -> f64 {
+    let rate = trace.root_global_sample_rate;
+    if !rate.is_finite() || rate <= 0.0 || rate > 1.0 {
+        return 1.0;
+    }
+    rate
+}
+
 /// Weight of the root span: the inverse of the sampling already applied upstream.
 ///
-/// Mirrors Go's `weightRoot`, using the root's global sample rate as the client
-/// rate (clamped to `(0, 1]`). Serverless has no agent pre-sampler, so the
+/// Mirrors Go's `weightRoot`. Serverless has no agent pre-sampler, so the
 /// pre-sampler rate is always 1.
-///
-/// The `is_finite` check is an intentional addition over Go, whose `clientRate
-/// <= 0 || clientRate > 1` guard lets NaN through (both comparisons are false
-/// for NaN). A NaN weight propagates into the signature's seen-count and the
-/// bucket maximum, where `f32::max` and `>` silently ignore it, so the hottest
-/// signature would report zero TPS, be assigned a rate of 1.0, and then be
-/// evicted, leaving the error-TPS budget unenforced for a full window.
-/// `root_global_sample_rate` comes straight off the wire as an f64 with no
-/// finiteness contract, so the guard belongs here.
 fn weight_root(trace: &TraceView) -> f32 {
-    let mut client_rate = trace.root_global_sample_rate;
-    if !client_rate.is_finite() || client_rate <= 0.0 || client_rate > 1.0 {
-        client_rate = 1.0;
-    }
-    (1.0 / client_rate) as f32
+    (1.0 / client_rate(trace)) as f32
 }
 
 #[cfg(test)]
@@ -904,5 +914,49 @@ mod tests {
         let mut trace = error_trace(1, &spans);
         trace.root_global_sample_rate = 0.25;
         assert_eq!(weight_root(&trace), 4.0);
+    }
+
+    // The same fallback must apply when the client rate scales the applied rate,
+    // not just when it weights the seen counts. A NaN `_sample_rate` used to make
+    // `new_rate` NaN, which `sample_by_rate` treats as always-keep, so a single
+    // misbehaving tracer could bypass the error-TPS budget entirely; a negative one
+    // dropped every trace from that client.
+    #[test]
+    fn apply_sample_rate_rejects_non_finite_and_out_of_range_rates() {
+        let s = RateLimitedSampler::new(cfg(10.0));
+        let spans = [SpanView {
+            service: "web",
+            name: "web.request",
+            resource: "GET /",
+            error: true,
+            http_status_code: None,
+            error_type: None,
+        }];
+        // A heavily throttled signature rate: with a sane client rate the vast
+        // majority of trace ids are dropped.
+        let signature_rate = 0.01;
+
+        for bogus in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -0.5, 2.0] {
+            let mut kept = 0;
+            for i in 0..200u64 {
+                let id = i.wrapping_mul(2_654_435_761);
+                let mut trace = error_trace(id, &spans);
+
+                trace.root_global_sample_rate = 1.0;
+                let baseline = s.apply_sample_rate(&trace, signature_rate);
+
+                trace.root_global_sample_rate = bogus;
+                let actual = s.apply_sample_rate(&trace, signature_rate);
+
+                assert_eq!(actual, baseline, "rate {bogus} diverged on trace id {id}");
+                if matches!(actual, SampleDecision::Keep { .. }) {
+                    kept += 1;
+                }
+            }
+            assert!(
+                kept < 20,
+                "rate {bogus} bypassed throttling: {kept}/200 kept"
+            );
+        }
     }
 }

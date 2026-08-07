@@ -97,6 +97,8 @@ pub struct TraceView<'a> {
     /// Index of the root span within `spans`.
     pub root_index: usize,
     /// The root span's global sample rate (`metrics["_sample_rate"]`), default 1.0.
+    /// Callers may pass the raw wire value: the error sampler falls back to 1.0 for
+    /// anything non-finite or outside `(0, 1]`.
     pub root_global_sample_rate: f64,
     pub spans: &'a [SpanView<'a>],
 }
