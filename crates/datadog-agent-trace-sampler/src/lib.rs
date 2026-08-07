@@ -10,12 +10,23 @@
 //! Agent-side trace sampling shared across serverless agents (bottlecap and the
 //! Serverless Compatibility Layer).
 //!
-//! This crate is a dependency-free 1:1 port of the Go trace agent's error
-//! sampler (`ScoreSampler` targeting `ErrorTPS`). The error sampler is a
-//! *rescue* sampler: after an agent decides to drop a trace, the trace gets a
-//! second look, and if it contains an error it is kept, up to a budget of
-//! `target_tps` error traces per second distributed fairly across distinct trace
-//! signatures. This guarantees error visibility even under aggressive sampling.
+//! This crate implements a dual-mode *rescue* sampler for the Go trace agent's
+//! error sampler (`ScoreSampler` targeting `ErrorTPS`): after an agent decides to
+//! drop a trace, the trace gets a second look via [`ErrorsSampler::sample`], and
+//! if it contains an error it may be rescued. Two strategies are available,
+//! selected by [`ErrorSamplerMode`]:
+//!
+//! - [`ErrorSamplerMode::AlwaysKeep`]: keep every error chunk unconditionally, no
+//!   budget/state/clock; stamps `_dd.errors_sr = 1.0`. Suits low-volume,
+//!   freeze/thaw environments like Lambda (bottlecap's default).
+//! - [`ErrorSamplerMode::RateLimited`]: a dependency-free 1:1 port of the Go
+//!   agent's `ScoreSampler`, keeping up to `target_tps` error traces per second
+//!   distributed fairly across distinct trace signatures. Suits continuous
+//!   processes that can hit error storms (the Serverless Compatibility Layer's
+//!   default).
+//!
+//! Per-platform defaults are chosen by each consumer's config layer, not this
+//! crate.
 //!
 //! The public API takes primitives in and returns a decision out (no protobuf
 //! `Span` type), so consumers pinning different `libdatadog` revisions can share
@@ -90,20 +101,45 @@ pub struct TraceView<'a> {
     pub spans: &'a [SpanView<'a>],
 }
 
+/// Selects which rescue strategy [`ErrorsSampler`] uses.
+///
+/// Per-platform defaults are chosen by each consumer's config layer (bottlecap
+/// defaults to `AlwaysKeep`, the Serverless Compatibility Layer to
+/// `RateLimited`); this crate has no notion of which platform it runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorSamplerMode {
+    /// Keep every error chunk. No budget, no rolling window, no clock. Stamps
+    /// `_dd.errors_sr = 1.0`. `target_tps` still gates whether the sampler is
+    /// disabled (`<= 0.0` drops everything, matching `RateLimited`);
+    /// `extra_sample_rate` is unused.
+    AlwaysKeep,
+    /// Full 1:1 Go `ScoreSampler` port: keep up to `target_tps` error traces
+    /// per second, distributed fairly across distinct trace signatures. Stamps
+    /// the computed `errors_sr`.
+    RateLimited,
+}
+
 /// Configuration for the error sampler.
 #[derive(Debug, Clone, Copy)]
 pub struct ErrorSamplerConfig {
-    /// Target error traces per second (`ErrorTPS`). `0.0` disables the sampler
-    /// (every candidate is dropped, i.e. never rescued).
+    /// Which rescue strategy to use.
+    pub mode: ErrorSamplerMode,
+    /// Target error traces per second (`ErrorTPS`). `0.0` (or negative)
+    /// disables the sampler in both modes (every candidate is dropped, i.e.
+    /// never rescued). Only meaningful for rate computation in `RateLimited`.
     pub target_tps: f64,
-    /// Extra raw sampling rate applied on top of the computed rate.
+    /// Extra raw sampling rate applied on top of the computed rate. Only
+    /// meaningful in `RateLimited`.
     pub extra_sample_rate: f64,
 }
 
 impl Default for ErrorSamplerConfig {
-    /// Matches the Go agent defaults: `ErrorTPS = 10`, `ExtraSampleRate = 1.0`.
+    /// Matches the Go agent defaults: `ErrorTPS = 10`, `ExtraSampleRate = 1.0`,
+    /// mode `RateLimited` (the crate-level default preserves Go parity;
+    /// per-platform defaults are set by each consumer).
     fn default() -> Self {
         ErrorSamplerConfig {
+            mode: ErrorSamplerMode::RateLimited,
             target_tps: 10.0,
             extra_sample_rate: 1.0,
         }

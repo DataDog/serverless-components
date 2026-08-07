@@ -3,13 +3,24 @@
 Agent-side trace sampling shared across the serverless agents (bottlecap and the
 Serverless Compatibility Layer).
 
-This crate is a dependency-free 1:1 port of the Go trace agent's **error sampler**
-(`ScoreSampler` targeting `ErrorTPS`, from `pkg/trace/sampler/` in
-`DataDog/datadog-agent`). The error sampler is a *rescue* sampler: after an agent
-decides to drop a trace, the trace gets a second look, and if it contains an
-error it is kept, up to a budget of `target_tps` error traces per second
-distributed fairly across distinct trace signatures. This guarantees error
-visibility even under aggressive sampling.
+This crate implements the Go trace agent's **error sampler** as a *rescue*
+sampler: after an agent decides to drop a trace, the trace gets a second look
+via `ErrorsSampler::sample`, and if it contains an error it may be kept. Two
+rescue strategies are available, selected by `ErrorSamplerMode`:
+
+- **`AlwaysKeep`** — keep every error chunk unconditionally, no budget/state/
+  clock; stamps `_dd.errors_sr = 1.0`. Suits low-volume, freeze/thaw
+  environments like Lambda (bottlecap's default).
+- **`RateLimited`** — a dependency-free 1:1 port of the Go agent's
+  `ScoreSampler` (`ScoreSampler` targeting `ErrorTPS`, from `pkg/trace/sampler/`
+  in `DataDog/datadog-agent`): keep up to `target_tps` error traces per second,
+  distributed fairly across distinct trace signatures. Suits continuous
+  processes that can hit error storms (the Serverless Compatibility Layer's
+  default).
+
+Per-platform defaults are chosen by each consumer's config layer (e.g. via a
+`DD_APM_ERROR_SAMPLER_MODE` env var), not this crate — it has no notion of
+which platform it runs on.
 
 ## Why dependency-free
 
@@ -25,6 +36,9 @@ use datadog_agent_trace_sampler::{
     ErrorSamplerConfig, ErrorsSampler, SampleDecision, SpanView, TraceView,
 };
 
+// `ErrorSamplerConfig::default()` uses `ErrorSamplerMode::RateLimited`
+// (Go-parity default); set `mode: ErrorSamplerMode::AlwaysKeep` for the
+// simpler unconditional-rescue strategy.
 let mut sampler = ErrorsSampler::new(ErrorSamplerConfig::default());
 
 let spans = [SpanView {
@@ -59,5 +73,6 @@ match sampler.sample(1_700_000_000, &trace) {
 on every call). Consumers that share one sampler across threads wrap it in
 `Arc<Mutex<ErrorsSampler>>`.
 
-Setting `target_tps` to `0.0` disables the sampler: every candidate returns
-`SampleDecision::Drop` (i.e. nothing is rescued).
+Setting `target_tps` to `0.0` (or negative) disables the sampler in both modes:
+every candidate returns `SampleDecision::Drop` (i.e. nothing is rescued).
+`extra_sample_rate` is only meaningful in `RateLimited` mode.

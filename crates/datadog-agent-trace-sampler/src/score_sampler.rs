@@ -3,7 +3,9 @@
 
 //! Agent-side score sampler.
 //!
-//! 1:1 port of the Go trace agent's `ScoreSampler`/`ErrorsSampler`
+//! [`ErrorsSampler`] dispatches between the two [`crate::ErrorSamplerMode`]
+//! strategies. `RateLimited` is backed by [`RateLimitedSampler`], a 1:1 port of
+//! the Go trace agent's `ScoreSampler`/`ErrorsSampler`
 //! (`pkg/trace/sampler/coresampler.go` + `scoresampler.go`). Seen traces are
 //! counted per signature in a circular buffer of `NUM_BUCKETS` buckets of
 //! `BUCKET_DURATION_SECS`. The sampler distributes a target TPS uniformly across
@@ -12,7 +14,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::signature::{Signature, compute_signature_with_root_and_env, sample_by_rate};
-use crate::{ErrorSamplerConfig, SampleDecision, TraceView};
+use crate::{ErrorSamplerConfig, ErrorSamplerMode, SampleDecision, TraceView};
 
 const BUCKET_DURATION_SECS: i64 = 5;
 const NUM_BUCKETS: usize = 6;
@@ -229,24 +231,95 @@ fn zero_and_get_max(
     (max_bucket, buckets)
 }
 
-/// Score sampler dedicated to catching traces containing spans with errors.
+/// Dispatches to one of the two rescue strategies selected by
+/// [`crate::ErrorSamplerMode`]. The call site is mode-agnostic: every caller
+/// goes through `sample`, regardless of which variant is active.
+pub enum ErrorsSampler {
+    /// Keep every error chunk unconditionally (unless disabled via
+    /// `target_tps <= 0.0`). No budget, no rolling window, no clock.
+    AlwaysKeep {
+        /// Mirrors `RateLimited`'s disabled semantics: a non-positive
+        /// `target_tps` disables rescue entirely, even in `AlwaysKeep`.
+        disabled: bool,
+    },
+    /// Full 1:1 Go `ScoreSampler` port. Boxed: `RateLimitedSampler` carries
+    /// hash maps and a shrink allow-list, dwarfing the fieldless `AlwaysKeep`
+    /// variant.
+    RateLimited(Box<RateLimitedSampler>),
+}
+
+impl ErrorsSampler {
+    /// Creates an error sampler from config, selecting the strategy per
+    /// `config.mode`.
+    pub fn new(config: ErrorSamplerConfig) -> Self {
+        match config.mode {
+            ErrorSamplerMode::AlwaysKeep => ErrorsSampler::AlwaysKeep {
+                disabled: config.target_tps <= 0.0,
+            },
+            ErrorSamplerMode::RateLimited => {
+                ErrorsSampler::RateLimited(Box::new(RateLimitedSampler::new(config)))
+            }
+        }
+    }
+
+    /// Whether the sampler is disabled, i.e. `sample` will drop every trace
+    /// regardless of its contents. Lets callers skip the work of assembling a
+    /// [`TraceView`] for a decision that is already known.
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        match self {
+            ErrorsSampler::AlwaysKeep { disabled } => *disabled,
+            ErrorsSampler::RateLimited(s) => s.is_disabled(),
+        }
+    }
+
+    /// Counts an incoming trace and decides whether to rescue it.
+    ///
+    /// `now_unix_secs` drives the `RateLimited` rolling-window rotation and is
+    /// passed in (not read from a clock) to keep the crate dependency-free and
+    /// deterministically testable. `AlwaysKeep` ignores it and mutates no
+    /// state, but the signature stays uniform so the call site is mode-agnostic.
+    ///
+    /// This does not check that the trace actually contains an error span, which
+    /// mirrors the Go agent's `ScoreSampler.Sample` (it only guards `disabled`
+    /// and empty traces). Filtering to errored traces is the caller's job: the
+    /// integration site feeds only errored P0 chunks into the error sampler, so
+    /// the error TPS budget is never spent on non-error traces.
+    pub fn sample(&mut self, now_unix_secs: i64, trace: &TraceView) -> SampleDecision {
+        match self {
+            ErrorsSampler::AlwaysKeep { disabled } => {
+                // A malformed chunk (empty, or root_index past the end) cannot be
+                // scored; do not rescue it, for consistency with `RateLimited`.
+                if *disabled || trace.root_index >= trace.spans.len() {
+                    return SampleDecision::Drop;
+                }
+                SampleDecision::Keep { errors_sr: 1.0 }
+            }
+            ErrorsSampler::RateLimited(s) => s.sample(now_unix_secs, trace),
+        }
+    }
+}
+
+/// `RateLimited` rescue strategy: a 1:1 port of the Go trace agent's
+/// `ScoreSampler`/`ErrorsSampler`.
 ///
 /// Rates are applied on the trace ID so that, for a given trace ID, error chunks
 /// are kept together: `P(chunk1 kept and chunk2 kept) = min(P1, P2)`.
-pub struct ErrorsSampler {
+pub struct RateLimitedSampler {
     sampler: Sampler,
     disabled: bool,
     /// Snapshot of active signatures taken when cardinality is exceeded.
     shrink_allow_list: Option<HashSet<Signature>>,
 }
 
-impl ErrorsSampler {
-    /// Creates an error sampler from config. A non-positive `target_tps` disables
-    /// it (every trace is dropped, i.e. never rescued). The Go agent only checks
-    /// `== 0`, but a negative budget already drops everything through the rate
-    /// math, so treating it as disabled is the same behavior reached sooner.
+impl RateLimitedSampler {
+    /// Creates a rate-limited sampler from config. A non-positive `target_tps`
+    /// disables it (every trace is dropped, i.e. never rescued). The Go agent
+    /// only checks `== 0`, but a negative budget already drops everything
+    /// through the rate math, so treating it as disabled is the same behavior
+    /// reached sooner.
     pub fn new(config: ErrorSamplerConfig) -> Self {
-        ErrorsSampler {
+        RateLimitedSampler {
             sampler: Sampler::new(config.extra_sample_rate, config.target_tps),
             disabled: config.target_tps <= 0.0,
             shrink_allow_list: None,
@@ -360,6 +433,7 @@ mod tests {
 
     fn cfg(target_tps: f64) -> ErrorSamplerConfig {
         ErrorSamplerConfig {
+            mode: ErrorSamplerMode::RateLimited,
             target_tps,
             extra_sample_rate: 1.0,
         }
@@ -557,6 +631,89 @@ mod tests {
         assert_eq!(s.sample(0, &error_trace(42, &spans)), SampleDecision::Drop);
     }
 
+    fn always_keep_cfg(target_tps: f64) -> ErrorSamplerConfig {
+        ErrorSamplerConfig {
+            mode: ErrorSamplerMode::AlwaysKeep,
+            target_tps,
+            extra_sample_rate: 1.0,
+        }
+    }
+
+    // AlwaysKeep rescues every error chunk unconditionally, regardless of
+    // volume or `now_unix_secs`, and always stamps `errors_sr = 1.0`.
+    #[test]
+    fn always_keep_keeps_every_error_chunk() {
+        let mut s = ErrorsSampler::new(always_keep_cfg(10.0));
+        assert!(!s.is_disabled());
+        let spans = [SpanView {
+            service: "mcnulty",
+            name: "web",
+            resource: "/",
+            error: true,
+            http_status_code: None,
+            error_type: None,
+        }];
+        // Heavy, varied load and wildly varying `now_unix_secs`: still every
+        // trace is kept at exactly errors_sr = 1.0.
+        for i in 0..1000u64 {
+            let trace = error_trace(i.wrapping_mul(2_654_435_761), &spans);
+            let now = (i as i64) * 5;
+            assert_eq!(
+                s.sample(now, &trace),
+                SampleDecision::Keep { errors_sr: 1.0 },
+                "i={i}"
+            );
+        }
+    }
+
+    // AlwaysKeep with target_tps <= 0.0 is disabled, matching RateLimited's
+    // "0 means disabled" convention rather than ignoring target_tps entirely.
+    #[test]
+    fn always_keep_disabled_when_target_tps_non_positive() {
+        let spans = [SpanView {
+            service: "mcnulty",
+            name: "web",
+            resource: "/",
+            error: true,
+            http_status_code: None,
+            error_type: None,
+        }];
+        for target_tps in [0.0, -1.0] {
+            let mut s = ErrorsSampler::new(always_keep_cfg(target_tps));
+            assert!(s.is_disabled(), "target_tps={target_tps}");
+            assert_eq!(s.sample(0, &error_trace(42, &spans)), SampleDecision::Drop);
+        }
+    }
+
+    // AlwaysKeep drops malformed (empty) chunks, for consistency with
+    // RateLimited's guard against unscoreable chunks.
+    #[test]
+    fn always_keep_drops_empty_chunk() {
+        let mut s = ErrorsSampler::new(always_keep_cfg(10.0));
+        let spans: [SpanView; 0] = [];
+        assert_eq!(s.sample(0, &error_trace(42, &spans)), SampleDecision::Drop);
+    }
+
+    // AlwaysKeep uses the same malformed-chunk guard as RateLimited
+    // (`root_index >= spans.len()`), not just "empty spans": a non-empty chunk
+    // with an out-of-range root_index is unscoreable and must be dropped, not
+    // kept, in both modes.
+    #[test]
+    fn always_keep_drops_out_of_range_root_index() {
+        let mut s = ErrorsSampler::new(always_keep_cfg(10.0));
+        let spans = [SpanView {
+            service: "mcnulty",
+            name: "web",
+            resource: "/",
+            error: true,
+            http_status_code: None,
+            error_type: None,
+        }];
+        let mut trace = error_trace(42, &spans);
+        trace.root_index = 1; // one past the end of a single-span slice
+        assert_eq!(s.sample(0, &trace), SampleDecision::Drop);
+    }
+
     // A keep stamps errors_sr with the *signature* rate, not new_rate
     // (= root_global_sample_rate * signature_rate). With a global rate of 0.5 the
     // two differ, so this catches a bug that stamped new_rate instead.
@@ -594,7 +751,8 @@ mod tests {
     fn keep_stamps_fractional_map_rate() {
         use crate::signature::compute_signature_with_root_and_env;
 
-        let mut s = ErrorsSampler::new(ErrorSamplerConfig {
+        let mut s = RateLimitedSampler::new(ErrorSamplerConfig {
+            mode: ErrorSamplerMode::RateLimited,
             target_tps: 1.0,
             extra_sample_rate: 0.5,
         });
@@ -696,7 +854,7 @@ mod tests {
     // [0, SHRINK_CARDINALITY/2).
     #[test]
     fn shrink_folds_new_signatures() {
-        let mut s = ErrorsSampler::new(cfg(10.0));
+        let mut s = RateLimitedSampler::new(cfg(10.0));
         // Below threshold: passthrough and no allow-list.
         assert_eq!(s.shrink(123_456), 123_456);
         assert!(s.shrink_allow_list.is_none());
