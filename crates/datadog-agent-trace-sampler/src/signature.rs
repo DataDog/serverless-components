@@ -115,11 +115,9 @@ pub fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
         //
         // One deliberate divergence: for a negative `rate` Rust's float-to-int cast saturates to
         // 0, dropping every trace, whereas Go's cast is undefined and on amd64 wraps to a huge
-        // value, keeping every trace. Dropping is the sane reading of a negative rate, so this
-        // keeps Rust's behavior rather than reproducing Go's. Callers do not reach here with a
-        // negative rate: `_sample_rate` is unvalidated on the wire, but the error sampler runs it
-        // through `client_rate` first, and the sampler's own rates are non-negative by
-        // construction.
+        // value, keeping every trace. Dropping is the sane reading, so Rust's behavior stands.
+        // No caller reaches here with a negative rate anyway: the error sampler runs the wire
+        // value through `client_rate`, and its own rates are non-negative by construction.
         return trace_id.wrapping_mul(SAMPLER_HASHER) < (rate * (u64::MAX as f64)) as u64;
     }
     true

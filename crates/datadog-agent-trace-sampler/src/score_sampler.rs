@@ -232,8 +232,8 @@ fn zero_and_get_max(
 }
 
 /// Dispatches to one of the two rescue strategies selected by
-/// [`crate::ErrorSamplerMode`]. The call site is mode-agnostic: every caller
-/// goes through `sample`, regardless of which variant is active.
+/// [`crate::ErrorSamplerMode`]. Every caller goes through `sample`, regardless
+/// of which variant is active.
 pub enum ErrorsSampler {
     /// Keep every error chunk unconditionally (unless disabled via
     /// `target_tps <= 0.0`). No budget, no rolling window, no clock.
@@ -242,9 +242,8 @@ pub enum ErrorsSampler {
         /// `target_tps` disables rescue entirely, even in `AlwaysKeep`.
         disabled: bool,
     },
-    /// Full 1:1 Go `ScoreSampler` port. Boxed: `RateLimitedSampler` carries
-    /// hash maps and a shrink allow-list, dwarfing the fieldless `AlwaysKeep`
-    /// variant.
+    /// Boxed: `RateLimitedSampler` carries hash maps and a shrink allow-list,
+    /// dwarfing the fieldless `AlwaysKeep` variant.
     RateLimited(Box<RateLimitedSampler>),
 }
 
@@ -277,8 +276,7 @@ impl ErrorsSampler {
     ///
     /// `now_unix_secs` drives the `RateLimited` rolling-window rotation and is
     /// passed in (not read from a clock) to keep the crate dependency-free and
-    /// deterministically testable. `AlwaysKeep` ignores it and mutates no
-    /// state, but the signature stays uniform so the call site is mode-agnostic.
+    /// deterministically testable. `AlwaysKeep` ignores it and mutates no state.
     ///
     /// This does not check that the trace actually contains an error span, which
     /// mirrors the Go agent's `ScoreSampler.Sample` (it only guards `disabled`
@@ -326,25 +324,13 @@ impl RateLimitedSampler {
         }
     }
 
-    /// Whether the sampler is disabled, i.e. `sample` will drop every trace
-    /// regardless of its contents. Lets callers skip the work of assembling a
-    /// [`TraceView`] for a decision that is already known.
+    /// See [`ErrorsSampler::is_disabled`].
     #[must_use]
     pub fn is_disabled(&self) -> bool {
         self.disabled
     }
 
-    /// Counts an incoming trace and decides whether to rescue it.
-    ///
-    /// `now_unix_secs` drives the rolling-window rotation and is passed in (not
-    /// read from a clock) to keep the crate dependency-free and deterministically
-    /// testable.
-    ///
-    /// This does not check that the trace actually contains an error span, which
-    /// mirrors the Go agent's `ScoreSampler.Sample` (it only guards `disabled`
-    /// and empty traces). Filtering to errored traces is the caller's job: the
-    /// integration site feeds only errored P0 chunks into the error sampler, so
-    /// the error TPS budget is never spent on non-error traces.
+    /// See [`ErrorsSampler::sample`].
     pub fn sample(&mut self, now_unix_secs: i64, trace: &TraceView) -> SampleDecision {
         // A malformed chunk (empty, or root_index past the end) cannot be scored;
         // do not rescue it. Guards the slice indexing in the signature computation.
@@ -355,7 +341,6 @@ impl RateLimitedSampler {
         let signature =
             compute_signature_with_root_and_env(trace.spans, trace.root_index, trace.env);
         let signature = self.shrink(signature);
-        // Update sampler state by counting this trace.
         self.sampler
             .count_weighted_sig(now_unix_secs, signature, weight_root(trace));
 
@@ -405,19 +390,17 @@ impl RateLimitedSampler {
 ///
 /// `root_global_sample_rate` comes straight off the wire (`metrics["_sample_rate"]`)
 /// as an f64 with no finiteness or range contract, so it is sanitized once here and
-/// reused by both `weight_root` and `apply_sample_rate`. Go sanitizes only in
-/// `weightRoot` and passes the raw value to `applySampleRate`; applying the same
-/// fallback to both is an intentional divergence, since a rate the sampler refuses
-/// to trust for counting should not be trusted to scale the applied rate either.
+/// reused by both `weight_root` and `apply_sample_rate`. Two intentional divergences
+/// from Go, both hardening against a bogus `_sample_rate`:
 ///
-/// The `is_finite` check is a further addition over Go, whose `clientRate <= 0 ||
-/// clientRate > 1` guard lets NaN through (both comparisons are false for NaN). NaN
-/// corrupts both consumers: as a weight it propagates into the signature's seen-count
-/// and the bucket maximum, where `f32::max` and `>` silently ignore it, so the
-/// hottest signature reports zero TPS, is assigned a rate of 1.0, and is then
-/// evicted, leaving the error-TPS budget unenforced for a full window; as a factor in
-/// the applied rate it makes the product NaN, which `sample_by_rate` treats as
-/// always-keep, bypassing the budget outright.
+/// - Go sanitizes only in `weightRoot` and passes the raw value to `applySampleRate`.
+///   A rate the sampler refuses to trust for counting should not be trusted to scale
+///   the applied rate either.
+/// - Go's `clientRate <= 0 || clientRate > 1` guard lets NaN through (both
+///   comparisons are false for NaN), hence the `is_finite` check. As a weight, NaN
+///   makes the hottest signature report zero TPS and get evicted; as a factor in the
+///   applied rate it makes the product NaN, which `sample_by_rate` treats as
+///   always-keep. Either way the error-TPS budget goes unenforced.
 fn client_rate(trace: &TraceView) -> f64 {
     let rate = trace.root_global_sample_rate;
     if !rate.is_finite() || rate <= 0.0 || rate > 1.0 {

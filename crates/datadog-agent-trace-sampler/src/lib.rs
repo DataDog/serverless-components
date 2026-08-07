@@ -104,10 +104,6 @@ pub struct TraceView<'a> {
 }
 
 /// Selects which rescue strategy [`ErrorsSampler`] uses.
-///
-/// Per-platform defaults are chosen by each consumer's config layer (bottlecap
-/// defaults to `AlwaysKeep`, the Serverless Compatibility Layer to
-/// `RateLimited`); this crate has no notion of which platform it runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorSamplerMode {
     /// Keep every error chunk. No budget, no rolling window, no clock. Stamps
@@ -137,8 +133,7 @@ pub struct ErrorSamplerConfig {
 
 impl Default for ErrorSamplerConfig {
     /// Matches the Go agent defaults: `ErrorTPS = 10`, `ExtraSampleRate = 1.0`,
-    /// mode `RateLimited` (the crate-level default preserves Go parity;
-    /// per-platform defaults are set by each consumer).
+    /// mode `RateLimited`.
     fn default() -> Self {
         ErrorSamplerConfig {
             mode: ErrorSamplerMode::RateLimited,
