@@ -288,6 +288,7 @@ mod tests {
             peer_tags: peer_tag_keys().unwrap(),
             experimental_features_enabled: false,
             additional_metric_tags: vec![],
+            additional_metric_tags_cardinality_limit: None,
             agent_stats_computation_enabled: false,
         }
     }

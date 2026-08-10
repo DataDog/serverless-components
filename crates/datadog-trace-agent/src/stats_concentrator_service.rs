@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::config::Config;
 use libdd_library_config::tracer_metadata::TracerMetadata;
 use libdd_trace_protobuf::pb::{ClientStatsPayload, TraceChunk};
-use libdd_trace_stats::span_concentrator::SpanConcentrator;
+use libdd_trace_stats::span_concentrator::{CardinalityLimitConfig, SpanConcentrator};
 use std::time::{Duration, SystemTime};
 use tracing::error;
 
@@ -115,7 +115,15 @@ impl StatsConcentratorService {
     fn new_span_concentrator(
         peer_tags: Vec<String>,
         additional_metric_tags: Vec<String>,
+        additional_metric_tags_cardinality_limit: Option<usize>,
     ) -> SpanConcentrator {
+        let override_cardinality_limits =
+            additional_metric_tags_cardinality_limit.map(|additional_tags_limit| {
+                CardinalityLimitConfig {
+                    additional_tags_limit,
+                    ..Default::default()
+                }
+            });
         SpanConcentrator::new(
             Duration::from_nanos(BUCKET_DURATION_NS),
             SystemTime::now(),
@@ -124,7 +132,7 @@ impl StatsConcentratorService {
                 .map(|s| s.to_string())
                 .collect(),
             peer_tags,
-            None,
+            override_cardinality_limits,
             additional_metric_tags,
         )
     }
@@ -146,6 +154,7 @@ impl StatsConcentratorService {
                             Self::new_span_concentrator(
                                 config.peer_tags.clone(),
                                 config.additional_metric_tags.clone(),
+                                config.additional_metric_tags_cardinality_limit,
                             )
                         });
 
