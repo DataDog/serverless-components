@@ -115,6 +115,15 @@ pub struct Config {
     pub proxy_url: Option<String>,
     pub env: String,
     pub peer_tags: Vec<String>,
+    /// Gates additional_metric_tags and related config.
+    pub experimental_features_enabled: bool,
+    /// Tag keys extracted from spans and used as additional aggregation dimensions in stats.
+    /// Only populated when experimental_features_enabled is true.
+    pub additional_metric_tags: Vec<String>,
+    /// Per field cardinality limit for the additional metric tags dimension.
+    /// `None` means use the default configured in libdatadog.
+    /// Only populated when experimental_features_enabled is true.
+    pub additional_metric_tags_cardinality_limit: Option<usize>,
     /// Whether the agent should compute trace stats
     pub agent_stats_computation_enabled: bool,
 }
@@ -216,6 +225,10 @@ impl Config {
             Tags::new()
         };
 
+        let experimental_features_enabled = env::var("DD_TRACE_EXPERIMENTAL_FEATURES_ENABLED")
+            .map(|val| val.to_lowercase() == "true")
+            .unwrap_or(false);
+
         #[allow(clippy::unwrap_used)]
         Ok(Config {
             app_name: Some(app_name),
@@ -262,6 +275,29 @@ impl Config {
             tags,
             env: env::var("DD_ENV").unwrap_or_else(|_| "none".to_string()),
             peer_tags: peer_tag_keys()?,
+            experimental_features_enabled,
+            additional_metric_tags: if experimental_features_enabled {
+                env::var("DD_TRACE_STATS_ADDITIONAL_TAGS")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        s.split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            },
+            additional_metric_tags_cardinality_limit: if experimental_features_enabled {
+                env::var("DD_TRACE_STATS_ADDITIONAL_TAGS_CARDINALITY_LIMIT")
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+            } else {
+                None
+            },
             agent_stats_computation_enabled: env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
                 .map(|val| val.to_lowercase() == "true")
                 .unwrap_or(false),
@@ -745,6 +781,110 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    #[serial]
+    fn test_additional_metric_tags_gated_by_experimental_flag() {
+        let base_vars = [
+            ("DD_API_KEY", Some("_not_a_real_key_")),
+            ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
+            ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
+            ("WEBSITE_SITE_NAME", Some("my-azure-function")),
+            ("DD_TRACE_STATS_ADDITIONAL_TAGS", Some("region,tenant_id")),
+        ];
+
+        temp_env::with_vars(
+            base_vars
+                .iter()
+                .cloned()
+                .chain([("DD_TRACE_EXPERIMENTAL_FEATURES_ENABLED", Some("false"))])
+                .collect::<Vec<_>>(),
+            || {
+                let config = config::Config::new().unwrap();
+                assert!(!config.experimental_features_enabled);
+                assert!(config.additional_metric_tags.is_empty());
+            },
+        );
+
+        temp_env::with_vars(
+            base_vars
+                .iter()
+                .cloned()
+                .chain([("DD_TRACE_EXPERIMENTAL_FEATURES_ENABLED", Some("true"))])
+                .collect::<Vec<_>>(),
+            || {
+                let config = config::Config::new().unwrap();
+                assert!(config.experimental_features_enabled);
+                assert_eq!(
+                    config.additional_metric_tags,
+                    vec!["region".to_string(), "tenant_id".to_string()]
+                );
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_additional_metric_tags_cardinality_limit_gated_by_experimental_flag() {
+        let base_vars = [
+            ("DD_API_KEY", Some("_not_a_real_key_")),
+            ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
+            ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
+            ("WEBSITE_SITE_NAME", Some("my-azure-function")),
+            (
+                "DD_TRACE_STATS_ADDITIONAL_TAGS_CARDINALITY_LIMIT",
+                Some("50"),
+            ),
+        ];
+
+        temp_env::with_vars(
+            base_vars
+                .iter()
+                .cloned()
+                .chain([("DD_TRACE_EXPERIMENTAL_FEATURES_ENABLED", Some("false"))])
+                .collect::<Vec<_>>(),
+            || {
+                let config = config::Config::new().unwrap();
+                assert!(!config.experimental_features_enabled);
+                assert_eq!(config.additional_metric_tags_cardinality_limit, None);
+            },
+        );
+
+        temp_env::with_vars(
+            base_vars
+                .iter()
+                .cloned()
+                .chain([("DD_TRACE_EXPERIMENTAL_FEATURES_ENABLED", Some("true"))])
+                .collect::<Vec<_>>(),
+            || {
+                let config = config::Config::new().unwrap();
+                assert!(config.experimental_features_enabled);
+                assert_eq!(config.additional_metric_tags_cardinality_limit, Some(50));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_additional_metric_tags_cardinality_limit_invalid_value() {
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
+                ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
+                ("WEBSITE_SITE_NAME", Some("my-azure-function")),
+                ("DD_TRACE_EXPERIMENTAL_FEATURES_ENABLED", Some("true")),
+                (
+                    "DD_TRACE_STATS_ADDITIONAL_TAGS_CARDINALITY_LIMIT",
+                    Some("not_a_number"),
+                ),
+            ],
+            || {
+                let config = config::Config::new().unwrap();
+                assert_eq!(config.additional_metric_tags_cardinality_limit, None);
+            },
+        );
+    }
 }
 
 /// Test helpers for creating Config instances in tests
@@ -782,6 +922,9 @@ pub mod test_helpers {
             proxy_url: None,
             env: "none".to_string(),
             peer_tags: peer_tag_keys().unwrap(),
+            experimental_features_enabled: false,
+            additional_metric_tags: vec![],
+            additional_metric_tags_cardinality_limit: None,
             agent_stats_computation_enabled: false,
         }
     }

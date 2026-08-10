@@ -71,7 +71,8 @@ impl TraceAggregator {
 mod tests {
     use libdd_common::Endpoint;
     use libdd_trace_utils::{
-        trace_utils::TracerHeaderTags, tracer_payload::TracerPayloadCollection,
+        trace_utils::{TracerGenericTags, TracerHeaderTags},
+        tracer_payload::TracerPayloadCollection,
     };
 
     use super::*;
@@ -84,10 +85,12 @@ mod tests {
             lang_vendor: "lang_vendor",
             tracer_version: "tracer_version",
             container_id: "container_id",
-            client_computed_top_level: true,
-            client_computed_stats: true,
-            dropped_p0_traces: 0,
-            dropped_p0_spans: 0,
+            generic: TracerGenericTags {
+                client_computed_top_level: true,
+                client_computed_stats: true,
+                dropped_p0_traces: 0,
+                dropped_p0_spans: 0,
+            },
         };
         SendData::new(
             size,
