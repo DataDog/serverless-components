@@ -120,8 +120,9 @@ pub struct Config {
     /// Tag keys extracted from spans and used as additional aggregation dimensions in stats.
     /// Only populated when experimental_features_enabled is true.
     pub additional_metric_tags: Vec<String>,
-    /// Per-field cardinality limit for the additional metric tags dimension.
+    /// Per field cardinality limit for the additional metric tags dimension.
     /// `None` means use the default configured in libdatadog.
+    /// Only populated when experimental_features_enabled is true.
     pub additional_metric_tags_cardinality_limit: Option<usize>,
     /// Whether the agent should compute trace stats
     pub agent_stats_computation_enabled: bool,
