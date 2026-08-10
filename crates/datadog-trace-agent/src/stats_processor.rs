@@ -49,9 +49,7 @@ impl StatsProcessor for ServerlessStatsProcessor {
         // connection can be kept alive for the next request instead of being closed.
         if config.agent_stats_computation_enabled {
             if let Err(err) = body.collect().await {
-                debug!(
-                    "Error draining /v0.6/stats request body while dropping stats: {err}"
-                );
+                debug!("Error draining /v0.6/stats request body while dropping stats: {err}");
             }
             return log_and_create_http_response(
                 "Dropping trace stats: agent stats computation is enabled",
