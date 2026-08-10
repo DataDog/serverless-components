@@ -922,9 +922,6 @@ async fn test_tracer_stats_enabled_agent_stats_disabled_forwards_tracer_stats() 
 
     // Clean up
     agent_handle.abort();
-
-    // Clean up
-    agent_handle.abort();
 }
 
 /// Verify that `span_kinds_stats_computed` controls which non-top-level, non-measured child spans
