@@ -48,7 +48,11 @@ impl StatsProcessor for ServerlessStatsProcessor {
         // endpoint are redundant and are dropped. The body is still drained so the
         // connection can be kept alive for the next request instead of being closed.
         if config.agent_stats_computation_enabled {
-            let _ = body.collect().await;
+            if let Err(err) = body.collect().await {
+                debug!(
+                    "Error draining /v0.6/stats request body while dropping stats: {err}"
+                );
+            }
             return log_and_create_http_response(
                 "Dropping trace stats: agent stats computation is enabled",
                 StatusCode::ACCEPTED,
