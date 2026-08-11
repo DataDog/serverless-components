@@ -300,7 +300,7 @@ impl Config {
             },
             agent_stats_computation_enabled: env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
                 .map(|val| val.to_lowercase() == "true")
-                .unwrap_or(false),
+                .unwrap_or(true),
         })
     }
 }
@@ -925,7 +925,7 @@ pub mod test_helpers {
             experimental_features_enabled: false,
             additional_metric_tags: vec![],
             additional_metric_tags_cardinality_limit: None,
-            agent_stats_computation_enabled: false,
+            agent_stats_computation_enabled: true,
         }
     }
 }

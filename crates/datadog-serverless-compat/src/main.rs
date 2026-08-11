@@ -138,10 +138,6 @@ pub async fn main() {
 
     let instance_metric_enabled = env_type == EnvironmentType::AzureFunction;
 
-    let dd_agent_stats_computation_enabled = env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
-        .map(|val| val.to_lowercase() == "true")
-        .unwrap_or(false);
-
     debug!("Starting serverless trace mini agent");
 
     let env_filter = format!("h2=off,hyper=off,rustls=off,{}", log_level);
@@ -175,7 +171,7 @@ pub async fn main() {
         }
     };
 
-    let stats_concentrator = if dd_agent_stats_computation_enabled {
+    let stats_concentrator = if config.agent_stats_computation_enabled {
         info!("agent stats computation enabled");
         let (service, handle) =
             stats_concentrator_service::StatsConcentratorService::new(config.clone());

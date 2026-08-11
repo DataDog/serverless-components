@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
+use http_body_util::BodyExt;
 use hyper::{StatusCode, http};
 use libdd_common::http_common;
 use tokio::sync::mpsc::Sender;
@@ -40,7 +41,21 @@ impl StatsProcessor for ServerlessStatsProcessor {
         tx: Sender<pb::ClientStatsPayload>,
     ) -> http::Result<http_common::HttpResponse> {
         debug!("Received trace stats to process");
+
         let (parts, body) = req.into_parts();
+
+        // When the agent computes trace stats itself, tracer computed stats sent to this
+        // endpoint are redundant and are dropped. The body is still drained so the
+        // connection can be kept alive for the next request instead of being closed.
+        if config.agent_stats_computation_enabled {
+            if let Err(err) = body.collect().await {
+                debug!("Error draining /v0.6/stats request body while dropping stats: {err}");
+            }
+            return log_and_create_http_response(
+                "Dropping trace stats: agent stats computation is enabled",
+                StatusCode::ACCEPTED,
+            );
+        }
 
         if let Some(response) = http_utils::verify_request_content_length(
             &parts.headers,
@@ -83,5 +98,96 @@ impl StatsProcessor for ServerlessStatsProcessor {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hyper::Request;
+    use libdd_trace_obfuscation::obfuscation_config::ObfuscationConfig;
+    use tokio::sync::mpsc;
+
+    use crate::config::{Config, Tags};
+    use crate::peer_tags::peer_tag_keys;
+    use crate::stats_processor::{ServerlessStatsProcessor, StatsProcessor};
+    use libdd_common::{Endpoint, http_common};
+    use libdd_trace_utils::trace_utils;
+
+    fn create_test_config(agent_stats_computation_enabled: bool) -> Config {
+        Config {
+            app_name: Some("dummy_function_name".to_string()),
+            max_request_content_length: 10 * 1024 * 1024,
+            trace_flush_interval_secs: 3,
+            stats_flush_interval_secs: 3,
+            proxy_request_timeout_secs: 30,
+            proxy_request_max_retries: 3,
+            proxy_request_retry_backoff_base_ms: 100,
+            verify_env_timeout_ms: 100,
+            trace_intake: Endpoint {
+                url: hyper::Uri::from_static("https://trace.agent.notdog.com/traces"),
+                api_key: Some("dummy_api_key".into()),
+                ..Default::default()
+            },
+            trace_stats_intake: Endpoint {
+                url: hyper::Uri::from_static("https://trace.agent.notdog.com/stats"),
+                api_key: Some("dummy_api_key".into()),
+                ..Default::default()
+            },
+            dsm_intake: Endpoint {
+                url: hyper::Uri::from_static(
+                    "https://trace.agent.notdog.com/api/v0.1/pipeline_stats",
+                ),
+                api_key: Some("dummy_api_key".into()),
+                ..Default::default()
+            },
+            dd_site: "datadoghq.com".to_string(),
+            dd_apm_receiver_port: 8126,
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
+            dd_apm_windows_pipe_name: None,
+            dd_dogstatsd_port: 8125,
+            #[cfg(any(all(windows, feature = "windows-pipes"), test))]
+            dd_dogstatsd_windows_pipe_name: None,
+            env_type: trace_utils::EnvironmentType::CloudFunction,
+            os: "linux".to_string(),
+            obfuscation_config: ObfuscationConfig::new().unwrap(),
+            proxy_url: None,
+            profiling_intake: Endpoint {
+                url: hyper::Uri::from_static("https://proxy.agent.notdog.com/proxy"),
+                api_key: Some("dummy_api_key".into()),
+                ..Default::default()
+            },
+            tags: Tags::from_env_string("env:test,service:my-service"),
+            env: "test-env".to_string(),
+            peer_tags: peer_tag_keys().unwrap(),
+            experimental_features_enabled: false,
+            additional_metric_tags: vec![],
+            additional_metric_tags_cardinality_limit: None,
+            agent_stats_computation_enabled,
+        }
+    }
+
+    // When agent stats computation is enabled, tracer computed stats are dropped rather than
+    // parsed. This body is not valid msgpack, so the test also verifies the request body is never
+    // fed into the stats deserializer on this path.
+    #[tokio::test]
+    async fn test_process_stats_drops_and_drains_when_agent_computes_stats() {
+        let config = std::sync::Arc::new(create_test_config(true));
+        let (tx, mut rx) = mpsc::channel(1);
+
+        let request = Request::builder()
+            .body(http_common::Body::from_bytes(
+                hyper::body::Bytes::from_static(b"not valid msgpack"),
+            ))
+            .unwrap();
+
+        let response = ServerlessStatsProcessor {}
+            .process_stats(config, request, tx)
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), hyper::StatusCode::ACCEPTED);
+        // nothing should have been sent to the stats flusher on this path
+        assert!(rx.try_recv().is_err());
+        drop(rx);
     }
 }
