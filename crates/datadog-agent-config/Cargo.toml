@@ -13,7 +13,7 @@ serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde-aux = { version = "4.7", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 tracing = { version = "0.1", default-features = false }
-datadog-opentelemetry = { version = "0.5.1", default-features = false }
+datadog-opentelemetry = { git = "https://github.com/DataDog/dd-trace-rs", rev = "1b294861e9c14fe9938059ba262bf2a5db4c3fdb", default-features = false }
 dogstatsd = { path = "../dogstatsd", default-features = false }
 tokio = { version = "1.47", default-features = false, features = ["time"] }
 
