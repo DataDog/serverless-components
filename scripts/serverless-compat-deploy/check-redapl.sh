@@ -8,8 +8,9 @@ set -euo pipefail
 # Usage: ./check-redapl.sh
 # ---------------------------------------------------------------------------
 
-# api_key_uuid for DD_API_KEY=df22f89bdbd3678a07fbad243c3ba199 (nina test functions)
-DEFAULT_API_KEY_UUID="c836c899-c56c-4247-8d42-d67ad62d760d"
+# api_key_uuid: MD5-UUID of your DD_API_KEY. Find yours with:
+#   python3 -c "import hashlib,uuid; print(str(uuid.UUID(bytes=hashlib.md5('<your-key>'.encode()).digest())))"
+DEFAULT_API_KEY_UUID="<your-api-key-uuid>"
 API_KEY_UUID="${1:-${DEFAULT_API_KEY_UUID}}"
 
 TODAY=$(date -u +%Y-%m-%dT00:00:00Z)

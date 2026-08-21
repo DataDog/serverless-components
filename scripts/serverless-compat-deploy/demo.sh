@@ -141,13 +141,13 @@ cat <<'QUERIES'
 SELECT 'serverless_compat_agent' AS table_name,
        workload_type, resource_name, first_seen_at
 FROM udm.all.serverless_compat_agent
-WHERE api_key_uuid = 'c836c899-c56c-4247-8d42-d67ad62d760d'
+WHERE api_key_uuid = '<your-api-key-uuid>'
 ORDER BY first_seen_at DESC LIMIT 5;
 
 SELECT 'serverless_init_agent' AS table_name,
        workload_type, resource_name, first_seen_at
 FROM udm.all.serverless_init_agent
-WHERE api_key_uuid = 'c836c899-c56c-4247-8d42-d67ad62d760d'
+WHERE api_key_uuid = '<your-api-key-uuid>'
 ORDER BY first_seen_at DESC LIMIT 5;
 
 QUERIES
