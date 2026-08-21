@@ -589,11 +589,13 @@ dependencies = [
  "dogstatsd",
  "libdd-trace-utils 8.0.0",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "zstd",
 ]
 

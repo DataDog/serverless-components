@@ -28,6 +28,8 @@ use datadog_metrics_collector::azure_cpu::CpuMetricsCollector;
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
+mod inventory;
+
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_logs_agent::{
     AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
@@ -158,12 +160,22 @@ pub async fn main() {
         .with_file(false)
         .with_target(true)
         .without_time()
+        .with_writer(std::io::stdout)
         .finish();
 
     #[allow(clippy::expect_used)]
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     debug!("Logging subsystem enabled");
+
+    // Send inventory metadata payload to REDAPL so this agent appears in Fleet Automation.
+    // Fire-and-forget: logs a warning on failure, never blocks startup.
+    if let Some(ref api_key) = dd_api_key {
+        inventory::send_inventory_payload(api_key, &dd_site, https_proxy.as_deref(), env_type)
+            .await;
+    } else {
+        warn!("DD_API_KEY not set, skipping inventory payload");
+    }
 
     let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
 
