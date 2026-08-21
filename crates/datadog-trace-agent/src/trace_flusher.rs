@@ -65,12 +65,17 @@ impl TraceFlusher for ServerlessTraceFlusher {
 
     async fn flush(&self) {
         // Process traces from the aggregator
-        let mut guard = self.aggregator.lock().await;
-        let mut traces = guard.get_batch();
+        loop {
+            let traces = {
+                let mut guard = self.aggregator.lock().await;
+                guard.get_batch()
+            };
 
-        while !traces.is_empty() {
+            if traces.is_empty() {
+                break;
+            }
+
             self.send(traces).await;
-            traces = guard.get_batch();
         }
     }
 
@@ -173,5 +178,108 @@ impl SleepCapability for ProxyHttpClient {
         duration: std::time::Duration,
     ) -> impl std::future::Future<Output = ()> + MaybeSend {
         NativeSleepCapability.sleep(duration)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::{convert::Infallible, sync::Arc, time::Duration};
+
+    use hyper::{Request, Response, body::Incoming, service::service_fn};
+    use hyper_util::rt::TokioIo;
+    use libdd_common::Endpoint;
+    use libdd_trace_utils::{
+        trace_utils::TracerHeaderTags, tracer_payload::TracerPayloadCollection,
+    };
+    use tokio::{net::TcpListener, sync::Notify, time::timeout};
+
+    use super::*;
+    use crate::config::test_helpers::create_tcp_test_config;
+
+    fn create_test_send_data(target: &Endpoint) -> SendData {
+        let tracer_header_tags = TracerHeaderTags {
+            lang: "test-lang",
+            lang_version: "test-lang-version",
+            lang_interpreter: "test-lang-interpreter",
+            lang_vendor: "test-lang-vendor",
+            tracer_version: "test-tracer-version",
+            container_id: "test-container-id",
+            client_computed_top_level: true,
+            client_computed_stats: true,
+            dropped_p0_traces: 0,
+            dropped_p0_spans: 0,
+        };
+
+        SendData::new(
+            1,
+            TracerPayloadCollection::V07(Vec::new()),
+            tracer_header_tags,
+            target,
+        )
+    }
+
+    #[tokio::test]
+    async fn flush_releases_aggregator_lock_while_sending() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let request_received = Arc::new(Notify::new());
+        let release_response = Arc::new(Notify::new());
+
+        let server_request_received = Arc::clone(&request_received);
+        let server_release_response = Arc::clone(&release_response);
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let service = service_fn(move |request: Request<Incoming>| {
+                let request_received = Arc::clone(&server_request_received);
+                let release_response = Arc::clone(&server_release_response);
+                async move {
+                    request.into_body().collect().await.unwrap();
+                    request_received.notify_one();
+                    release_response.notified().await;
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }
+            });
+
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .unwrap();
+        });
+
+        let mut config = create_tcp_test_config(0);
+        config.trace_intake = Endpoint {
+            url: format!("http://{address}/api/v0.2/traces").parse().unwrap(),
+            api_key: Some("test-api-key".into()),
+            ..Default::default()
+        };
+        let config = Arc::new(config);
+        let aggregator = Arc::new(Mutex::new(TraceAggregator::default()));
+        aggregator
+            .lock()
+            .await
+            .add(create_test_send_data(&config.trace_intake));
+
+        let flusher = ServerlessTraceFlusher::new(Arc::clone(&aggregator), config);
+        let flush_task = tokio::spawn(async move { flusher.flush().await });
+
+        timeout(Duration::from_secs(5), request_received.notified())
+            .await
+            .expect("flush did not start an outbound request");
+
+        let guard = timeout(Duration::from_millis(250), aggregator.lock())
+            .await
+            .expect("aggregator lock was held while the outbound request was in flight");
+        drop(guard);
+
+        release_response.notify_one();
+        timeout(Duration::from_secs(5), flush_task)
+            .await
+            .expect("flush did not finish after the intake responded")
+            .unwrap();
+        timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("mock intake server did not finish")
+            .unwrap();
     }
 }
