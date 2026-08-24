@@ -122,10 +122,10 @@ pub async fn send_inventory_payload(
             let status = resp.status();
             if status.is_success() || status.as_u16() == 202 {
                 info!(
-                    "Inventory payload sent (uuid={uuid}, workload_type={workload_type}, resource_id={resource_id}, status={status})"
+                    "Inventory payload sent (report_reason=startup, process_start_id={uuid}, workload_type={workload_type}, resource_id={resource_id}, status={status})"
                 );
             } else {
-                warn!("Inventory payload rejected: status={status}, uuid={uuid}, resource_id={resource_id}");
+                warn!("Inventory payload rejected: report_reason=startup, status={status}, process_start_id={uuid}, resource_id={resource_id}");
             }
         }
         Err(e) => {
