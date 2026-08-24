@@ -64,15 +64,15 @@ pub async fn send_inventory_payload(
 
     // DD configuration tags (canonical field names match EPRW stringFields allowlist).
     for (env_key, meta_key) in [
-        ("DD_ENV",     "dd_env"),
+        ("DD_ENV", "dd_env"),
         ("DD_SERVICE", "dd_service"),
         ("DD_VERSION", "dd_version"),
-        ("DD_SITE",    "dd_site"),
+        ("DD_SITE", "dd_site"),
     ] {
-        if let Ok(val) = env::var(env_key) {
-            if !val.is_empty() {
-                metadata[meta_key] = serde_json::Value::String(val);
-            }
+        if let Ok(val) = env::var(env_key)
+            && !val.is_empty()
+        {
+            metadata[meta_key] = serde_json::Value::String(val);
         }
     }
 
@@ -156,7 +156,9 @@ fn build_resource_identity(env_type: EnvironmentType) -> (String, String) {
             }
             let resource_id = format!(
                 "//microsoft.azure/functionApps/{}/{}/{}",
-                sub, rg, name.to_lowercase()
+                sub,
+                rg,
+                name.to_lowercase()
             );
             (resource_id, name)
         }
@@ -199,7 +201,7 @@ fn enrich_platform_fields(metadata: &mut serde_json::Value, env_type: Environmen
                         // split on '+' → webspace portion; split on '-' → last before "webspace"
                         let after_plus = owner.split('+').nth(1)?;
                         let without_webspace = after_plus.strip_suffix("webspace")?;
-                        let region_part = without_webspace.split('-').last()?;
+                        let region_part = without_webspace.split('-').next_back()?;
                         Some(region_part.to_string())
                     })
                 });
@@ -215,39 +217,38 @@ fn enrich_platform_fields(metadata: &mut serde_json::Value, env_type: Environmen
             {
                 metadata["azure_subscription_id"] = serde_json::Value::String(sub);
             }
-            if let Ok(rg) = env::var("WEBSITE_RESOURCE_GROUP") {
-                if !rg.is_empty() {
-                    metadata["azure_resource_group"] = serde_json::Value::String(rg);
-                }
+            if let Ok(rg) = env::var("WEBSITE_RESOURCE_GROUP")
+                && !rg.is_empty()
+            {
+                metadata["azure_resource_group"] = serde_json::Value::String(rg);
             }
 
             // Runtime version: FUNCTIONS_WORKER_RUNTIME gives language name (node, python, …).
-            if let Ok(rt) = env::var("FUNCTIONS_WORKER_RUNTIME") {
-                if !rt.is_empty() {
-                    metadata["serverless_compat_runtime_version"] =
-                        serde_json::Value::String(rt.clone());
-                    metadata["runtime"] = serde_json::Value::String(rt);
-                }
+            if let Ok(rt) = env::var("FUNCTIONS_WORKER_RUNTIME")
+                && !rt.is_empty()
+            {
+                metadata["serverless_compat_runtime_version"] =
+                    serde_json::Value::String(rt.clone());
+                metadata["runtime"] = serde_json::Value::String(rt);
             }
-            if let Ok(ver) = env::var("FUNCTIONS_EXTENSION_VERSION") {
-                if !ver.is_empty() {
-                    metadata["platform_version"] = serde_json::Value::String(ver);
-                }
+            if let Ok(ver) = env::var("FUNCTIONS_EXTENSION_VERSION")
+                && !ver.is_empty()
+            {
+                metadata["platform_version"] = serde_json::Value::String(ver);
             }
         }
         EnvironmentType::CloudFunction => {
-            if let Ok(region) = env::var("FUNCTION_REGION") {
-                if !region.is_empty() {
-                    metadata["region"] = serde_json::Value::String(region);
-                }
+            if let Ok(region) = env::var("FUNCTION_REGION")
+                && !region.is_empty()
+            {
+                metadata["region"] = serde_json::Value::String(region);
             }
             if let Ok(project) = env::var("GCP_PROJECT")
                 .or_else(|_| env::var("GCLOUD_PROJECT"))
                 .or_else(|_| env::var("GOOGLE_CLOUD_PROJECT"))
+                && !project.is_empty()
             {
-                if !project.is_empty() {
-                    metadata["gcp_project_id"] = serde_json::Value::String(project);
-                }
+                metadata["gcp_project_id"] = serde_json::Value::String(project);
             }
             // Cloud Functions gen1 expose the runtime via NODE_VERSION / PYTHON_VERSION etc.
             // There is no single canonical env var, so we try common ones.
@@ -259,10 +260,10 @@ fn enrich_platform_fields(metadata: &mut serde_json::Value, env_type: Environmen
             }
         }
         EnvironmentType::LambdaFunction => {
-            if let Ok(region) = env::var("AWS_REGION") {
-                if !region.is_empty() {
-                    metadata["region"] = serde_json::Value::String(region);
-                }
+            if let Ok(region) = env::var("AWS_REGION")
+                && !region.is_empty()
+            {
+                metadata["region"] = serde_json::Value::String(region);
             }
         }
     }
@@ -277,20 +278,17 @@ fn detect_gcp_runtime() -> String {
         ("java", "JAVA_VERSION"),
         ("go", "GO_VERSION"),
     ] {
-        if let Ok(ver) = env::var(env_var) {
-            if !ver.is_empty() {
-                return format!("{prefix}{ver}");
-            }
+        if let Ok(ver) = env::var(env_var)
+            && !ver.is_empty()
+        {
+            return format!("{prefix}{ver}");
         }
     }
     String::new()
 }
 
-fn build_client(
-    https_proxy: Option<&str>,
-) -> Result<reqwest::Client, Box<dyn std::error::Error>> {
-    let mut builder = create_reqwest_client_builder()?
-        .timeout(std::time::Duration::from_secs(5));
+fn build_client(https_proxy: Option<&str>) -> Result<reqwest::Client, Box<dyn std::error::Error>> {
+    let mut builder = create_reqwest_client_builder()?.timeout(std::time::Duration::from_secs(5));
 
     if let Some(proxy) = https_proxy {
         builder = builder.proxy(reqwest::Proxy::https(proxy)?);
@@ -423,6 +421,9 @@ mod tests {
         }
 
         let (resource_id, _) = build_resource_identity(EnvironmentType::CloudFunction);
-        assert!(resource_id.is_empty(), "missing env vars must produce empty resource_id");
+        assert!(
+            resource_id.is_empty(),
+            "missing env vars must produce empty resource_id"
+        );
     }
 }
