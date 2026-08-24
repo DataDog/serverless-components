@@ -125,7 +125,9 @@ pub async fn send_inventory_payload(
                     "Inventory payload sent (report_reason=startup, process_start_id={uuid}, workload_type={workload_type}, resource_id={resource_id}, status={status})"
                 );
             } else {
-                warn!("Inventory payload rejected: report_reason=startup, status={status}, process_start_id={uuid}, resource_id={resource_id}");
+                warn!(
+                    "Inventory payload rejected: report_reason=startup, status={status}, process_start_id={uuid}, resource_id={resource_id}"
+                );
             }
         }
         Err(e) => {
@@ -370,8 +372,7 @@ mod tests {
             std::env::set_var("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace");
         }
 
-        let (resource_id, resource_name) =
-            build_resource_identity(EnvironmentType::AzureFunction);
+        let (resource_id, resource_name) = build_resource_identity(EnvironmentType::AzureFunction);
 
         assert_eq!(resource_name, "my-func-app");
         assert_eq!(
@@ -395,8 +396,7 @@ mod tests {
             std::env::set_var("GCP_PROJECT", "my-project");
         }
 
-        let (resource_id, resource_name) =
-            build_resource_identity(EnvironmentType::CloudFunction);
+        let (resource_id, resource_name) = build_resource_identity(EnvironmentType::CloudFunction);
 
         assert_eq!(resource_name, "my-fn");
         assert_eq!(
