@@ -317,6 +317,7 @@ mod tests {
             "timestamp": timestamp,
             "agent_metadata": {
                 "flavor": "serverless-compat",
+                "report_reason": "startup",
                 "agent_version": AGENT_VERSION,
                 "serverless_compat_version": env!("CARGO_PKG_VERSION"),
                 "workload_type": "azure_function",
