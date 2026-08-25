@@ -16,6 +16,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# Keep the load-test build independent from the user's global npm cache. Some
+# development machines have an older, root-owned ~/.npm cache, which otherwise
+# makes the binary build succeed and the package step fail with EPERM.
+NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-${REPO_ROOT}/target/npm-cache}"
+export NPM_CONFIG_CACHE
+mkdir -p "${NPM_CONFIG_CACHE}"
+
 # Add rustup toolchain to PATH so cargo + rustc can find each other.
 RUSTUP_BIN="${HOME}/.rustup/toolchains/stable-aarch64-apple-darwin/bin"
 if [[ -d "${RUSTUP_BIN}" ]]; then
