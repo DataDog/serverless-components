@@ -40,6 +40,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   properties: {
     managedEnvironmentId: appEnvId
     configuration: {
+      activeRevisionsMode: 'Multiple'
       ingress: {
         external: true
         targetPort: 8080
@@ -85,3 +86,4 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
 
 output fqdn string = app.properties.configuration.ingress.fqdn
 output resourceId string = app.id
+output latestRevisionName string = app.properties.latestRevisionName

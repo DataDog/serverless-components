@@ -33,10 +33,35 @@ These commands run the full automated suite by default:
 - L3: 100 concurrent requests per HTTP init resource
 - L4: one concurrent request per distinct HTTP resource
 - L5: 15 minutes of unchanged traffic at one-minute intervals
+- L6: create a fresh representative revision with request concurrency set to 1,
+  immediately send 100 concurrent requests, and record the new revision CCRID
+- L7: keep revisions A and B active, configure a 10/90 traffic split, send 100
+  requests through the service URL, and probe each revision directly
 
-L6 changed-value and L7 traffic-split scenarios are included in the generated
-report as `NOT MEASURED` until their provider-specific mutation fixtures run.
+Add `--scaling-matrix` to create additional representative revisions for:
+
+- L8: minimum instances/replicas `0`, `5`, and `100`, with concurrency `1`
+- L9: maximum instances/replicas `100`, `1000`, and `4000`, with concurrency
+  `1` and 100-request pressure per configured maximum
+
+L8 verifies whether each provider-started process sends startup inventory. L9
+verifies that scale-out reports keep one row per revision; 100 requests do not
+prove that the service reached a configured maximum above 100. Use provider
+instance-start metrics and producer startup logs for the actual instance count.
+The scaling matrix is opt-in because minimum `100` can create material cloud
+cost, and a provider may reject a requested maximum that exceeds the project,
+subscription, region, or environment quota.
+
+```sh
+./scripts/svls9604/run.sh --profile gcp --scaling-matrix --yes
+./scripts/svls9604/run.sh --profile azure --scaling-matrix --yes
+```
+
 Use `--suite baseline` for deployment debugging without the load stages.
+
+L6 is cold-start *pressure*, not an inferred cold-start count. The authoritative
+instance/start count must come from provider or Agent startup logs for revision
+B. HTTP attempts and successful responses are reported separately.
 
 The GCP profile creates 44 resources: 14 Cloud Run in-container services, 14
 Cloud Run sidecars, one Cloud Run job, 14 real Gen2 Cloud Functions with a
@@ -68,8 +93,9 @@ and `completed_at` in the manifest. This makes a run isolatable in EPRW metrics
 without using high-cardinality `resource_id` metric tags.
 
 Current automated scope is deployment inventory, endpoint/job baseline
-execution, L1-L5 load stages, and report generation. An HTTP response alone is
-not proof that inventory traversed EPRW or deduplicated in Iris.
+execution, L1-L7 load/revision stages, revision-aware expected identities, and
+report generation. An HTTP response alone is not proof that inventory traversed
+EPRW or deduplicated in Iris.
 
 The runner always rebuilds the Serverless Compat binary before packaging it.
 This prevents a stale `target/` artifact from being deployed under a new run ID.
@@ -85,6 +111,39 @@ directory and rerun `report.py`:
 ```sh
 python3 scripts/svls9604/report.py --manifest /path/to/run-manifest.json
 ```
+
+`pipeline-evidence.json` supports overall, per-stage, and per-revision counts:
+
+```json
+{
+  "eprw_commit": "deployed-sha",
+  "iris_commit": "deployed-sha",
+  "eprw_debug_tracking": true,
+  "iris_upsert_telemetry": true,
+  "producer_attempts": 0,
+  "producer_reasons": {"startup": 0, "periodic": 0, "refresh": 0},
+  "decoder_accepts": 0,
+  "decoder_reasons": {"startup": 0, "periodic": 0, "refresh": 0},
+  "resource_edge_successes": 0,
+  "resource_edge_failures": 0,
+  "iris_primary": {"CREATED": 0, "UPDATED": 0, "EXTENDED": 0, "IGNORED": 0, "ERROR": 0},
+  "stages": {
+    "L6": {"producer_attempts": 0, "decoder_accepts": 0, "resource_edge_successes": 0, "resource_edge_failures": 0}
+  },
+  "resources": {
+    "REVISION_CCRID": {
+      "producer_attempts": 0,
+      "decoder_accepts": 0,
+      "resource_edge_successes": 0,
+      "iris_primary": {"CREATED": 0, "UPDATED": 0, "EXTENDED": 0, "IGNORED": 0, "ERROR": 0}
+    }
+  }
+}
+```
+
+Replace every example zero with the observed value. Omit measurements that
+were not collected; the report treats missing values as `NOT MEASURED` and
+never turns them into a pass.
 
 ## Pipeline evidence for an RFC run
 
@@ -106,10 +165,11 @@ Disable these temporary controls after the validation window.
 
 Collect these counts for the manifest's exact time window:
 
-1. Producer starts: Cloud logs containing `inventory report queued
-   reason=startup` for init and `Inventory payload sent
-   (report_reason=startup` for Compat. Group by cloud resource and revision.
-2. Decoder accepts:
+1. Producer reports: Cloud logs containing `inventory report queued`, grouped
+   by `reason` (`startup`, `periodic`, or `refresh`). Compat currently emits
+   only `Inventory payload sent (report_reason=startup`. Group by cloud
+   resource and revision.
+2. Decoder accepts, grouped by `report_reason`:
    `event_platform_resource_writer.agentmetadata.serverless_write.accepted`
    filtered by the manifest's unique `dd_env`.
 3. Resource-edge responses:
@@ -119,19 +179,23 @@ Collect these counts for the manifest's exact time window:
    restricted to `shadow_mode:false` and the manifest resource names, grouped
    by `resource_id` and `result`.
 5. Final rows: DDSQL rows from `udm.all.serverless_init_agent` and
-   `udm.all.serverless_compat_agent` whose `resource_id` contains the run ID.
+   `udm.all.serverless_compat_agent` filtered by the manifest's exact `dd_env`.
+   For Cloud Run and Azure Container Apps, compare revision `resource_id` and
+   stable `parent_resource_id` against every identity in the manifest.
 
 The hard gates are:
 
 ```text
 decoder accepts = resource-edge ok + resource-edge failures
 resource-edge ok = primary Iris CREATED + UPDATED + EXTENDED + IGNORED + ERROR
-unique DDSQL resource_id count = manifest resource count
+unique DDSQL resource_id count = manifest expected_resource_ids count
 duplicate DDSQL keys = 0
 ```
 
-Interpret Iris results per stable `resource_id`: `CREATED` is the first row,
+Interpret Iris results per revision-scoped `resource_id`: `CREATED` is the first row,
 `UPDATED` is a real configuration change, `EXTENDED` is an unchanged report
 deduplicated to the existing row, and `IGNORED` is stale/out-of-order. A cold
 start or new process UUID may increase report attempts, but must not increase
-row cardinality. Use `--skip-burst` only for deployment debugging.
+row cardinality within one revision. Creating revision B must create a second
+row related to the same stable parent; instances of revision B must deduplicate
+into that row. Use `--skip-burst` only for deployment debugging.

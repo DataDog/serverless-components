@@ -27,6 +27,17 @@ RUN_STARTED_AT = None
 
 FULL_LOAD_STAGES = (("L1", 10), ("L2", 50), ("L3", 100))
 
+def aggregate_stage(stage):
+    if stage.get("resources"):
+        return (sum(item.get("attempts",1) for item in stage["resources"]),
+                sum(item.get("successes",1 if 200 <= item.get("http_status",0) < 400 else 0) for item in stage["resources"]),
+                sum(item.get("failures",0 if 200 <= item.get("http_status",0) < 400 else 1) for item in stage["resources"]))
+    if stage.get("rounds"):
+        return (sum(item["attempts"] for item in stage["rounds"]),
+                sum(item["successes"] for item in stage["rounds"]),
+                sum(item["failures"] for item in stage["rounds"]))
+    return stage.get("attempts",0),stage.get("successes",0),stage.get("failures",0)
+
 def run(cmd, *, cwd=None, capture=False, env=None):
     shown = " ".join(shlex.quote(str(x)) for x in cmd)
     api_key = os.environ.get("DD_API_KEY")
@@ -189,11 +200,22 @@ def service_json(project, name, app_image, agent_image, variant, runtime, functi
                  "run.googleapis.com/container-dependencies":json.dumps({"app":["datadog-sidecar"]})}
     return {"apiVersion":"serving.knative.dev/v1","kind":"Service",
       "metadata":{"name":name,"namespace":project,"labels":labels},
-      "spec":{"template":{"metadata":{"annotations":annotations},"spec":{"containerConcurrency":80,"timeoutSeconds":300,"containers":[
+      "spec":{"template":{"metadata":{"annotations":annotations},"spec":{"containerConcurrency":1 if variant=="coldstart" else 80,"timeoutSeconds":300,"containers":[
         {"name":"app","image":app_image,"ports":[{"containerPort":8080}],"env":[{"name":"DD_ENV","value":RUN_ENV}]},
         {"name":"datadog-sidecar","image":agent_image,"startupProbe":{"tcpSocket":{"port":5555},"periodSeconds":3,"failureThreshold":20},
          "env":[{"name":k,"value":v} for k,v in {**env_list(name),"DD_HEALTH_PORT":"5555","DD_APM_NON_LOCAL_TRAFFIC":"true","DD_DOGSTATSD_NON_LOCAL_TRAFFIC":"true", **({"FUNCTION_TARGET":"main"} if function else {})}.items()]}
       ]}}}}
+
+def gcp_service_identity(project, region, service):
+    status=json.loads(run(["gcloud","run","services","describe",service,
+                           f"--project={project}",f"--region={region}",
+                           "--format=json(status.url,status.latestReadyRevisionName)"],capture=True))
+    revision=status["status"]["latestReadyRevisionName"]
+    return {"endpoint":status["status"]["url"],
+            "resource_id":f"//run.googleapis.com/projects/{project}/locations/{region}/revisions/{revision}",
+            "parent_resource_id":f"//run.googleapis.com/projects/{project}/locations/{region}/services/{service}",
+            "deployment_id":revision,
+            "expected_resource_ids":[f"//run.googleapis.com/projects/{project}/locations/{region}/revisions/{revision}"]}
 
 def gcp_function_source(runtime, name, run_dir):
     source=run_dir/f"function-{name}"; source.mkdir(exist_ok=True)
@@ -252,7 +274,8 @@ def deploy_service(project, region, r, name, images, agent_image, run_dir):
     if r["id"]=="SI-01":
         run(["gcloud","run","deploy",name,f"--project={project}",f"--region={region}",
              f"--image={images[r['runtime']+':init']}","--allow-unauthenticated","--port=8080",
-             f"--min-instances={'1' if r['variant']=='busy' else '0'}","--max-instances=100","--concurrency=80",
+             f"--min-instances={'1' if r['variant']=='busy' else '0'}","--max-instances=100",
+             f"--concurrency={'1' if r['variant']=='coldstart' else '80'}",
              f"--set-env-vars={env_arg(env_list(name))}","--labels=svls9604=true"])
     elif r["id"]=="SI-02":
         body=service_json(project,name,images[r['runtime']+':plain'],agent_image,r["variant"],r["runtime"],r["id"]=="SI-04")
@@ -265,7 +288,7 @@ def deploy_service(project, region, r, name, images, agent_image, run_dir):
         run(["gcloud","functions","deploy",name,"--gen2",f"--project={project}",f"--region={region}",
              f"--runtime={runtime}",f"--entry-point={entrypoint}",f"--source={source}","--trigger-http",
              "--allow-unauthenticated",f"--min-instances={'1' if r['variant']=='busy' else '0'}",
-             "--max-instances=100","--concurrency=80","--memory=1Gi","--cpu=1",
+             "--max-instances=100",f"--concurrency={'1' if r['variant']=='coldstart' else '80'}","--memory=1Gi","--cpu=1",
              f"--set-env-vars={env_arg({'DD_ENV':RUN_ENV,'DD_SERVICE':name})}","--quiet"])
         fn=json.loads(run(["gcloud","functions","describe",name,"--gen2",f"--project={project}",f"--region={region}",
                            "--format=json(serviceConfig.service,serviceConfig.uri)"],capture=True))
@@ -274,12 +297,10 @@ def deploy_service(project, region, r, name, images, agent_image, run_dir):
              "--container=datadog-sidecar",f"--image={agent_image}","--cpu=250m","--memory=512Mi",
              f"--set-env-vars={env_arg({**env_list(name),'DD_HEALTH_PORT':'5555','DD_APM_NON_LOCAL_TRAFFIC':'true','DD_DOGSTATSD_NON_LOCAL_TRAFFIC':'true','FUNCTION_TARGET':'main'})}",
              "--startup-probe=tcpSocket.port=5555,periodSeconds=3,failureThreshold=20"])
-        # The entry point (often "main") is process configuration, not a Cloud
-        # Run resource. Keep resource identity at the backing service level.
-        return {"name":name,"endpoint":fn["serviceConfig"]["uri"],
-                "resource_id":f"//run.googleapis.com/projects/{project}/locations/{region}/services/{service}"}
-    url=run(["gcloud","run","services","describe",name,f"--project={project}",f"--region={region}","--format=value(status.url)"],capture=True)
-    return {"name":name,"endpoint":url,"resource_id":f"//run.googleapis.com/projects/{project}/locations/{region}/services/{name}"}
+        identity=gcp_service_identity(project,region,service)
+        identity["endpoint"]=fn["serviceConfig"]["uri"]
+        return {"name":name,**identity}
+    return {"name":name,**gcp_service_identity(project,region,name)}
 
 def deploy_job(project, region, r, name, images):
     cmd=["gcloud","run","jobs","deploy",name,f"--project={project}",f"--region={region}",
@@ -402,13 +423,191 @@ def run_full_load_suite(targets, *, sustained_minutes, sustained_interval):
     stages.append(run_distributed_stage(targets))
     busy=[resource for resource in targets if resource.get("variant")=="busy"]
     stages.append(run_sustained_stage(busy or targets,sustained_minutes,sustained_interval))
-    stages.extend([
-        {"id":"L6","scenario":"changed inventory value for the same resource",
-         "status":"NOT MEASURED","reason":"requires an explicit revision/configuration mutation fixture"},
-        {"id":"L7","scenario":"two active revisions sharing one resource_id",
-         "status":"NOT MEASURED","reason":"requires provider traffic splitting and revision-aware evidence"},
-    ])
     return stages
+
+def add_expected_revision(resource, identity):
+    expected=resource.setdefault("expected_resource_ids",[resource["resource_id"]])
+    if identity["resource_id"] not in expected:
+        expected.append(identity["resource_id"])
+    resource.setdefault("observed_revisions",[]).append(identity)
+
+def gcp_revision_stages(project, region, targets, run_id):
+    target=next((r for r in targets if r["id"]=="SI-02" and r["runtime"]=="python" and r["variant"]=="busy"),None)
+    if not target:
+        return [{"id":"L6","scenario":"controlled revision cold-start pressure","status":"NOT MEASURED","reason":"representative SI-02 Python busy target missing"},
+                {"id":"L7","scenario":"two active revisions with split traffic","status":"NOT MEASURED","reason":"representative SI-02 Python busy target missing"}]
+    revision_a=target["deployment_id"]
+    suffix=f"load-{run_id[-6:].lower()}"[:15]
+    started=utc_now()
+    run(["gcloud","run","services","update",target["name"],f"--project={project}",f"--region={region}",
+         "--concurrency=1","--min-instances=0","--max-instances=100",f"--revision-suffix={suffix}",
+         "--container=datadog-sidecar",f"--update-env-vars=DD_VERSION={suffix}"])
+    identity_b=gcp_service_identity(project,region,target["name"])
+    add_expected_revision(target,identity_b)
+    pressure=burst({**target,"endpoint":identity_b["endpoint"]},100)
+    l6={"id":"L6","scenario":"fresh revision, concurrency=1, 100-request cold-start pressure",
+        "started_at":started,"completed_at":utc_now(),"provider":"gcp","resource":target["name"],
+        "parent_resource_id":target["parent_resource_id"],"revision_a":revision_a,
+        "revision_b":identity_b["deployment_id"],"resource_id_b":identity_b["resource_id"],
+        "provider_instance_starts":"REQUIRES LOG EVIDENCE",**pressure}
+    run(["gcloud","run","services","update-traffic",target["name"],f"--project={project}",f"--region={region}",
+         f"--set-tags=old={revision_a},new={identity_b['deployment_id']}",
+         f"--to-revisions={revision_a}=10,{identity_b['deployment_id']}=90"])
+    traffic=json.loads(run(["gcloud","run","services","describe",target["name"],f"--project={project}",f"--region={region}",
+                            "--format=json(status.traffic)"],capture=True))["status"]["traffic"]
+    tagged={entry.get("tag"):entry.get("url") for entry in traffic if entry.get("tag") and entry.get("url")}
+    old_result=burst({**target,"endpoint":tagged["old"]},10)
+    new_result=burst({**target,"endpoint":tagged["new"]},10)
+    split_result=burst(target,100)
+    l7={"id":"L7","scenario":"two active revisions, 10/90 service traffic plus direct tagged revision probes",
+        "started_at":utc_now(),"completed_at":utc_now(),"provider":"gcp","resource":target["name"],
+        "parent_resource_id":target["parent_resource_id"],"revision_a":revision_a,
+        "revision_b":identity_b["deployment_id"],"traffic":traffic,
+        "attempts":split_result["attempts"]+old_result["attempts"]+new_result["attempts"],
+        "successes":split_result["successes"]+old_result["successes"]+new_result["successes"],
+        "failures":split_result["failures"]+old_result["failures"]+new_result["failures"],
+        "service_traffic":split_result,"revision_a_direct":old_result,"revision_b_direct":new_result}
+    return [l6,l7]
+
+def gcp_scaling_stages(project, region, targets, run_id, maxima):
+    target=next((r for r in targets if r["id"]=="SI-02" and r["runtime"]=="python" and r["variant"]=="busy"),None)
+    if not target:
+        return [{"id":"L8","scenario":"minimum-instance report fan-out","status":"NOT MEASURED","reason":"representative SI-02 Python busy target missing"},
+                {"id":"L9","scenario":"maximum-instance scale-out ceilings","status":"NOT MEASURED","reason":"representative SI-02 Python busy target missing"}]
+
+    def configure_revision(label, minimum, maximum):
+        suffix=f"{label}-{run_id[-4:].lower()}"[:15]
+        run(["gcloud","run","services","update",target["name"],f"--project={project}",f"--region={region}",
+             "--concurrency=1",f"--min-instances={minimum}",f"--max-instances={maximum}",
+             f"--revision-suffix={suffix}","--container=datadog-sidecar",
+             f"--update-env-vars=DD_VERSION={suffix}"])
+        identity=gcp_service_identity(project,region,target["name"])
+        add_expected_revision(target,identity)
+        run(["gcloud","run","services","update-traffic",target["name"],f"--project={project}",f"--region={region}",
+             f"--to-revisions={identity['deployment_id']}=100"])
+        return identity
+
+    minimum_cases=[]
+    l8_started=utc_now()
+    for minimum in (0,5,100):
+        identity=configure_revision(f"min{minimum}",minimum,100)
+        probe=burst({**target,"endpoint":identity["endpoint"]},1)
+        minimum_cases.append({"minimum_instances":minimum,"maximum_instances":100,
+                              "resource_id":identity["resource_id"],"deployment_id":identity["deployment_id"],
+                              "provider_instance_starts":"REQUIRES PROVIDER/STARTUP LOG EVIDENCE",**probe})
+    l8={"id":"L8","scenario":"minimum-instance report fan-out (0, 5, 100)",
+        "started_at":l8_started,"completed_at":utc_now(),"provider":"gcp","resource":target["name"],
+        "cases":minimum_cases,"resources":minimum_cases}
+
+    maximum_cases=[]
+    l9_started=utc_now()
+    for maximum in maxima:
+        identity=configure_revision(f"max{maximum}",0,maximum)
+        pressure=burst({**target,"endpoint":identity["endpoint"]},100)
+        maximum_cases.append({"minimum_instances":0,"maximum_instances":maximum,
+                              "resource_id":identity["resource_id"],"deployment_id":identity["deployment_id"],
+                              "provider_instance_starts":"REQUIRES PROVIDER/STARTUP LOG EVIDENCE",
+                              "note":"100 requests validate fan-out and identity, not attainment of the configured maximum",
+                              **pressure})
+    l9={"id":"L9","scenario":"maximum-instance configuration boundaries with 100-request pressure",
+        "started_at":l9_started,"completed_at":utc_now(),"provider":"gcp","resource":target["name"],
+        "cases":maximum_cases,"resources":maximum_cases}
+    return [l8,l9]
+
+def azure_revision_identity(app_id, revision, fqdn=None):
+    resource_id=f"{app_id.rstrip('/')}/revisions/{revision}".lower()
+    result={"resource_id":resource_id,"parent_resource_id":app_id.lower(),
+            "deployment_id":revision,"expected_resource_ids":[resource_id]}
+    if fqdn:
+        result["endpoint"]="https://"+fqdn
+    return result
+
+def azure_revision_stages(resource_group, targets, run_id):
+    target=next((r for r in targets if r["id"]=="SI-06" and r["runtime"]=="python" and r["variant"]=="busy"),None)
+    if not target:
+        return [{"id":"L6","scenario":"controlled revision cold-start pressure","status":"NOT MEASURED","reason":"representative SI-06 Python busy target missing"},
+                {"id":"L7","scenario":"two active revisions with split traffic","status":"NOT MEASURED","reason":"representative SI-06 Python busy target missing"}]
+    revision_a=target["deployment_id"]
+    suffix=f"load{run_id[-6:].lower()}"[:10]
+    started=utc_now()
+    revision_b=run(["az","containerapp","revision","copy","--resource-group",resource_group,"--name",target["name"],
+                    "--from-revision",revision_a,"--container-name","datadog-sidecar",
+                    "--set-env-vars",f"DD_VERSION={suffix}","--revision-suffix",suffix,
+                    "--min-replicas","0","--max-replicas","100","--scale-rule-name","http",
+                    "--scale-rule-type","http","--scale-rule-http-concurrency","1",
+                    "--query","properties.latestRevisionName","-o","tsv"],capture=True)
+    revisions=json.loads(run(["az","containerapp","revision","list","--resource-group",resource_group,"--name",target["name"],"-o","json"],capture=True))
+    by_name={item["name"]:item for item in revisions}
+    identity_b=azure_revision_identity(target["parent_resource_id"],revision_b,by_name[revision_b]["properties"].get("fqdn"))
+    add_expected_revision(target,identity_b)
+    pressure=burst({**target,"endpoint":identity_b["endpoint"]},100)
+    l6={"id":"L6","scenario":"fresh revision, HTTP concurrency=1, 100-request cold-start pressure",
+        "started_at":started,"completed_at":utc_now(),"provider":"azure","resource":target["name"],
+        "parent_resource_id":target["parent_resource_id"],"revision_a":revision_a,"revision_b":revision_b,
+        "resource_id_b":identity_b["resource_id"],"provider_instance_starts":"REQUIRES REVISION/LOG EVIDENCE",**pressure}
+    run(["az","containerapp","ingress","traffic","set","--resource-group",resource_group,"--name",target["name"],
+         "--revision-weight",f"{revision_a}=10",f"{revision_b}=90"])
+    old_endpoint="https://"+by_name[revision_a]["properties"]["fqdn"]
+    new_endpoint=identity_b["endpoint"]
+    old_result=burst({**target,"endpoint":old_endpoint},10)
+    new_result=burst({**target,"endpoint":new_endpoint},10)
+    split_result=burst(target,100)
+    l7={"id":"L7","scenario":"two active revisions, 10/90 service traffic plus direct revision probes",
+        "started_at":utc_now(),"completed_at":utc_now(),"provider":"azure","resource":target["name"],
+        "parent_resource_id":target["parent_resource_id"],"revision_a":revision_a,"revision_b":revision_b,
+        "traffic_weights":{revision_a:10,revision_b:90},
+        "attempts":split_result["attempts"]+old_result["attempts"]+new_result["attempts"],
+        "successes":split_result["successes"]+old_result["successes"]+new_result["successes"],
+        "failures":split_result["failures"]+old_result["failures"]+new_result["failures"],
+        "service_traffic":split_result,"revision_a_direct":old_result,"revision_b_direct":new_result}
+    return [l6,l7]
+
+def azure_scaling_stages(resource_group, targets, run_id, maxima):
+    target=next((r for r in targets if r["id"]=="SI-06" and r["runtime"]=="python" and r["variant"]=="busy"),None)
+    if not target:
+        return [{"id":"L8","scenario":"minimum-replica report fan-out","status":"NOT MEASURED","reason":"representative SI-06 Python busy target missing"},
+                {"id":"L9","scenario":"maximum-replica scale-out ceilings","status":"NOT MEASURED","reason":"representative SI-06 Python busy target missing"}]
+
+    def copy_revision(label, minimum, maximum):
+        suffix=f"{label}{run_id[-4:].lower()}"[:10]
+        revision=run(["az","containerapp","revision","copy","--resource-group",resource_group,"--name",target["name"],
+                      "--from-revision",target["deployment_id"],"--container-name","datadog-sidecar",
+                      "--set-env-vars",f"DD_VERSION={suffix}","--revision-suffix",suffix,
+                      "--min-replicas",str(minimum),"--max-replicas",str(maximum),"--scale-rule-name","http",
+                      "--scale-rule-type","http","--scale-rule-http-concurrency","1",
+                      "--query","properties.latestRevisionName","-o","tsv"],capture=True)
+        revisions=json.loads(run(["az","containerapp","revision","list","--resource-group",resource_group,"--name",target["name"],"-o","json"],capture=True))
+        observed=next(item for item in revisions if item["name"]==revision)
+        identity=azure_revision_identity(target["parent_resource_id"],revision,observed["properties"].get("fqdn"))
+        add_expected_revision(target,identity)
+        return identity
+
+    minimum_cases=[]
+    l8_started=utc_now()
+    for minimum in (0,5,100):
+        identity=copy_revision(f"min{minimum}",minimum,100)
+        probe=burst({**target,"endpoint":identity["endpoint"]},1)
+        minimum_cases.append({"minimum_instances":minimum,"maximum_instances":100,
+                              "resource_id":identity["resource_id"],"deployment_id":identity["deployment_id"],
+                              "provider_instance_starts":"REQUIRES PROVIDER/STARTUP LOG EVIDENCE",**probe})
+    l8={"id":"L8","scenario":"minimum-replica report fan-out (0, 5, 100)",
+        "started_at":l8_started,"completed_at":utc_now(),"provider":"azure","resource":target["name"],
+        "cases":minimum_cases,"resources":minimum_cases}
+
+    maximum_cases=[]
+    l9_started=utc_now()
+    for maximum in maxima:
+        identity=copy_revision(f"max{maximum}",0,maximum)
+        pressure=burst({**target,"endpoint":identity["endpoint"]},100)
+        maximum_cases.append({"minimum_instances":0,"maximum_instances":maximum,
+                              "resource_id":identity["resource_id"],"deployment_id":identity["deployment_id"],
+                              "provider_instance_starts":"REQUIRES PROVIDER/STARTUP LOG EVIDENCE",
+                              "note":"100 requests validate fan-out and identity, not attainment of the configured maximum",
+                              **pressure})
+    l9={"id":"L9","scenario":"maximum-replica configuration boundaries with 100-request pressure",
+        "started_at":l9_started,"completed_at":utc_now(),"provider":"azure","resource":target["name"],
+        "cases":maximum_cases,"resources":maximum_cases}
+    return [l8,l9]
 
 def azure_params(path, values):
     body={"$schema":"https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
@@ -475,7 +674,8 @@ def deploy_azure_resource(args, r, name, images, agent_image, acr, run_id, run_d
                 "appImage":images[f"{r['runtime']}:{'init' if r['id']=='SI-05' else 'plain'}"],
                 "sidecar":r["id"]=="SI-06","minReplicas":1 if r["variant"]=="busy" else 0}
         out=azure_deploy("container-app.bicep",args.azure_containerapp_resource_group,deployment,values,run_dir)
-        return {"name":name,"endpoint":"https://"+out["fqdn"]["value"],"resource_id":out["resourceId"]["value"]}
+        identity=azure_revision_identity(out["resourceId"]["value"],out["latestRevisionName"]["value"],out["fqdn"]["value"])
+        return {"name":name,**identity}
     if r["id"] in ("SI-07","SI-08"):
         plan=args.azure_container_plan_id if r["id"]=="SI-07" else args.azure_sidecar_plan_id
         values={**common,"servicePlanId":plan,
@@ -529,6 +729,9 @@ def run_azure(args, resources, run_id, run_dir):
         targets=[r for r in deployed if r["id"].startswith("SI-") and r.get("endpoint")]
         stages.extend(run_full_load_suite(targets,sustained_minutes=args.sustained_minutes,
                                           sustained_interval=args.sustained_interval))
+        stages.extend(azure_revision_stages(args.azure_containerapp_resource_group,targets,run_id))
+        if args.scaling_matrix:
+            stages.extend(azure_scaling_stages(args.azure_containerapp_resource_group,targets,run_id,args.scaling_maxima))
     write_manifest(run_dir/"run-manifest.json",run_id=run_id,profile="azure",agent_sha=agent_sha,
                    agent_image=agent_image,resources=deployed,stages=stages,suite=args.suite)
     return deployed
@@ -543,16 +746,15 @@ def run_gcp(args, resources, run_id, run_dir):
     existing={}
     if manifest_path.exists():
         previous=json.loads(manifest_path.read_text())
-        # SI-04 changed from a function-shaped Cloud Run service to a real
-        # Cloud Functions v2 deployment. Never resume the old representation.
+        # Revision-scoped identity is required for Cloud Run and Gen2 functions.
+        # Never resume a manifest produced by the earlier service-scoped runner.
         valid=[]
         for x in previous.get("resources",[]):
             if x.get("agent_image") != agent_image:
                 continue
-            if x["id"] != "SI-04":
+            if x["id"] not in ("SI-01","SI-02","SI-04"):
                 valid.append(x)
-            elif x.get("resource_id","").startswith("//cloudfunctions.googleapis.com/") or "/functions/" in x.get("resource_id",""):
-                x["resource_id"]=f"//run.googleapis.com/projects/{project}/locations/{region}/services/{x['name']}"
+            elif "/revisions/" in x.get("resource_id","") and x.get("parent_resource_id"):
                 valid.append(x)
         existing={x["name"]:x for x in valid}
     deployed=[]
@@ -575,6 +777,9 @@ def run_gcp(args, resources, run_id, run_dir):
         targets=[r for r in deployed if r["id"].startswith("SI-") and r.get("endpoint")]
         stages.extend(run_full_load_suite(targets,sustained_minutes=args.sustained_minutes,
                                           sustained_interval=args.sustained_interval))
+        stages.extend(gcp_revision_stages(project,region,targets,run_id))
+        if args.scaling_matrix:
+            stages.extend(gcp_scaling_stages(project,region,targets,run_id,args.scaling_maxima))
     write_manifest(manifest_path,run_id=run_id,profile="gcp",project=project,region=region,
                    agent_sha=agent_sha,agent_image=agent_image,resources=deployed,
                    stages=stages,suite=args.suite)
@@ -597,15 +802,20 @@ def main():
     parser.add_argument("--azure-code-plan-id",default=os.environ.get("AZURE_CODE_PLAN_ID","/subscriptions/1dd25961-a5c7-45bf-a5ba-c1475d365cc7/resourceGroups/dd-serverless-test-aas/providers/Microsoft.Web/serverfarms/dd-test-plan-linux-code"))
     parser.add_argument("--run-id")
     parser.add_argument("--suite",choices=["baseline","full"],default="full",
-                        help="full runs L0-L5 and records L6/L7 as dedicated-fixture gaps")
+                        help="full runs L0-L5 plus revision cold-start pressure (L6) and split traffic (L7)")
     parser.add_argument("--sustained-minutes",type=float,default=15,
                         help="duration of the L5 unchanged-report window")
     parser.add_argument("--sustained-interval",type=float,default=60,
                         help="seconds between L5 trigger rounds")
+    parser.add_argument("--scaling-matrix",action="store_true",
+                        help="add L8/L9 minimum and maximum instance/replica boundary cases")
+    parser.add_argument("--scaling-maxima",default="100,1000,4000",
+                        help="comma-separated L9 maximum instance/replica settings")
     parser.add_argument("--plan",action="store_true")
     parser.add_argument("--yes",action="store_true")
     parser.add_argument("--skip-burst",action="store_true",help="compatibility alias for --suite baseline")
     args=parser.parse_args()
+    args.scaling_maxima=tuple(int(value) for value in args.scaling_maxima.split(",") if value)
     if args.skip_burst:
         args.suite="baseline"
     resources=expand(args.profile)

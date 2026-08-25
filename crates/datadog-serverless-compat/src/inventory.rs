@@ -53,6 +53,7 @@ pub async fn send_inventory_payload(
         "agent_version": AGENT_VERSION,
         "serverless_compat_version": env!("CARGO_PKG_VERSION"),
         "workload_type": workload_type,
+        "report_reason": "startup",
     });
 
     if !resource_id.is_empty() {
@@ -337,6 +338,7 @@ mod tests {
 
         let metadata = obj["agent_metadata"].as_object().unwrap();
         assert_eq!(metadata["flavor"], "serverless-compat");
+        assert_eq!(metadata["report_reason"], "startup");
         assert_eq!(metadata["agent_version"], AGENT_VERSION);
         assert!(metadata.contains_key("serverless_compat_version"));
         assert_eq!(metadata["workload_type"], "azure_function");
