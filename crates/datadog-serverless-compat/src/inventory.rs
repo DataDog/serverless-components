@@ -166,15 +166,25 @@ fn build_resource_identity(env_type: EnvironmentType) -> (String, String) {
             (resource_id, name)
         }
         EnvironmentType::CloudFunction => {
+            // Only Gen1 Cloud Functions set FUNCTION_NAME.  Gen2 Cloud Run
+            // Functions use K_SERVICE instead, so an absent FUNCTION_NAME is
+            // the signal that this is Gen2 and the write should be skipped.
             let name = env::var("FUNCTION_NAME").unwrap_or_default();
+            if name.is_empty() {
+                return (String::new(), String::new());
+            }
+            // FUNCTION_REGION was the canonical Gen1 var; Gen1 functions now
+            // running on Cloud Run infrastructure may omit it and set
+            // REGION_NAME (the Cloud Run system variable) instead.
             let region = env::var("FUNCTION_REGION")
                 .or_else(|_| env::var("GOOGLE_CLOUD_REGION"))
+                .or_else(|_| env::var("REGION_NAME"))
                 .unwrap_or_default();
             let project = env::var("GCP_PROJECT")
                 .or_else(|_| env::var("GCLOUD_PROJECT"))
                 .or_else(|_| env::var("GOOGLE_CLOUD_PROJECT"))
                 .unwrap_or_default();
-            if name.is_empty() || region.is_empty() || project.is_empty() {
+            if region.is_empty() || project.is_empty() {
                 return (String::new(), name);
             }
             let resource_id = format!(
@@ -304,6 +314,12 @@ fn build_client(https_proxy: Option<&str>) -> Result<reqwest::Client, Box<dyn st
 mod tests {
     use super::*;
 
+    /// Tests that read or write process-global env vars must hold this lock for
+    /// their entire duration to prevent races when the test binary runs with
+    /// multiple threads (the default).
+    static ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
     #[test]
     fn payload_structure() {
         let uuid = uuid::Uuid::new_v4().to_string();
@@ -367,8 +383,7 @@ mod tests {
 
     #[test]
     fn resource_id_azure_function() {
-        // Simulate Azure Functions env vars.
-        // SAFETY: single-threaded test, no concurrent env access.
+        let _lock = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var("WEBSITE_SITE_NAME", "my-func-app");
             std::env::set_var("WEBSITE_RESOURCE_GROUP", "my-rg");
@@ -392,7 +407,7 @@ mod tests {
 
     #[test]
     fn resource_id_gcp_cloud_function() {
-        // SAFETY: single-threaded test, no concurrent env access.
+        let _lock = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var("FUNCTION_NAME", "my-fn");
             std::env::set_var("FUNCTION_REGION", "us-central1");
@@ -415,12 +430,63 @@ mod tests {
     }
 
     #[test]
+    fn resource_id_gcp_cloud_function_region_name_fallback() {
+        // Covers Gen1 functions on Cloud Run infrastructure where FUNCTION_REGION
+        // is absent and REGION_NAME (the Cloud Run system variable) is set instead.
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("FUNCTION_NAME", "my-fn");
+            std::env::remove_var("FUNCTION_REGION");
+            std::env::remove_var("GOOGLE_CLOUD_REGION");
+            std::env::set_var("REGION_NAME", "us-central1");
+            std::env::set_var("GCP_PROJECT", "my-project");
+        }
+
+        let (resource_id, resource_name) = build_resource_identity(EnvironmentType::CloudFunction);
+
+        assert_eq!(resource_name, "my-fn");
+        assert_eq!(
+            resource_id,
+            "//cloudfunctions.googleapis.com/projects/my-project/locations/us-central1/functions/my-fn"
+        );
+
+        unsafe {
+            std::env::remove_var("FUNCTION_NAME");
+            std::env::remove_var("REGION_NAME");
+            std::env::remove_var("GCP_PROJECT");
+        }
+    }
+
+    #[test]
+    fn resource_id_gen2_absent_function_name_skips_write() {
+        // Gen2 Cloud Run Functions do not set FUNCTION_NAME; the write must be
+        // skipped so only Gen1 functions appear in serverless_compat_agent.
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("FUNCTION_NAME");
+            std::env::set_var("REGION_NAME", "us-central1");
+            std::env::set_var("GCP_PROJECT", "my-project");
+        }
+
+        let (resource_id, resource_name) = build_resource_identity(EnvironmentType::CloudFunction);
+
+        assert!(resource_id.is_empty(), "Gen2 must produce empty resource_id");
+        assert!(resource_name.is_empty(), "Gen2 must produce empty resource_name");
+
+        unsafe {
+            std::env::remove_var("REGION_NAME");
+            std::env::remove_var("GCP_PROJECT");
+        }
+    }
+
+    #[test]
     fn resource_id_missing_returns_empty() {
-        // SAFETY: single-threaded test, no concurrent env access.
+        let _lock = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::remove_var("FUNCTION_NAME");
             std::env::remove_var("FUNCTION_REGION");
             std::env::remove_var("GCP_PROJECT");
+            std::env::remove_var("REGION_NAME");
         }
 
         let (resource_id, _) = build_resource_identity(EnvironmentType::CloudFunction);
