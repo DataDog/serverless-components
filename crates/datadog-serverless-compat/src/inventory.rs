@@ -46,7 +46,29 @@ pub async fn send_inventory_payload(
 
     // Required REDAPL identity fields — EPRW rejects the serverless_compat_agent
     // write if any of these is absent.
-    let (resource_id, resource_name) = build_resource_identity(env_type.clone());
+    let (mut resource_id, resource_name) = build_resource_identity(env_type.clone());
+
+    // CloudFunction: if FUNCTION_NAME was found but region was absent from all
+    // env vars (FUNCTION_REGION/GOOGLE_CLOUD_REGION/REGION_NAME), fall back to
+    // the GCP metadata server.  This covers Gen1 nodejs18+ on Cloud Run
+    // infrastructure where GCP no longer injects FUNCTION_REGION at runtime.
+    if matches!(env_type, EnvironmentType::CloudFunction)
+        && resource_id.is_empty()
+        && !resource_name.is_empty()
+    {
+        if let Some(region) = fetch_gcp_region_from_metadata().await {
+            let project = env::var("GCP_PROJECT")
+                .or_else(|_| env::var("GCLOUD_PROJECT"))
+                .or_else(|_| env::var("GOOGLE_CLOUD_PROJECT"))
+                .unwrap_or_default();
+            if !project.is_empty() {
+                resource_id = format!(
+                    "//cloudfunctions.googleapis.com/projects/{}/locations/{}/functions/{}",
+                    project, region, resource_name
+                );
+            }
+        }
+    }
 
     let mut metadata = serde_json::json!({
         "flavor": "serverless-compat",
@@ -135,6 +157,30 @@ pub async fn send_inventory_payload(
             warn!("Failed to send inventory payload: {e}");
         }
     }
+}
+
+/// Fetches the GCP region from the instance metadata server.
+///
+/// Returns `Some("us-central1")` on success, `None` if the server is
+/// unreachable (i.e. not running on GCP) or returns an unexpected response.
+/// Used as a fallback when `FUNCTION_REGION` is not injected by GCP at runtime.
+async fn fetch_gcp_region_from_metadata() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let resp = client
+        .get("http://metadata.google.internal/computeMetadata/v1/instance/region")
+        .header("Metadata-Flavor", "Google")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    // Response format: "projects/<project-number>/regions/<region-name>"
+    let body = resp.text().await.ok()?;
+    body.split('/').last().map(|s| s.to_owned()).filter(|s| !s.is_empty())
 }
 
 /// Returns `(resource_id, resource_name)` for the given environment type.
