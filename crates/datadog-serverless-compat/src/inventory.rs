@@ -165,22 +165,38 @@ pub async fn send_inventory_payload(
 /// unreachable (i.e. not running on GCP) or returns an unexpected response.
 /// Used as a fallback when `FUNCTION_REGION` is not injected by GCP at runtime.
 async fn fetch_gcp_region_from_metadata() -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .ok()?;
-    let resp = client
+    let client = match create_reqwest_client_builder()
+        .and_then(|b| b.timeout(std::time::Duration::from_secs(2)).build().map_err(Into::into))
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to build HTTP client for GCP metadata server: {e}");
+            return None;
+        }
+    };
+    match client
         .get("http://metadata.google.internal/computeMetadata/v1/instance/region")
         .header("Metadata-Flavor", "Google")
         .send()
         .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
+    {
+        Err(e) => {
+            warn!("GCP metadata server unreachable (FUNCTION_REGION will be empty): {e}");
+            None
+        }
+        Ok(resp) if !resp.status().is_success() => {
+            warn!("GCP metadata server returned {}: region unknown", resp.status());
+            None
+        }
+        Ok(resp) => {
+            // Response format: "projects/<project-number>/regions/<region-name>"
+            resp.text()
+                .await
+                .ok()
+                .and_then(|body| body.split('/').last().map(|s| s.to_owned()))
+                .filter(|s| !s.is_empty())
+        }
     }
-    // Response format: "projects/<project-number>/regions/<region-name>"
-    let body = resp.text().await.ok()?;
-    body.split('/').last().map(|s| s.to_owned()).filter(|s| !s.is_empty())
 }
 
 /// Returns `(resource_id, resource_name)` for the given environment type.
