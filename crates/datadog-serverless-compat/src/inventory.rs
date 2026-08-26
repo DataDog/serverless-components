@@ -190,11 +190,22 @@ async fn fetch_gcp_region_from_metadata() -> Option<String> {
         }
         Ok(resp) => {
             // Response format: "projects/<project-number>/regions/<region-name>"
-            resp.text()
-                .await
-                .ok()
-                .and_then(|body| body.split('/').last().map(|s| s.to_owned()))
-                .filter(|s| !s.is_empty())
+            match resp.text().await {
+                Err(e) => {
+                    warn!("Failed to read GCP metadata server response body: {e}");
+                    None
+                }
+                Ok(body) => {
+                    let region = body
+                        .trim()
+                        .split('/')
+                        .last()
+                        .map(|s| s.to_owned())
+                        .filter(|s| !s.is_empty());
+                    info!("GCP metadata server region response: {:?} → parsed: {:?}", body.trim(), region);
+                    region
+                }
+            }
         }
     }
 }
