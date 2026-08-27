@@ -50,9 +50,21 @@ impl TraceAggregator {
             if let Some(payload) = self.queue.pop_front() {
                 let payload_size = payload.len();
 
-                // Put stats back in the queue
+                // Put payload back in the queue if it doesn't fit in this batch
                 if batch_size + payload_size > self.max_content_size_bytes {
-                    self.queue.push_front(payload);
+                    if self.buffer.is_empty() {
+                        // This payload alone exceeds max_content_size_bytes. Send it on
+                        // its own rather than requeuing it, otherwise it would permanently
+                        // block every payload queued behind it from ever being flushed.
+                        tracing::warn!(
+                            payload_size,
+                            max_content_size_bytes = self.max_content_size_bytes,
+                            "Trace payload exceeds max batch size; sending it standalone"
+                        );
+                        self.buffer.push(payload);
+                    } else {
+                        self.queue.push_front(payload);
+                    }
                     break;
                 }
                 batch_size += payload_size;
@@ -139,6 +151,29 @@ mod tests {
         // The second batch should only contain the last log
         let second_batch = aggregator.get_batch();
         assert_eq!(second_batch.len(), 1);
+        assert_eq!(aggregator.queue.len(), 0);
+    }
+
+    #[test]
+    fn test_get_batch_oversized_payload_is_sent_standalone() {
+        let mut aggregator = TraceAggregator::new(10);
+
+        // A payload larger than max_content_size_bytes on its own, followed by a
+        // normal-sized payload behind it.
+        aggregator.add(create_test_send_data(20));
+        aggregator.add(create_test_send_data(5));
+
+        // The oversized payload must be flushed on its own rather than blocking
+        // the queue forever.
+        let first_batch = aggregator.get_batch();
+        assert_eq!(first_batch.len(), 1);
+        assert_eq!(first_batch[0].len(), 20);
+        assert_eq!(aggregator.queue.len(), 1);
+
+        // The payload queued behind it must still be reachable.
+        let second_batch = aggregator.get_batch();
+        assert_eq!(second_batch.len(), 1);
+        assert_eq!(second_batch[0].len(), 5);
         assert_eq!(aggregator.queue.len(), 0);
     }
 }
