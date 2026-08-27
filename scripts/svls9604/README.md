@@ -25,6 +25,11 @@ Execute a profile:
 ./scripts/svls9604/run.sh --profile azure --yes
 ```
 
+Rerunning the Azure command with the same `--run-id` and `RESULTS_DIR` resumes
+the partial manifest: resources already deployed with the same candidate Agent
+image are reused, and only missing resources are deployed. This avoids
+repeating the multi-hour portion of an interrupted Azure run.
+
 These commands run the full automated suite by default:
 
 - L0: one baseline request or execution per deployed resource
@@ -111,6 +116,20 @@ directory and rerun `report.py`:
 ```sh
 python3 scripts/svls9604/report.py --manifest /path/to/run-manifest.json
 ```
+
+For GCP, export Cloud Run logs containing `inventory report queued` as JSON,
+then build the event-level process/instance ledger and stage summary:
+
+```sh
+python3 scripts/svls9604/collect_producer_evidence.py \
+  --manifest /path/to/run-manifest.json \
+  --gcp-logs /path/to/producer-events.json
+```
+
+This writes `producer-instance-ledger.csv`, `producer-stage-summary.csv`, and
+`producer-evidence.json`. The ledger preserves timestamp, stage, service,
+revision, provider instance ID, Agent process ID, report reason, and resource
+ID. It does not infer downstream EPRW or Iris outcomes.
 
 `pipeline-evidence.json` supports overall, per-stage, and per-revision counts:
 

@@ -320,6 +320,19 @@ def main():
     compat_path=args.compat_csv or find_default_csv(run_dir,"serverless_compat_agent")
     pipeline_path=args.pipeline_evidence or run_dir/"pipeline-evidence.json"
     pipeline=json.loads(pipeline_path.read_text()) if pipeline_path.exists() else {}
+    producer_path=run_dir/"producer-evidence.json"
+    if producer_path.exists():
+        producer=json.loads(producer_path.read_text())
+        pipeline.setdefault("producer_attempts",producer.get("events"))
+        pipeline.setdefault("producer_reasons",producer.get("reasons",{}))
+        pipeline.setdefault("stages",{})
+        for stage_id,evidence in producer.get("stages",{}).items():
+            pipeline["stages"].setdefault(stage_id,{})
+            pipeline["stages"][stage_id].setdefault("producer_attempts",evidence.get("reports"))
+        pipeline.setdefault("resources",{})
+        for resource_id,evidence in producer.get("resources",{}).items():
+            pipeline["resources"].setdefault(resource_id,{})
+            pipeline["resources"][resource_id].setdefault("producer_attempts",evidence.get("reports"))
     markdown,tables=render(manifest,load_csv(init_path),load_csv(compat_path),pipeline)
     (run_dir/"serverless-redapl-rc-results.md").write_text(markdown)
     (run_dir/"report.json").write_text(json.dumps({"manifest":manifest,"tables":tables,

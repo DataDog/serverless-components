@@ -60,6 +60,9 @@ resource main 'Microsoft.Web/sites/sitecontainers@2024-11-01' = {
     isMain: true
     image: appImage
     targetPort: '8080'
+    authType: 'UserCredentials'
+    userName: registryUsername
+    passwordSecret: registryPassword
   }
 }
 
@@ -70,6 +73,9 @@ resource agent 'Microsoft.Web/sites/sitecontainers@2024-11-01' = if (sidecar) {
     isMain: false
     image: agentImage
     targetPort: '8126'
+    authType: 'UserCredentials'
+    userName: registryUsername
+    passwordSecret: registryPassword
     inheritAppSettingsAndConnectionStrings: true
   }
 }

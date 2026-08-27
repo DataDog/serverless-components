@@ -111,12 +111,12 @@ def name_for(run_id, r):
     return f"sv-{run_id}-{r['id'].lower().replace('-', '')}-{model}-{short_runtime(r['runtime'])}-{r['variant'][:4]}"[:63]
 
 def preflight(args):
-    required=["docker", "git", "python3", "gcloud" if args.profile == "gcp" else "az"]
+    required=["docker", "git", "python3", "gcloud" if args.profile in ("gcp", "gcp-sanity") else "az"]
     for tool in required:
         run(["sh", "-c", f"command -v {shlex.quote(tool)} >/dev/null"])
     if not os.environ.get("DD_API_KEY") or os.environ.get("DD_SITE") != "datad0g.com":
         raise RuntimeError("runner must be invoked through dd-auth for datad0g.com")
-    if args.profile == "gcp":
+    if args.profile in ("gcp", "gcp-sanity"):
         account=run(["gcloud","auth","list","--filter=status:ACTIVE","--format=value(account)"],capture=True)
         if not account:
             raise RuntimeError("gcloud has no active account")
@@ -206,11 +206,11 @@ def service_json(project, name, app_image, agent_image, variant, runtime, functi
          "env":[{"name":k,"value":v} for k,v in {**env_list(name),"DD_HEALTH_PORT":"5555","DD_APM_NON_LOCAL_TRAFFIC":"true","DD_DOGSTATSD_NON_LOCAL_TRAFFIC":"true", **({"FUNCTION_TARGET":"main"} if function else {})}.items()]}
       ]}}}}
 
-def gcp_service_identity(project, region, service):
+def gcp_service_identity(project, region, service, revision=None):
     status=json.loads(run(["gcloud","run","services","describe",service,
                            f"--project={project}",f"--region={region}",
                            "--format=json(status.url,status.latestReadyRevisionName)"],capture=True))
-    revision=status["status"]["latestReadyRevisionName"]
+    revision=revision or status["status"]["latestReadyRevisionName"]
     return {"endpoint":status["status"]["url"],
             "resource_id":f"//run.googleapis.com/projects/{project}/locations/{region}/revisions/{revision}",
             "parent_resource_id":f"//run.googleapis.com/projects/{project}/locations/{region}/services/{service}",
@@ -442,7 +442,8 @@ def gcp_revision_stages(project, region, targets, run_id):
     run(["gcloud","run","services","update",target["name"],f"--project={project}",f"--region={region}",
          "--concurrency=1","--min-instances=0","--max-instances=100",f"--revision-suffix={suffix}",
          "--container=datadog-sidecar",f"--update-env-vars=DD_VERSION={suffix}"])
-    identity_b=gcp_service_identity(project,region,target["name"])
+    revision_b=f"{target['name']}-{suffix}"
+    identity_b=gcp_service_identity(project,region,target["name"],revision_b)
     add_expected_revision(target,identity_b)
     pressure=burst({**target,"endpoint":identity_b["endpoint"]},100)
     l6={"id":"L6","scenario":"fresh revision, concurrency=1, 100-request cold-start pressure",
@@ -450,6 +451,7 @@ def gcp_revision_stages(project, region, targets, run_id):
         "parent_resource_id":target["parent_resource_id"],"revision_a":revision_a,
         "revision_b":identity_b["deployment_id"],"resource_id_b":identity_b["resource_id"],
         "provider_instance_starts":"REQUIRES LOG EVIDENCE",**pressure}
+    l7_started=utc_now()
     run(["gcloud","run","services","update-traffic",target["name"],f"--project={project}",f"--region={region}",
          f"--set-tags=old={revision_a},new={identity_b['deployment_id']}",
          f"--to-revisions={revision_a}=10,{identity_b['deployment_id']}=90"])
@@ -460,7 +462,7 @@ def gcp_revision_stages(project, region, targets, run_id):
     new_result=burst({**target,"endpoint":tagged["new"]},10)
     split_result=burst(target,100)
     l7={"id":"L7","scenario":"two active revisions, 10/90 service traffic plus direct tagged revision probes",
-        "started_at":utc_now(),"completed_at":utc_now(),"provider":"gcp","resource":target["name"],
+        "started_at":l7_started,"completed_at":utc_now(),"provider":"gcp","resource":target["name"],
         "parent_resource_id":target["parent_resource_id"],"revision_a":revision_a,
         "revision_b":identity_b["deployment_id"],"traffic":traffic,
         "attempts":split_result["attempts"]+old_result["attempts"]+new_result["attempts"],
@@ -477,14 +479,18 @@ def gcp_scaling_stages(project, region, targets, run_id, maxima):
 
     def configure_revision(label, minimum, maximum):
         suffix=f"{label}-{run_id[-4:].lower()}"[:15]
+        started_at=utc_now()
         run(["gcloud","run","services","update",target["name"],f"--project={project}",f"--region={region}",
              "--concurrency=1",f"--min-instances={minimum}",f"--max-instances={maximum}",
              f"--revision-suffix={suffix}","--container=datadog-sidecar",
              f"--update-env-vars=DD_VERSION={suffix}"])
-        identity=gcp_service_identity(project,region,target["name"])
+        revision=f"{target['name']}-{suffix}"
+        identity=gcp_service_identity(project,region,target["name"],revision)
         add_expected_revision(target,identity)
         run(["gcloud","run","services","update-traffic",target["name"],f"--project={project}",f"--region={region}",
              f"--to-revisions={identity['deployment_id']}=100"])
+        identity["started_at"]=started_at
+        identity["configured_at"]=utc_now()
         return identity
 
     minimum_cases=[]
@@ -494,6 +500,7 @@ def gcp_scaling_stages(project, region, targets, run_id, maxima):
         probe=burst({**target,"endpoint":identity["endpoint"]},1)
         minimum_cases.append({"minimum_instances":minimum,"maximum_instances":100,
                               "resource_id":identity["resource_id"],"deployment_id":identity["deployment_id"],
+                              "started_at":identity["started_at"],"completed_at":utc_now(),
                               "provider_instance_starts":"REQUIRES PROVIDER/STARTUP LOG EVIDENCE",**probe})
     l8={"id":"L8","scenario":"minimum-instance report fan-out (0, 5, 100)",
         "started_at":l8_started,"completed_at":utc_now(),"provider":"gcp","resource":target["name"],
@@ -506,6 +513,7 @@ def gcp_scaling_stages(project, region, targets, run_id, maxima):
         pressure=burst({**target,"endpoint":identity["endpoint"]},100)
         maximum_cases.append({"minimum_instances":0,"maximum_instances":maximum,
                               "resource_id":identity["resource_id"],"deployment_id":identity["deployment_id"],
+                              "started_at":identity["started_at"],"completed_at":utc_now(),
                               "provider_instance_starts":"REQUIRES PROVIDER/STARTUP LOG EVIDENCE",
                               "note":"100 requests validate fan-out and identity, not attainment of the configured maximum",
                               **pressure})
@@ -545,6 +553,7 @@ def azure_revision_stages(resource_group, targets, run_id):
         "started_at":started,"completed_at":utc_now(),"provider":"azure","resource":target["name"],
         "parent_resource_id":target["parent_resource_id"],"revision_a":revision_a,"revision_b":revision_b,
         "resource_id_b":identity_b["resource_id"],"provider_instance_starts":"REQUIRES REVISION/LOG EVIDENCE",**pressure}
+    l7_started=utc_now()
     run(["az","containerapp","ingress","traffic","set","--resource-group",resource_group,"--name",target["name"],
          "--revision-weight",f"{revision_a}=10",f"{revision_b}=90"])
     old_endpoint="https://"+by_name[revision_a]["properties"]["fqdn"]
@@ -553,7 +562,7 @@ def azure_revision_stages(resource_group, targets, run_id):
     new_result=burst({**target,"endpoint":new_endpoint},10)
     split_result=burst(target,100)
     l7={"id":"L7","scenario":"two active revisions, 10/90 service traffic plus direct revision probes",
-        "started_at":utc_now(),"completed_at":utc_now(),"provider":"azure","resource":target["name"],
+        "started_at":l7_started,"completed_at":utc_now(),"provider":"azure","resource":target["name"],
         "parent_resource_id":target["parent_resource_id"],"revision_a":revision_a,"revision_b":revision_b,
         "traffic_weights":{revision_a:10,revision_b:90},
         "attempts":split_result["attempts"]+old_result["attempts"]+new_result["attempts"],
@@ -570,6 +579,7 @@ def azure_scaling_stages(resource_group, targets, run_id, maxima):
 
     def copy_revision(label, minimum, maximum):
         suffix=f"{label}{run_id[-4:].lower()}"[:10]
+        started_at=utc_now()
         revision=run(["az","containerapp","revision","copy","--resource-group",resource_group,"--name",target["name"],
                       "--from-revision",target["deployment_id"],"--container-name","datadog-sidecar",
                       "--set-env-vars",f"DD_VERSION={suffix}","--revision-suffix",suffix,
@@ -579,6 +589,8 @@ def azure_scaling_stages(resource_group, targets, run_id, maxima):
         revisions=json.loads(run(["az","containerapp","revision","list","--resource-group",resource_group,"--name",target["name"],"-o","json"],capture=True))
         observed=next(item for item in revisions if item["name"]==revision)
         identity=azure_revision_identity(target["parent_resource_id"],revision,observed["properties"].get("fqdn"))
+        identity["started_at"]=started_at
+        identity["configured_at"]=utc_now()
         add_expected_revision(target,identity)
         return identity
 
@@ -589,6 +601,7 @@ def azure_scaling_stages(resource_group, targets, run_id, maxima):
         probe=burst({**target,"endpoint":identity["endpoint"]},1)
         minimum_cases.append({"minimum_instances":minimum,"maximum_instances":100,
                               "resource_id":identity["resource_id"],"deployment_id":identity["deployment_id"],
+                              "started_at":identity["started_at"],"completed_at":utc_now(),
                               "provider_instance_starts":"REQUIRES PROVIDER/STARTUP LOG EVIDENCE",**probe})
     l8={"id":"L8","scenario":"minimum-replica report fan-out (0, 5, 100)",
         "started_at":l8_started,"completed_at":utc_now(),"provider":"azure","resource":target["name"],
@@ -601,6 +614,7 @@ def azure_scaling_stages(resource_group, targets, run_id, maxima):
         pressure=burst({**target,"endpoint":identity["endpoint"]},100)
         maximum_cases.append({"minimum_instances":0,"maximum_instances":maximum,
                               "resource_id":identity["resource_id"],"deployment_id":identity["deployment_id"],
+                              "started_at":identity["started_at"],"completed_at":utc_now(),
                               "provider_instance_starts":"REQUIRES PROVIDER/STARTUP LOG EVIDENCE",
                               "note":"100 requests validate fan-out and identity, not attainment of the configured maximum",
                               **pressure})
@@ -687,9 +701,23 @@ def deploy_azure_resource(args, r, name, images, agent_image, acr, run_id, run_d
         values={**common,"servicePlanId":args.azure_code_plan_id,"alwaysOn":r["variant"]=="busy"}
         out=azure_deploy("web-app-code.bicep",args.azure_resource_group,deployment,values,run_dir)
         package=source_zip(r["runtime"],name,run_dir)
-        run(["az","webapp","deploy","--resource-group",args.azure_resource_group,"--name",name,
-             "--src-path",str(package),"--type","zip","--clean","true","--restart","true"])
-        return {"name":name,"endpoint":"https://"+out["hostname"]["value"],"resource_id":out["resourceId"]["value"]}
+        try:
+            run(["az","webapp","deploy","--resource-group",args.azure_resource_group,"--name",name,
+                 "--src-path",str(package),"--type","zip","--clean","true","--async","true"])
+        except RuntimeError as e:
+            print(f"Warning: az webapp deploy exited non-zero ({e}); verifying via health check",flush=True)
+        endpoint="https://"+out["hostname"]["value"]
+        print(f"Waiting for {name} to become healthy...",flush=True)
+        for _ in range(72):
+            try:
+                with urllib.request.urlopen(endpoint,timeout=10) as resp:
+                    if resp.status < 500:
+                        print(f"{name} healthy (HTTP {resp.status})",flush=True)
+                        break
+            except Exception:
+                pass
+            time.sleep(10)
+        return {"name":name,"endpoint":endpoint,"resource_id":out["resourceId"]["value"]}
     storage=("sv"+hashlib.sha256(name.encode()).hexdigest()[:20])[:24]
     values={"name":name,"storageName":storage,"ddApiKey":os.environ["DD_API_KEY"],"runId":run_id}
     out=azure_deploy("function.bicep",args.azure_function_resource_group,deployment,values,run_dir)
@@ -713,13 +741,31 @@ def run_azure(args, resources, run_id, run_dir):
     os.environ["SVLS9604_ACR_PASSWORD"]=acr["password"]
     agent_image,agent_sha=build_agent_azure(args.azure_registry,run_id)
     images=build_runtime_images(f"{args.azure_registry}/svls9604",run_id,agent_image)
+    manifest_path=run_dir/"run-manifest.json"
+    existing={}
+    if manifest_path.exists():
+        previous=json.loads(manifest_path.read_text())
+        if previous.get("profile") in ("azure","azure-sanity") and previous.get("agent_image")==agent_image:
+            candidates=[item for item in previous.get("resources",[])
+                        if item.get("agent_image")==agent_image and item.get("endpoint")]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(20,len(candidates) or 1)) as pool:
+                checks=list(pool.map(lambda item: http_request(item["endpoint"]),candidates))
+            for item,(status,_,error) in zip(candidates,checks):
+                if 200 <= status < 500:
+                    existing[item["name"]]=item
+                else:
+                    print(f"Azure resume will redeploy unhealthy {item['name']} (HTTP {status}: {error})")
     deployed=[]
     for i,r in enumerate(resources,1):
         name=name_for(run_id,r)
+        if name in existing:
+            print(f"[{i}/{len(resources)}] reusing deployed {r['id']} {r['runtime']} {r['variant']} as {name}")
+            deployed.append(existing[name])
+            continue
         print(f"[{i}/{len(resources)}] deploying {r['id']} {r['runtime']} {r['variant']} as {name}")
         observed=deploy_azure_resource(args,r,name,images,agent_image,acr,run_id,run_dir)
         deployed.append({**r,**observed,"agent_image":agent_image})
-        write_manifest(run_dir/"run-manifest.json",run_id=run_id,profile="azure",agent_sha=agent_sha,agent_image=agent_image,resources=deployed)
+        write_manifest(manifest_path,run_id=run_id,profile=args.profile,agent_sha=agent_sha,agent_image=agent_image,resources=deployed)
     baseline_started=utc_now()
     for resource in deployed:
         result=subprocess.run(["curl","-fsS","--max-time","60",resource["endpoint"]],text=True,capture_output=True)
@@ -732,7 +778,10 @@ def run_azure(args, resources, run_id, run_dir):
         stages.extend(azure_revision_stages(args.azure_containerapp_resource_group,targets,run_id))
         if args.scaling_matrix:
             stages.extend(azure_scaling_stages(args.azure_containerapp_resource_group,targets,run_id,args.scaling_maxima))
-    write_manifest(run_dir/"run-manifest.json",run_id=run_id,profile="azure",agent_sha=agent_sha,
+        compat_targets=[r for r in deployed if r["id"].startswith("SC-") and r.get("endpoint")]
+        for stage_id,count in [("SC-L1",10),("SC-L2",50),("SC-L3",100)]:
+            stages.append(run_same_resource_stage(stage_id,compat_targets,count))
+    write_manifest(manifest_path,run_id=run_id,profile=args.profile,agent_sha=agent_sha,
                    agent_image=agent_image,resources=deployed,stages=stages,suite=args.suite)
     return deployed
 
@@ -780,6 +829,9 @@ def run_gcp(args, resources, run_id, run_dir):
         stages.extend(gcp_revision_stages(project,region,targets,run_id))
         if args.scaling_matrix:
             stages.extend(gcp_scaling_stages(project,region,targets,run_id,args.scaling_maxima))
+        compat_targets=[r for r in deployed if r["id"].startswith("SC-") and r.get("endpoint")]
+        for stage_id,count in [("SC-L1",10),("SC-L2",50),("SC-L3",100)]:
+            stages.append(run_same_resource_stage(stage_id,compat_targets,count))
     write_manifest(manifest_path,run_id=run_id,profile="gcp",project=project,region=region,
                    agent_sha=agent_sha,agent_image=agent_image,resources=deployed,
                    stages=stages,suite=args.suite)
@@ -788,7 +840,7 @@ def run_gcp(args, resources, run_id, run_dir):
 def main():
     global RUN_ENV, RUN_STARTED_AT
     parser=argparse.ArgumentParser()
-    parser.add_argument("--profile",choices=["gcp","azure"],required=True)
+    parser.add_argument("--profile",choices=["gcp","azure","gcp-sanity","azure-sanity"],required=True)
     parser.add_argument("--project",default=os.environ.get("GCP_PROJECT","datadog-serverless-gcp-demo"))
     parser.add_argument("--region",default=os.environ.get("GCP_REGION","us-central1"))
     parser.add_argument("--azure-resource-group",default=os.environ.get("AZURE_RESOURCE_GROUP","dd-serverless-test-aas"))
@@ -834,7 +886,7 @@ def main():
     run_dir=pathlib.Path(os.environ.get("RESULTS_DIR",f"/tmp/svls9604-{run_id}")); run_dir.mkdir(parents=True,exist_ok=True)
     run_dir.chmod(0o700)
     failure_exit=0
-    if args.profile=="gcp":
+    if args.profile in ("gcp", "gcp-sanity"):
         deployed=run_gcp(args,resources,run_id,run_dir)
         failed=[r for r in deployed if r.get("baseline",{}).get("status") not in ("ok","executed")]
         print(f"GCP profile deployed {len(deployed)}/{len(resources)}; baseline failures={len(failed)}")

@@ -46,26 +46,47 @@ pub async fn send_inventory_payload(
 
     // Required REDAPL identity fields — EPRW rejects the serverless_compat_agent
     // write if any of these is absent.
-    let (mut resource_id, resource_name) = build_resource_identity(env_type.clone());
+    let (mut resource_id, mut resource_name) = build_resource_identity(env_type.clone());
 
-    // CloudFunction: if FUNCTION_NAME was found but region was absent from all
-    // env vars (FUNCTION_REGION/GOOGLE_CLOUD_REGION/REGION_NAME), fall back to
-    // the GCP metadata server.  This covers Gen1 nodejs18+ on Cloud Run
-    // infrastructure where GCP no longer injects FUNCTION_REGION at runtime.
-    if matches!(env_type, EnvironmentType::CloudFunction)
-        && resource_id.is_empty()
-        && !resource_name.is_empty()
-    {
-        if let Some(region) = fetch_gcp_region_from_metadata().await {
-            let project = env::var("GCP_PROJECT")
+    // CloudFunction: if resource_id is still empty, try the GCP metadata server
+    // for the region.  This covers two cases on newer Cloud Run infrastructure:
+    //   1. FUNCTION_NAME is set but FUNCTION_REGION is absent → resource_name non-empty
+    //   2. FUNCTION_NAME is absent (Gen1 on new infra uses K_SERVICE) → resource_name empty
+    if matches!(env_type, EnvironmentType::CloudFunction) && resource_id.is_empty() {
+        // Prefer FUNCTION_NAME (legacy Gen1); fall back to K_SERVICE (Cloud Run infra).
+        let function_name = if !resource_name.is_empty() {
+            resource_name.clone()
+        } else {
+            env::var("K_SERVICE").unwrap_or_default()
+        };
+        if !function_name.is_empty() {
+            // Fetch region and project concurrently; fall back to metadata server for
+            // project if GCP_PROJECT / GCLOUD_PROJECT / GOOGLE_CLOUD_PROJECT are absent
+            // (newer Cloud Run infra for Gen1 functions may not inject these env vars).
+            let project_from_env = env::var("GCP_PROJECT")
                 .or_else(|_| env::var("GCLOUD_PROJECT"))
                 .or_else(|_| env::var("GOOGLE_CLOUD_PROJECT"))
-                .unwrap_or_default();
-            if !project.is_empty() {
+                .ok()
+                .filter(|s| !s.is_empty());
+
+            let (region_opt, project_opt) = if project_from_env.is_some() {
+                (fetch_gcp_region_from_metadata().await, project_from_env)
+            } else {
+                let (r, p) = tokio::join!(
+                    fetch_gcp_region_from_metadata(),
+                    fetch_gcp_project_from_metadata(),
+                );
+                (r, p)
+            };
+
+            if let (Some(region), Some(project)) = (region_opt, project_opt) {
                 resource_id = format!(
                     "//cloudfunctions.googleapis.com/projects/{}/locations/{}/functions/{}",
-                    project, region, resource_name
+                    project, region, function_name
                 );
+                if resource_name.is_empty() {
+                    resource_name = function_name;
+                }
             }
         }
     }
@@ -76,6 +97,9 @@ pub async fn send_inventory_payload(
         "serverless_compat_version": env!("CARGO_PKG_VERSION"),
         "workload_type": workload_type,
         "report_reason": "startup",
+        // uuid must be inside agent_metadata: EPRW (staging) requires it as a
+        // required identity field alongside resource_id/resource_name/workload_type.
+        "uuid": uuid,
     });
 
     if !resource_id.is_empty() {
@@ -159,55 +183,68 @@ pub async fn send_inventory_payload(
     }
 }
 
+/// Fetches a single field from the GCP instance metadata server.
+///
+/// `path` is the URL path under `http://metadata.google.internal/computeMetadata/v1/`
+/// (e.g. `"instance/region"` or `"project/project-id"`).  `label` is used in
+/// log messages only.  `parse` extracts the desired value from the raw response
+/// body (trimmed).  Returns `None` on any error or when `parse` returns `None`.
+async fn fetch_gcp_metadata_value(
+    path: &str,
+    label: &str,
+    parse: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let client = match create_reqwest_client_builder()
+        .and_then(|b| b.timeout(std::time::Duration::from_secs(2)).build().map_err(Into::into))
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to build HTTP client for GCP metadata server ({label}): {e}");
+            return None;
+        }
+    };
+    let url = format!("http://metadata.google.internal/computeMetadata/v1/{path}");
+    match client.get(&url).header("Metadata-Flavor", "Google").send().await {
+        Err(e) => {
+            warn!("GCP metadata server unreachable ({label}): {e}");
+            None
+        }
+        Ok(resp) if !resp.status().is_success() => {
+            warn!("GCP metadata server returned {} for {label}", resp.status());
+            None
+        }
+        Ok(resp) => match resp.text().await {
+            Err(e) => {
+                warn!("Failed to read GCP metadata server response for {label}: {e}");
+                None
+            }
+            Ok(body) => {
+                let result = parse(body.trim());
+                info!("GCP metadata server {label}: {:?}", result);
+                result
+            }
+        },
+    }
+}
+
 /// Fetches the GCP region from the instance metadata server.
 ///
 /// Returns `Some("us-central1")` on success, `None` if the server is
 /// unreachable (i.e. not running on GCP) or returns an unexpected response.
 /// Used as a fallback when `FUNCTION_REGION` is not injected by GCP at runtime.
 async fn fetch_gcp_region_from_metadata() -> Option<String> {
-    let client = match create_reqwest_client_builder()
-        .and_then(|b| b.timeout(std::time::Duration::from_secs(2)).build().map_err(Into::into))
-    {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("Failed to build HTTP client for GCP metadata server: {e}");
-            return None;
-        }
-    };
-    match client
-        .get("http://metadata.google.internal/computeMetadata/v1/instance/region")
-        .header("Metadata-Flavor", "Google")
-        .send()
-        .await
-    {
-        Err(e) => {
-            warn!("GCP metadata server unreachable (FUNCTION_REGION will be empty): {e}");
-            None
-        }
-        Ok(resp) if !resp.status().is_success() => {
-            warn!("GCP metadata server returned {}: region unknown", resp.status());
-            None
-        }
-        Ok(resp) => {
-            // Response format: "projects/<project-number>/regions/<region-name>"
-            match resp.text().await {
-                Err(e) => {
-                    warn!("Failed to read GCP metadata server response body: {e}");
-                    None
-                }
-                Ok(body) => {
-                    let region = body
-                        .trim()
-                        .split('/')
-                        .last()
-                        .map(|s| s.to_owned())
-                        .filter(|s| !s.is_empty());
-                    info!("GCP metadata server region response: {:?} → parsed: {:?}", body.trim(), region);
-                    region
-                }
-            }
-        }
-    }
+    // Response format: "projects/<project-number>/regions/<region-name>"
+    fetch_gcp_metadata_value("instance/region", "region", |body| {
+        body.split('/').next_back().filter(|s| !s.is_empty()).map(|s| s.to_owned())
+    })
+    .await
+}
+
+async fn fetch_gcp_project_from_metadata() -> Option<String> {
+    fetch_gcp_metadata_value("project/project-id", "project-id", |body| {
+        if body.is_empty() { None } else { Some(body.to_owned()) }
+    })
+    .await
 }
 
 /// Returns `(resource_id, resource_name)` for the given environment type.
@@ -220,12 +257,37 @@ fn build_resource_identity(env_type: EnvironmentType) -> (String, String) {
     match env_type {
         EnvironmentType::AzureFunction | EnvironmentType::AzureSpringApp => {
             let name = env::var("WEBSITE_SITE_NAME").unwrap_or_default();
-            let rg = env::var("WEBSITE_RESOURCE_GROUP").unwrap_or_default();
-            // WEBSITE_OWNER_NAME = "{subscription_guid}+{webspace-name}"
+            // WEBSITE_OWNER_NAME = "{subscription_guid}+{rg}-{region}webspace[-os]"
             // The subscription GUID is the segment before the first '+'.
-            let sub = env::var("WEBSITE_OWNER_NAME")
+            let owner_name = env::var("WEBSITE_OWNER_NAME").unwrap_or_default();
+            let sub = owner_name
+                .split('+')
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            // WEBSITE_RESOURCE_GROUP is not injected by the Azure Functions runtime.
+            // Fall back to parsing it from WEBSITE_OWNER_NAME when absent.
+            // Format after '+': "{rg}-{region}webspace[-Linux|-Windows]"
+            // Strip OS suffix, then "webspace", then the last "-{region}" segment.
+            let rg = env::var("WEBSITE_RESOURCE_GROUP")
                 .ok()
-                .and_then(|s| s.split('+').next().map(|p| p.to_string()))
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    let after_plus = owner_name.split('+').nth(1)?;
+                    let stripped = after_plus
+                        .strip_suffix("-Linux")
+                        .or_else(|| after_plus.strip_suffix("-Windows"))
+                        .unwrap_or(after_plus);
+                    let without_webspace = stripped.strip_suffix("webspace")?;
+                    let last_dash = without_webspace.rfind('-')?;
+                    let rg = &without_webspace[..last_dash];
+                    if rg.is_empty() {
+                        None
+                    } else {
+                        Some(rg.to_string())
+                    }
+                })
                 .unwrap_or_default();
             if name.is_empty() || rg.is_empty() || sub.is_empty() {
                 return (String::new(), name);
@@ -324,10 +386,16 @@ fn enrich_platform_fields(metadata: &mut serde_json::Value, env_type: Environmen
             }
         }
         EnvironmentType::CloudFunction => {
-            if let Ok(region) = env::var("FUNCTION_REGION")
-                && !region.is_empty()
-            {
-                metadata["region"] = serde_json::Value::String(region);
+            // Mirror the same fallback chain used in build_resource_identity so the
+            // region field is populated even on newer Gen1 infra where FUNCTION_REGION
+            // is absent and REGION_NAME (the Cloud Run system variable) is set instead.
+            let region = env::var("FUNCTION_REGION")
+                .or_else(|_| env::var("GOOGLE_CLOUD_REGION"))
+                .or_else(|_| env::var("REGION_NAME"))
+                .ok()
+                .filter(|s| !s.is_empty());
+            if let Some(r) = region {
+                metadata["region"] = serde_json::Value::String(r);
             }
             if let Ok(project) = env::var("GCP_PROJECT")
                 .or_else(|_| env::var("GCLOUD_PROJECT"))
