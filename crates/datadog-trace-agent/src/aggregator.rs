@@ -47,31 +47,24 @@ impl TraceAggregator {
 
         // Fill the batch
         while batch_size < self.max_content_size_bytes {
-            if let Some(payload) = self.queue.pop_front() {
-                let payload_size = payload.len();
+            let Some(payload) = self.queue.pop_front() else {
+                break;
+            };
+            let payload_size = payload.len();
 
-                // Put payload back in the queue if it doesn't fit in this batch
-                if batch_size + payload_size > self.max_content_size_bytes {
-                    if self.buffer.is_empty() {
-                        // This payload alone exceeds max_content_size_bytes. Send it on
-                        // its own rather than requeuing it, otherwise it would permanently
-                        // block every payload queued behind it from ever being flushed.
-                        tracing::warn!(
-                            payload_size,
-                            max_content_size_bytes = self.max_content_size_bytes,
-                            "Trace payload exceeds max batch size; sending it standalone"
-                        );
-                        self.buffer.push(payload);
-                    } else {
-                        self.queue.push_front(payload);
-                    }
-                    break;
+            // Put payload back in the queue if it doesn't fit in this batch
+            if batch_size + payload_size > self.max_content_size_bytes {
+                if self.buffer.is_empty() {
+                    // A single payload larger than max_content_size_bytes still needs to be
+                    // flushed — form a batch of just this one
+                    self.buffer.push(payload);
+                } else {
+                    self.queue.push_front(payload);
                 }
-                batch_size += payload_size;
-                self.buffer.push(payload);
-            } else {
                 break;
             }
+            batch_size += payload_size;
+            self.buffer.push(payload);
         }
 
         std::mem::take(&mut self.buffer)

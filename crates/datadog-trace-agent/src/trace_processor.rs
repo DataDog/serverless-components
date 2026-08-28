@@ -8,21 +8,62 @@ use hyper::{StatusCode, http};
 use libdd_common::http_common;
 use libdd_library_config::tracer_metadata::TracerMetadata;
 use tokio::sync::mpsc::Sender;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use libdd_trace_obfuscation::obfuscate::obfuscate_span;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils::{self};
 use libdd_trace_utils::trace_utils::{EnvironmentType, SendData};
 use libdd_trace_utils::tracer_payload::{TraceChunkProcessor, TracerPayloadCollection};
+use prost::Message;
 
 use crate::{
+    aggregator::MAX_CONTENT_SIZE_BYTES,
     config::Config,
     http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
     stats_concentrator_service::StatsConcentratorHandle,
 };
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
+
+/// Splits `payloads` so that each returned `TracerPayload`'s encoded size fits within
+/// `max_size` where possible. Recursively bisects by trace-chunk boundary. A single chunk
+/// that's still oversized is returned as-is and gets sent standalone.
+fn split_oversized_payloads(
+    payloads: Vec<pb::TracerPayload>,
+    max_size: usize,
+) -> Vec<pb::TracerPayload> {
+    payloads
+        .into_iter()
+        .flat_map(|tp| split_tracer_payload(tp, max_size))
+        .collect()
+}
+
+fn split_tracer_payload(tp: pb::TracerPayload, max_size: usize) -> Vec<pb::TracerPayload> {
+    if tp.encoded_len() <= max_size {
+        return vec![tp];
+    }
+
+    if tp.chunks.len() > 1 {
+        let mid = tp.chunks.len() / 2;
+        let mut first = tp.clone();
+        let second_chunks = first.chunks.split_off(mid);
+        let mut second = tp;
+        second.chunks = second_chunks;
+
+        let mut result = split_tracer_payload(first, max_size);
+        result.extend(split_tracer_payload(second, max_size));
+        return result;
+    }
+
+    vec![tp]
+}
+
+/// Computes the total encoded size of `payloads`, matching the metric `MAX_CONTENT_SIZE_BYTES`
+/// is measured in.
+fn encoded_size(payloads: &[pb::TracerPayload]) -> usize {
+    payloads.iter().map(Message::encoded_len).sum()
+}
 
 #[async_trait]
 pub trait TraceProcessor {
@@ -196,23 +237,54 @@ impl TraceProcessor for ServerlessTraceProcessor {
             Self::send_to_concentrator(concentrator, &payload);
         }
 
-        let send_data = SendData::new(body_size, payload, tracer_header_tags, &config.trace_intake);
+        let pieces: Vec<(TracerPayloadCollection, usize)> = match payload {
+            TracerPayloadCollection::V07(payloads) => {
+                split_oversized_payloads(payloads, MAX_CONTENT_SIZE_BYTES)
+                    .into_iter()
+                    .map(|tp| {
+                        let size = encoded_size(std::slice::from_ref(&tp));
+                        (TracerPayloadCollection::V07(vec![tp]), size)
+                    })
+                    .collect()
+            }
+            other => vec![(other, body_size)],
+        };
 
-        // send trace payload to our trace flusher
-        match tx.send(send_data).await {
-            Ok(_) => {
-                return log_and_create_traces_success_http_response(
-                    "Successfully buffered traces to be flushed.",
-                    StatusCode::OK,
+        if pieces.len() > 1 {
+            debug!(
+                piece_count = pieces.len(),
+                "Oversized trace payload split into multiple pieces"
+            );
+        }
+
+        for (piece, size) in pieces {
+            let send_data = SendData::new(
+                size,
+                piece,
+                tracer_header_tags.clone(),
+                &config.trace_intake,
+            );
+
+            if size > MAX_CONTENT_SIZE_BYTES {
+                warn!(
+                    payload_size = size,
+                    max_content_size_bytes = MAX_CONTENT_SIZE_BYTES,
+                    "Trace chunk is over max batch size; sending standalone"
                 );
             }
-            Err(err) => {
+
+            if let Err(err) = tx.send(send_data).await {
                 return log_and_create_http_response(
                     &format!("Error sending traces to the trace flusher: {err}"),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 );
             }
         }
+
+        log_and_create_traces_success_http_response(
+            "Successfully buffered traces to be flushed.",
+            StatusCode::OK,
+        )
     }
 }
 
@@ -224,9 +296,13 @@ mod tests {
     use tokio::sync::mpsc::{self, Receiver, Sender};
 
     use crate::{
+        aggregator::MAX_CONTENT_SIZE_BYTES,
         config::{Config, Tags},
         peer_tags::peer_tag_keys,
-        trace_processor::{self, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY, TraceProcessor},
+        trace_processor::{
+            self, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY, TraceProcessor, encoded_size,
+            split_oversized_payloads,
+        },
     };
     use libdd_common::{Endpoint, http_common};
     use libdd_trace_protobuf::pb;
@@ -301,6 +377,89 @@ mod tests {
             gcp_region: Some("dummy_region_west".to_string()),
             version: Some("dummy_version".to_string()),
         }
+    }
+
+    fn make_span(meta: HashMap<String, String>) -> pb::Span {
+        pb::Span {
+            meta,
+            ..Default::default()
+        }
+    }
+
+    fn make_chunk(spans: Vec<pb::Span>) -> pb::TraceChunk {
+        pb::TraceChunk {
+            spans,
+            ..Default::default()
+        }
+    }
+
+    fn make_payload(chunks: Vec<pb::TraceChunk>) -> pb::TracerPayload {
+        pb::TracerPayload {
+            chunks,
+            ..Default::default()
+        }
+    }
+
+    fn big_span() -> pb::Span {
+        make_span(HashMap::from([("blob".to_string(), "x".repeat(50))]))
+    }
+
+    #[test]
+    fn test_no_split_needed_when_under_max() {
+        let payload = make_payload(vec![make_chunk(vec![big_span()])]);
+        let size = encoded_size(std::slice::from_ref(&payload));
+
+        let result = split_oversized_payloads(vec![payload], size);
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_splits_multiple_chunks_when_collectively_oversized() {
+        // Two chunks, each individually small, but together over max_size.
+        let payload = make_payload(vec![
+            make_chunk(vec![big_span()]),
+            make_chunk(vec![big_span()]),
+        ]);
+        let one_chunk_size =
+            encoded_size(std::slice::from_ref(&make_payload(vec![make_chunk(vec![
+                big_span(),
+            ])])));
+        let max_size = one_chunk_size + 10; // fits one chunk, not both
+
+        let result = split_oversized_payloads(vec![payload], max_size);
+
+        assert_eq!(result.len(), 2);
+        for piece in &result {
+            assert_eq!(piece.chunks.len(), 1);
+            assert!(encoded_size(std::slice::from_ref(piece)) <= max_size);
+        }
+    }
+
+    #[test]
+    fn test_single_oversized_span_returned_as_is() {
+        // One chunk, one span, that span alone already exceeds max_size.
+        let payload = make_payload(vec![make_chunk(vec![big_span()])]);
+        let actual_size = encoded_size(std::slice::from_ref(&payload));
+        let max_size = actual_size - 1; // impossible to fit, even alone
+
+        let result = split_oversized_payloads(vec![payload], max_size);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].chunks.len(), 1);
+        assert_eq!(result[0].chunks[0].spans.len(), 1);
+        // Still oversized - this is the signal the caller logs a warning for.
+        assert!(encoded_size(&result) > max_size);
+    }
+
+    #[test]
+    fn test_encoded_size_sums_multiple_payloads() {
+        let a = make_payload(vec![make_chunk(vec![big_span()])]);
+        let b = make_payload(vec![make_chunk(vec![big_span()])]);
+        let a_size = encoded_size(std::slice::from_ref(&a));
+        let b_size = encoded_size(std::slice::from_ref(&b));
+
+        assert_eq!(encoded_size(&[a, b]), a_size + b_size);
     }
 
     #[tokio::test]
@@ -452,5 +611,73 @@ mod tests {
             };
 
         assert_eq!(expected_tracer_payload, received_payload.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_process_trace_sends_oversized_single_chunk_standalone() {
+        let (tx, mut rx): (
+            Sender<trace_utils::SendData>,
+            Receiver<trace_utils::SendData>,
+        ) = mpsc::channel(10);
+
+        let start = get_current_timestamp_nanos();
+
+        // One trace (one chunk) with enough spans to exceed MAX_CONTENT_SIZE_BYTES after
+        // protobuf encoding. Each span gets a large meta tag to ensure the payload is
+        // sufficiently large when encoded.
+        let mut spans = Vec::new();
+        for i in 0..6000 {
+            let mut span = create_test_json_span(11, 222, 333 + i as u64, start, false);
+            if let Some(obj) = span.as_object_mut() {
+                obj.insert(
+                    "meta".to_string(),
+                    serde_json::json!({
+                        "large_field": "x".repeat(1024)  // 1KB per span x 6000 = ~6MB before encoding
+                    }),
+                );
+            }
+            spans.push(span);
+        }
+
+        let bytes = rmp_serde::to_vec(&vec![spans]).unwrap();
+        let request = Request::builder()
+            .header("datadog-meta-tracer-version", "4.0.0")
+            .header("datadog-meta-lang", "nodejs")
+            .header("datadog-meta-lang-version", "v19.7.0")
+            .header("datadog-meta-lang-interpreter", "v8")
+            .header("datadog-container-id", "33")
+            .header("content-length", "100")
+            .body(http_common::Body::from(bytes))
+            .unwrap();
+
+        let trace_processor = trace_processor::ServerlessTraceProcessor {
+            stats_concentrator: None,
+        };
+        let res = trace_processor
+            .process_traces(
+                Arc::new(create_test_config()),
+                request,
+                tx,
+                Arc::new(create_test_metadata()),
+            )
+            .await;
+        assert!(res.is_ok());
+
+        let mut received = Vec::new();
+        while let Ok(send_data) = rx.try_recv() {
+            received.push(send_data);
+        }
+
+        assert_eq!(
+            received.len(),
+            1,
+            "expected the oversized single-chunk trace to be sent standalone as one piece, got {}",
+            received.len()
+        );
+        assert!(
+            received[0].len() > MAX_CONTENT_SIZE_BYTES,
+            "expected the standalone piece to still be reported as oversized (size {})",
+            received[0].len()
+        );
     }
 }
