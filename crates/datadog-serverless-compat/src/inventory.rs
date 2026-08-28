@@ -40,7 +40,7 @@ pub async fn send_inventory_payload(
     let workload_type = match env_type {
         EnvironmentType::AzureFunction => "azure_function",
         EnvironmentType::AzureSpringApp => "azure_spring_app",
-        EnvironmentType::CloudFunction => "gcp_cloud_function_gen1",
+        EnvironmentType::CloudFunction => "cloud_function",
         EnvironmentType::LambdaFunction => "lambda",
     };
 
@@ -507,7 +507,7 @@ mod tests {
         let cases = [
             (EnvironmentType::AzureFunction, "azure_function"),
             (EnvironmentType::AzureSpringApp, "azure_spring_app"),
-            (EnvironmentType::CloudFunction, "gcp_cloud_function_gen1"),
+            (EnvironmentType::CloudFunction, "cloud_function"),
             (EnvironmentType::LambdaFunction, "lambda"),
         ];
 
@@ -515,7 +515,7 @@ mod tests {
             let workload_type = match env_type {
                 EnvironmentType::AzureFunction => "azure_function",
                 EnvironmentType::AzureSpringApp => "azure_spring_app",
-                EnvironmentType::CloudFunction => "gcp_cloud_function_gen1",
+                EnvironmentType::CloudFunction => "cloud_function",
                 EnvironmentType::LambdaFunction => "lambda",
             };
             assert_eq!(workload_type, expected);
