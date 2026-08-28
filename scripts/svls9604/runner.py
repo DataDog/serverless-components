@@ -763,7 +763,11 @@ def run_azure(args, resources, run_id, run_dir):
             deployed.append(existing[name])
             continue
         print(f"[{i}/{len(resources)}] deploying {r['id']} {r['runtime']} {r['variant']} as {name}")
-        observed=deploy_azure_resource(args,r,name,images,agent_image,acr,run_id,run_dir)
+        try:
+            observed=deploy_azure_resource(args,r,name,images,agent_image,acr,run_id,run_dir)
+        except Exception as exc:
+            print(f"  WARNING: deploy failed for {name}: {exc}", flush=True)
+            continue
         deployed.append({**r,**observed,"agent_image":agent_image})
         write_manifest(manifest_path,run_id=run_id,profile=args.profile,agent_sha=agent_sha,agent_image=agent_image,resources=deployed)
     baseline_started=utc_now()
@@ -813,9 +817,13 @@ def run_gcp(args, resources, run_id, run_dir):
             print(f"[{i}/{len(resources)}] reusing deployed {r['id']} {r['runtime']} {r['variant']} as {name}")
             deployed.append(existing[name]); continue
         print(f"[{i}/{len(resources)}] deploying {r['id']} {r['runtime']} {r['variant']} as {name}")
-        if r["id"]=="SI-03": observed=deploy_job(project,region,r,name,images)
-        elif r["id"]=="SC-02": observed=deploy_compat_gcp(project,region,name,run_dir)
-        else: observed=deploy_service(project,region,r,name,images,agent_image,run_dir)
+        try:
+            if r["id"]=="SI-03": observed=deploy_job(project,region,r,name,images)
+            elif r["id"]=="SC-02": observed=deploy_compat_gcp(project,region,name,run_dir)
+            else: observed=deploy_service(project,region,r,name,images,agent_image,run_dir)
+        except Exception as exc:
+            print(f"  WARNING: deploy failed for {name}: {exc}", flush=True)
+            continue
         deployed.append({**r,**observed,"agent_image":agent_image})
         write_manifest(manifest_path,run_id=run_id,profile="gcp",project=project,region=region,agent_sha=agent_sha,agent_image=agent_image,resources=deployed)
     baseline_started=utc_now()
