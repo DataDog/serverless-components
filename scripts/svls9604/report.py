@@ -59,7 +59,7 @@ def table_evidence(resources, rows):
     required=("resource_id","resource_name","workload_type")
     nulls={field:sum(1 for row in selected if not row.get(field)) for field in required}
     revision_rows=[row for row in selected if row.get("workload_type") in
-                   ("cloud_run_service","cloud_function_gen2","azure_container_app")]
+                   ("cloud_run_service","cloud_run_function","azure_container_app")]
     nulls["parent_resource_id"]=sum(1 for row in revision_rows if not row.get("parent_resource_id"))
     nulls["deployment_id"]=sum(1 for row in revision_rows if not row.get("deployment_id"))
     return {"rows":len(selected),"distinct_resource_ids":len(distinct),"missing":missing,
@@ -256,8 +256,8 @@ def render(manifest, init_rows, compat_rows, pipeline):
         "",
         "```text",
         f"Environment: {manifest.get('dd_env','')}",
-        f"EPRW accepts: sum:event_platform_resource_writer.agentmetadata.serverless_write.accepted{{dd_env:{manifest.get('dd_env','')}}} by {{resource_type,workload_type,deployment_model,report_reason}}",
-        f"Resource Edge: sum:event_platform_resource_writer.agentmetadata.serverless_write.resource_edge_response{{dd_env:{manifest.get('dd_env','')}}} by {{resource_type,workload_type,outcome}}",
+        f"EPRW accepts: sum:event_platform_resource_writer.agentmetadata.serverless_write.accepted{{resource_type:serverless_init_agent}} by {{resource_type,workload_type,deployment_model,report_reason}}",
+        f"EPRW accepts (compat): sum:event_platform_resource_writer.agentmetadata.serverless_write.accepted{{resource_type:serverless_compat_agent}} by {{resource_type,workload_type,report_reason}}",
         f"Producer startup log (Init): env:{manifest.get('dd_env','')} \"serverless-init: inventory report queued\"",
         f"Iris primary logs: service:iris-node-go @message:\"serverless inventory upsert result\" @shadow_mode:false @resource_id:*{manifest.get('run_id','').lower()}*",
         "EPRW debug logs: service:event-platform-resource-writer @resource_id:*RUN_ID*",
