@@ -200,8 +200,8 @@ impl LogFlusher {
     ///
     /// * `Ok(())` — success **or** a permanent error (no point retrying; already
     ///   logged at `warn!`).
-    /// * `Err(builder)` — all attempts exhausted on a transient error. The
-    ///   original builder is returned so the caller can retry it next invocation.
+    /// * `Err(Box<builder>)` — all attempts exhausted on a transient error. The
+    ///   original builder is returned (boxed) so the caller can retry it next invocation.
     async fn send_with_retry(
         &self,
         builder: reqwest::RequestBuilder,
