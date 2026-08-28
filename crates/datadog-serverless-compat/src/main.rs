@@ -169,10 +169,20 @@ pub async fn main() {
     debug!("Logging subsystem enabled");
 
     // Send inventory metadata payload to REDAPL so this agent appears in Fleet Automation.
-    // Fire-and-forget: logs a warning on failure, never blocks startup.
-    if let Some(ref api_key) = dd_api_key {
-        inventory::send_inventory_payload(api_key, &dd_site, https_proxy.as_deref(), env_type)
+    // Spawned so it never delays agent startup or request handling.
+    if let Some(api_key) = dd_api_key.clone() {
+        let dd_site_inv = dd_site.clone();
+        let https_proxy_inv = https_proxy.clone();
+        let env_type_inv = env_type.clone();
+        tokio::spawn(async move {
+            inventory::send_inventory_payload(
+                &api_key,
+                &dd_site_inv,
+                https_proxy_inv.as_deref(),
+                env_type_inv,
+            )
             .await;
+        });
     } else {
         warn!("DD_API_KEY not set, skipping inventory payload");
     }

@@ -48,46 +48,38 @@ pub async fn send_inventory_payload(
     // write if any of these is absent.
     let (mut resource_id, mut resource_name) = build_resource_identity(env_type.clone());
 
-    // CloudFunction: if resource_id is still empty, try the GCP metadata server
-    // for the region.  This covers two cases on newer Cloud Run infrastructure:
-    //   1. FUNCTION_NAME is set but FUNCTION_REGION is absent → resource_name non-empty
-    //   2. FUNCTION_NAME is absent (Gen1 on new infra uses K_SERVICE) → resource_name empty
-    if matches!(env_type, EnvironmentType::CloudFunction) && resource_id.is_empty() {
-        // Prefer FUNCTION_NAME (legacy Gen1); fall back to K_SERVICE (Cloud Run infra).
-        let function_name = if !resource_name.is_empty() {
-            resource_name.clone()
+    // CloudFunction: if FUNCTION_NAME was present but region/project were absent,
+    // try the GCP metadata server to complete the resource_id.  resource_name is
+    // non-empty only when FUNCTION_NAME was set (Gen1 guard in build_resource_identity).
+    // When resource_name is empty the absence of FUNCTION_NAME signals Gen2 or an
+    // unrecognised runtime; skip the write entirely rather than fall back to K_SERVICE.
+    if matches!(env_type, EnvironmentType::CloudFunction)
+        && resource_id.is_empty()
+        && !resource_name.is_empty()
+    {
+        // FUNCTION_NAME was present but region/project were absent — try the GCP
+        // metadata server to complete the resource_id.
+        let project_from_env = env::var("GCP_PROJECT")
+            .or_else(|_| env::var("GCLOUD_PROJECT"))
+            .or_else(|_| env::var("GOOGLE_CLOUD_PROJECT"))
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        let (region_opt, project_opt) = if project_from_env.is_some() {
+            (fetch_gcp_region_from_metadata().await, project_from_env)
         } else {
-            env::var("K_SERVICE").unwrap_or_default()
+            let (r, p) = tokio::join!(
+                fetch_gcp_region_from_metadata(),
+                fetch_gcp_project_from_metadata(),
+            );
+            (r, p)
         };
-        if !function_name.is_empty() {
-            // Fetch region and project concurrently; fall back to metadata server for
-            // project if GCP_PROJECT / GCLOUD_PROJECT / GOOGLE_CLOUD_PROJECT are absent
-            // (newer Cloud Run infra for Gen1 functions may not inject these env vars).
-            let project_from_env = env::var("GCP_PROJECT")
-                .or_else(|_| env::var("GCLOUD_PROJECT"))
-                .or_else(|_| env::var("GOOGLE_CLOUD_PROJECT"))
-                .ok()
-                .filter(|s| !s.is_empty());
 
-            let (region_opt, project_opt) = if project_from_env.is_some() {
-                (fetch_gcp_region_from_metadata().await, project_from_env)
-            } else {
-                let (r, p) = tokio::join!(
-                    fetch_gcp_region_from_metadata(),
-                    fetch_gcp_project_from_metadata(),
-                );
-                (r, p)
-            };
-
-            if let (Some(region), Some(project)) = (region_opt, project_opt) {
-                resource_id = format!(
-                    "//cloudfunctions.googleapis.com/projects/{}/locations/{}/functions/{}",
-                    project, region, function_name
-                );
-                if resource_name.is_empty() {
-                    resource_name = function_name;
-                }
-            }
+        if let (Some(region), Some(project)) = (region_opt, project_opt) {
+            resource_id = format!(
+                "//cloudfunctions.googleapis.com/projects/{}/locations/{}/functions/{}",
+                project, region, resource_name
+            );
         }
     }
 
@@ -97,8 +89,6 @@ pub async fn send_inventory_payload(
         "serverless_compat_version": env!("CARGO_PKG_VERSION"),
         "workload_type": workload_type,
         "report_reason": "startup",
-        // uuid must be inside agent_metadata: EPRW (staging) requires it as a
-        // required identity field alongside resource_id/resource_name/workload_type.
         "uuid": uuid,
     });
 
@@ -255,7 +245,7 @@ async fn fetch_gcp_project_from_metadata() -> Option<String> {
 /// per-flavor write (the standard `datadog_agent` write still proceeds).
 fn build_resource_identity(env_type: EnvironmentType) -> (String, String) {
     match env_type {
-        EnvironmentType::AzureFunction | EnvironmentType::AzureSpringApp => {
+        EnvironmentType::AzureFunction => {
             let name = env::var("WEBSITE_SITE_NAME").unwrap_or_default();
             // WEBSITE_OWNER_NAME = "{subscription_guid}+{rg}-{region}webspace[-os]"
             // The subscription GUID is the segment before the first '+'.
@@ -328,9 +318,11 @@ fn build_resource_identity(env_type: EnvironmentType) -> (String, String) {
             );
             (resource_id, name)
         }
-        // Lambda and AzureSpringApp CCRIDs are not yet defined — leave empty so
+        // AzureSpringApp and Lambda CCRIDs are not yet defined — leave empty so
         // EPRW skips the serverless_compat_agent write for these.
-        EnvironmentType::LambdaFunction => (String::new(), String::new()),
+        EnvironmentType::AzureSpringApp | EnvironmentType::LambdaFunction => {
+            (String::new(), String::new())
+        }
     }
 }
 
