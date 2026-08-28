@@ -46,13 +46,13 @@ pub async fn send_inventory_payload(
 
     // Required REDAPL identity fields — EPRW rejects the serverless_compat_agent
     // write if any of these is absent.
-    let (mut resource_id, mut resource_name) = build_resource_identity(env_type.clone());
+    let (mut resource_id, resource_name) = build_resource_identity(env_type.clone());
 
-    // CloudFunction: if FUNCTION_NAME was present but region/project were absent,
-    // try the GCP metadata server to complete the resource_id.  resource_name is
-    // non-empty only when FUNCTION_NAME was set (Gen1 guard in build_resource_identity).
-    // When resource_name is empty the absence of FUNCTION_NAME signals Gen2 or an
-    // unrecognised runtime; skip the write entirely rather than fall back to K_SERVICE.
+    // CloudFunction: if FUNCTION_NAME/K_SERVICE was present but region/project were
+    // absent, try the GCP metadata server to complete the resource_id.  resource_name
+    // is non-empty only when FUNCTION_NAME or K_SERVICE was set (Gen1 guard in
+    // build_resource_identity).  When resource_name is empty this is an unrecognised
+    // runtime; skip the write entirely.
     if matches!(env_type, EnvironmentType::CloudFunction)
         && resource_id.is_empty()
         && !resource_name.is_empty()
@@ -291,10 +291,14 @@ fn build_resource_identity(env_type: EnvironmentType) -> (String, String) {
             (resource_id, name)
         }
         EnvironmentType::CloudFunction => {
-            // Only Gen1 Cloud Functions set FUNCTION_NAME.  Gen2 Cloud Run
-            // Functions use K_SERVICE instead, so an absent FUNCTION_NAME is
-            // the signal that this is Gen2 and the write should be skipped.
-            let name = env::var("FUNCTION_NAME").unwrap_or_default();
+            // Gen1 Cloud Functions: older runtimes set FUNCTION_NAME (detected
+            // alongside GCP_PROJECT by read_cloud_env).  Newer runtimes (e.g.
+            // nodejs20 on Cloud Run infra) detect via K_SERVICE + FUNCTION_TARGET
+            // instead, so FUNCTION_NAME may be absent — fall back to K_SERVICE.
+            // If both are absent this is not a recognised Gen1 environment; skip.
+            let name = env::var("FUNCTION_NAME")
+                .or_else(|_| env::var("K_SERVICE"))
+                .unwrap_or_default();
             if name.is_empty() {
                 return (String::new(), String::new());
             }
