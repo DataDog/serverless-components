@@ -103,7 +103,7 @@ def expand(profile):
     return resources
 
 def name_for(run_id, r):
-    model={"in-container":"in", "sidecar":"sc", "compat":"compat"}[r["deployment_model"]]
+    model={"in-container":"in", "sidecar":"sc", "compat":"compat"}.get(r.get("deployment_model","compat"),"compat")
     if r["provider"] == "azure":
         # Container Apps names are limited to 32 characters. These names are
         # also globally unique enough for App Service because run_id is random.
@@ -876,7 +876,7 @@ def main():
     RUN_STARTED_AT=dt.datetime.now(dt.timezone.utc).isoformat()
     print(f"Profile: {args.profile}\nRun ID: {run_id}\nSuite: {args.suite}\nExpected resources: {len(resources)}")
     for r in resources:
-        print(f"  {r['id']:5} {r['workload_type']:28} {r['deployment_model']:12} {r['runtime']:7} {r['variant']}")
+        print(f"  {r['id']:5} {r['workload_type']:28} {r.get('deployment_model','compat'):12} {r['runtime']:7} {r['variant']}")
     if args.plan:
         return
     preflight(args)
