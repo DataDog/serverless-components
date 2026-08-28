@@ -676,6 +676,7 @@ dependencies = [
  "libdd-trace-protobuf",
  "libdd-trace-stats",
  "libdd-trace-utils",
+ "prost 0.14.3",
  "reqwest",
  "rmp-serde",
  "serde",
