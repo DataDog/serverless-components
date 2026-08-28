@@ -76,7 +76,7 @@ impl LogFlusher {
             .into_iter()
             .map(|builder| async move { self.send_with_retry(builder).await.err() });
         for b in join_all(retry_futures).await.into_iter().flatten() {
-            failed.push(b);
+            failed.push(*b);
         }
 
         // Drain new batches from the aggregator.
@@ -135,7 +135,7 @@ impl LogFlusher {
 
         for result in join_all(batch_futures).await {
             if let Err(b) = result {
-                failed.push(b);
+                failed.push(*b);
             }
         }
 
@@ -162,7 +162,7 @@ impl LogFlusher {
         compress: bool,
         api_key: &str,
         is_datadog_intake: bool,
-    ) -> Result<(), reqwest::RequestBuilder> {
+    ) -> Result<(), Box<reqwest::RequestBuilder>> {
         let (body, content_encoding) = if compress {
             match compress_zstd(batch, self.config.compression_level) {
                 Ok(compressed) => (compressed, Some("zstd")),
@@ -205,7 +205,7 @@ impl LogFlusher {
     async fn send_with_retry(
         &self,
         builder: reqwest::RequestBuilder,
-    ) -> Result<(), reqwest::RequestBuilder> {
+    ) -> Result<(), Box<reqwest::RequestBuilder>> {
         let mut attempts: u32 = 0;
 
         loop {
@@ -264,7 +264,7 @@ impl LogFlusher {
 
             if attempts >= MAX_FLUSH_ATTEMPTS {
                 warn!("log batch failed after {attempts} attempts; will retry next flush");
-                return Err(builder);
+                return Err(Box::new(builder));
             }
         }
     }
