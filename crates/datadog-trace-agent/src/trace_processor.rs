@@ -46,9 +46,14 @@ fn split_tracer_payload(tp: pb::TracerPayload, max_size: usize) -> Vec<pb::Trace
 
     if tp.chunks.len() > 1 {
         let mid = tp.chunks.len() / 2;
-        let mut first = tp.clone();
-        let second_chunks = first.chunks.split_off(mid);
-        let mut second = tp;
+
+        // Avoid cloning large chunk/span data on each bisection: clone only the metadata.
+        let mut base = tp;
+        let mut first_chunks = std::mem::take(&mut base.chunks);
+        let second_chunks = first_chunks.split_off(mid);
+        let mut first = base.clone();
+        first.chunks = first_chunks;
+        let mut second = base;
         second.chunks = second_chunks;
 
         let mut result = split_tracer_payload(first, max_size);
@@ -622,22 +627,19 @@ mod tests {
 
         let start = get_current_timestamp_nanos();
 
-        // One trace (one chunk) with enough spans to exceed MAX_CONTENT_SIZE_BYTES after
-        // protobuf encoding. Each span gets a large meta tag to ensure the payload is
-        // sufficiently large when encoded.
+        // One trace (one chunk) with a single span whose meta field alone exceeds
+        // MAX_CONTENT_SIZE_BYTES once encoded, but stays under max_request_content_length.
         let mut spans = Vec::new();
-        for i in 0..6000 {
-            let mut span = create_test_json_span(11, 222, 333 + i as u64, start, false);
-            if let Some(obj) = span.as_object_mut() {
-                obj.insert(
-                    "meta".to_string(),
-                    serde_json::json!({
-                        "large_field": "x".repeat(1024)  // 1KB per span x 6000 = ~6MB before encoding
-                    }),
-                );
-            }
-            spans.push(span);
+        let mut span = create_test_json_span(11, 222, 333, start, false);
+        if let Some(obj) = span.as_object_mut() {
+            obj.insert(
+                "meta".to_string(),
+                serde_json::json!({
+                    "large_field": "x".repeat(MAX_CONTENT_SIZE_BYTES)
+                }),
+            );
         }
+        spans.push(span);
 
         let bytes = rmp_serde::to_vec(&vec![spans]).unwrap();
         let request = Request::builder()
