@@ -26,6 +26,10 @@ use crate::{
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
 
+/// Rough upper bound on the protobuf framing overhead added when a V07 `TracerPayload` is
+/// wrapped in the outer `AgentPayload` envelope before being sent
+const V07_ENVELOPE_OVERHEAD_BYTES: usize = 64;
+
 /// Splits `payloads` so that each returned `TracerPayload`'s encoded size fits within
 /// `max_size` where possible. Recursively bisects by trace-chunk boundary. A single chunk
 /// that's still oversized is returned as-is and gets sent standalone.
@@ -244,7 +248,9 @@ impl TraceProcessor for ServerlessTraceProcessor {
 
         let pieces: Vec<(TracerPayloadCollection, usize)> = match payload {
             TracerPayloadCollection::V07(payloads) => {
-                split_oversized_payloads(payloads, MAX_CONTENT_SIZE_BYTES)
+                let split_budget =
+                    MAX_CONTENT_SIZE_BYTES.saturating_sub(V07_ENVELOPE_OVERHEAD_BYTES);
+                split_oversized_payloads(payloads, split_budget)
                     .into_iter()
                     .map(|tp| {
                         let size = encoded_size(std::slice::from_ref(&tp));
