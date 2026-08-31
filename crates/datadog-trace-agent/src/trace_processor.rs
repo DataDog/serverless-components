@@ -282,7 +282,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
                 warn!(
                     payload_size = size,
                     max_content_size_bytes = MAX_CONTENT_SIZE_BYTES,
-                    "Trace chunk is over max batch size; sending standalone"
+                    "Trace payload is over max batch size; sending standalone"
                 );
             }
 
