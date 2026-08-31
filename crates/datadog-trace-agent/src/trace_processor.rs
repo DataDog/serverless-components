@@ -68,8 +68,7 @@ fn split_tracer_payload(tp: pb::TracerPayload, max_size: usize) -> Vec<pb::Trace
     vec![tp]
 }
 
-/// Computes the total encoded size of `payloads`, matching the metric `MAX_CONTENT_SIZE_BYTES`
-/// is measured in.
+/// Computes the total encoded size of the inner TracerPayloads
 fn encoded_size(payloads: &[pb::TracerPayload]) -> usize {
     payloads.iter().map(Message::encoded_len).sum()
 }
@@ -277,6 +276,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
             );
 
             if size > MAX_CONTENT_SIZE_BYTES {
+                // `size` is the inner-TracerPayload-only encoded_size() - this is an approximate check
                 warn!(
                     payload_size = size,
                     max_content_size_bytes = MAX_CONTENT_SIZE_BYTES,
