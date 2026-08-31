@@ -252,7 +252,8 @@ impl TraceProcessor for ServerlessTraceProcessor {
                 split_oversized_payloads(payloads, split_budget)
                     .into_iter()
                     .map(|tp| {
-                        let size = encoded_size(std::slice::from_ref(&tp));
+                        let size =
+                            encoded_size(std::slice::from_ref(&tp)) + V07_ENVELOPE_OVERHEAD_BYTES;
                         (TracerPayloadCollection::V07(vec![tp]), size)
                     })
                     .collect()
@@ -276,7 +277,8 @@ impl TraceProcessor for ServerlessTraceProcessor {
             );
 
             if size > MAX_CONTENT_SIZE_BYTES {
-                // `size` is the inner-TracerPayload-only encoded_size() - this is an approximate check
+                // For V07, `size` includes V07_ENVELOPE_OVERHEAD_BYTES; for other
+                // formats it's the raw body_size - both approximate checks
                 warn!(
                     payload_size = size,
                     max_content_size_bytes = MAX_CONTENT_SIZE_BYTES,
