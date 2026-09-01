@@ -28,6 +28,8 @@ use datadog_metrics_collector::azure_cpu::CpuMetricsCollector;
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
+mod inventory;
+
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_logs_agent::{
     AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
@@ -164,6 +166,25 @@ pub async fn main() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     debug!("Logging subsystem enabled");
+
+    // Launch the inventory reporter. Runs independently of the trace/metrics
+    // path — a failure here never blocks agent startup or request handling.
+    if let Some(api_key) = dd_api_key.clone() {
+        let dd_site_inv = dd_site.clone();
+        let https_proxy_inv = https_proxy.clone();
+        let env_type_inv = env_type.clone();
+        tokio::spawn(async move {
+            inventory::run_inventory_reporter(
+                &api_key,
+                &dd_site_inv,
+                https_proxy_inv.as_deref(),
+                env_type_inv,
+            )
+            .await;
+        });
+    } else {
+        warn!("DD_API_KEY not set, skipping inventory reporter");
+    }
 
     let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
 
