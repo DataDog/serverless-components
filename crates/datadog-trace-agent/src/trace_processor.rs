@@ -268,31 +268,36 @@ impl TraceProcessor for ServerlessTraceProcessor {
             );
         }
 
-        for (piece, size) in pieces {
-            let send_data = SendData::new(
-                size,
-                piece,
-                tracer_header_tags.clone(),
-                &config.trace_intake,
-            );
+        let send_datas: Vec<SendData> = pieces
+            .into_iter()
+            .map(|(piece, size)| {
+                if size > MAX_CONTENT_SIZE_BYTES {
+                    // For V07, `size` includes V07_ENVELOPE_OVERHEAD_BYTES; for other
+                    // formats it's the raw body_size - both approximate checks
+                    warn!(
+                        payload_size = size,
+                        max_content_size_bytes = MAX_CONTENT_SIZE_BYTES,
+                        "Trace payload is over max batch size; sending standalone"
+                    );
+                }
 
-            if size > MAX_CONTENT_SIZE_BYTES {
-                // For V07, `size` includes V07_ENVELOPE_OVERHEAD_BYTES; for other
-                // formats it's the raw body_size - both approximate checks
-                warn!(
-                    payload_size = size,
-                    max_content_size_bytes = MAX_CONTENT_SIZE_BYTES,
-                    "Trace payload is over max batch size; sending standalone"
-                );
-            }
+                SendData::new(
+                    size,
+                    piece,
+                    tracer_header_tags.clone(),
+                    &config.trace_intake,
+                )
+            })
+            .collect();
 
-            if let Err(err) = tx.send(send_data).await {
-                return log_and_create_http_response(
-                    &format!("Error sending traces to the trace flusher: {err}"),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                );
+        tokio::spawn(async move {
+            for send_data in send_datas {
+                if let Err(err) = tx.send(send_data).await {
+                    error!("Error sending traces to the trace flusher: {err}");
+                    return;
+                }
             }
-        }
+        });
 
         log_and_create_traces_success_http_response(
             "Successfully buffered traces to be flushed.",
@@ -673,21 +678,19 @@ mod tests {
             .await;
         assert!(res.is_ok());
 
-        let mut received = Vec::new();
-        while let Ok(send_data) = rx.try_recv() {
-            received.push(send_data);
-        }
+        let send_data = rx
+            .recv()
+            .await
+            .expect("expected the oversized single-chunk trace to be sent standalone");
 
-        assert_eq!(
-            received.len(),
-            1,
-            "expected the oversized single-chunk trace to be sent standalone as one piece, got {}",
-            received.len()
+        assert!(
+            rx.try_recv().is_err(),
+            "expected exactly one piece to be sent"
         );
         assert!(
-            received[0].len() > MAX_CONTENT_SIZE_BYTES,
+            send_data.len() > MAX_CONTENT_SIZE_BYTES,
             "expected the standalone piece to still be reported as oversized (size {})",
-            received[0].len()
+            send_data.len()
         );
     }
 }
