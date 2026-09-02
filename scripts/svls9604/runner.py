@@ -111,12 +111,12 @@ def name_for(run_id, r):
     return f"sv-{run_id}-{r['id'].lower().replace('-', '')}-{model}-{short_runtime(r['runtime'])}-{r['variant'][:4]}"[:63]
 
 def preflight(args):
-    required=["docker", "git", "python3", "gcloud" if args.profile in ("gcp", "gcp-sanity") else "az"]
+    required=["docker", "git", "python3", "gcloud" if args.profile in ("gcp", "gcp-sanity", "gcp-baseline") else "az"]
     for tool in required:
         run(["sh", "-c", f"command -v {shlex.quote(tool)} >/dev/null"])
     if not os.environ.get("DD_API_KEY") or os.environ.get("DD_SITE") != "datad0g.com":
         raise RuntimeError("runner must be invoked through dd-auth for datad0g.com")
-    if args.profile in ("gcp", "gcp-sanity"):
+    if args.profile in ("gcp", "gcp-sanity", "gcp-baseline"):
         account=run(["gcloud","auth","list","--filter=status:ACTIVE","--format=value(account)"],capture=True)
         if not account:
             raise RuntimeError("gcloud has no active account")
@@ -187,7 +187,9 @@ def ensure_registry(project, region):
 
 def env_list(name):
     return {"DD_API_KEY":os.environ["DD_API_KEY"],"DD_SITE":"datad0g.com","DD_ENV":RUN_ENV,
-            "DD_SERVICE":name,"DD_SERVERLESS_DIAGNOSTIC_INFO":"true","DD_LOG_LEVEL":"debug"}
+            "DD_SERVICE":name,"DD_SERVERLESS_DIAGNOSTIC_INFO":"true","DD_LOG_LEVEL":"debug",
+            "DD_SERVERLESS_INIT_INVENTORY_ENABLED":"true",
+            "DD_SERVERLESS_COMPAT_INVENTORY_ENABLED":"true"}
 
 def env_arg(values):
     return ",".join(f"{k}={v}" for k,v in values.items())
@@ -745,7 +747,7 @@ def run_azure(args, resources, run_id, run_dir):
     existing={}
     if manifest_path.exists():
         previous=json.loads(manifest_path.read_text())
-        if previous.get("profile") in ("azure","azure-sanity") and previous.get("agent_image")==agent_image:
+        if previous.get("profile") in ("azure","azure-sanity","azure-baseline") and previous.get("agent_image")==agent_image:
             candidates=[item for item in previous.get("resources",[])
                         if item.get("agent_image")==agent_image and item.get("endpoint")]
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(20,len(candidates) or 1)) as pool:
@@ -848,7 +850,7 @@ def run_gcp(args, resources, run_id, run_dir):
 def main():
     global RUN_ENV, RUN_STARTED_AT
     parser=argparse.ArgumentParser()
-    parser.add_argument("--profile",choices=["gcp","azure","gcp-sanity","azure-sanity"],required=True)
+    parser.add_argument("--profile",choices=["gcp","azure","gcp-sanity","azure-sanity","gcp-baseline","azure-baseline"],required=True)
     parser.add_argument("--project",default=os.environ.get("GCP_PROJECT","datadog-serverless-gcp-demo"))
     parser.add_argument("--region",default=os.environ.get("GCP_REGION","us-central1"))
     parser.add_argument("--azure-resource-group",default=os.environ.get("AZURE_RESOURCE_GROUP","dd-serverless-test-aas"))
@@ -894,7 +896,7 @@ def main():
     run_dir=pathlib.Path(os.environ.get("RESULTS_DIR",f"/tmp/svls9604-{run_id}")); run_dir.mkdir(parents=True,exist_ok=True)
     run_dir.chmod(0o700)
     failure_exit=0
-    if args.profile in ("gcp", "gcp-sanity"):
+    if args.profile in ("gcp", "gcp-sanity", "gcp-baseline"):
         deployed=run_gcp(args,resources,run_id,run_dir)
         failed=[r for r in deployed if r.get("baseline",{}).get("status") not in ("ok","executed")]
         print(f"GCP profile deployed {len(deployed)}/{len(resources)}; baseline failures={len(failed)}")
