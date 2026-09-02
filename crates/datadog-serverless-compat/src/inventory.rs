@@ -35,12 +35,23 @@ fn supported_workload_type(env_type: &EnvironmentType) -> Option<&'static str> {
 /// Sends a startup report immediately, then a periodic report every
 /// [`INVENTORY_INTERVAL`]. Spawned as a background task — never panics,
 /// never blocks agent startup.
+/// Returns true only when `DD_SERVERLESS_COMPAT_INVENTORY_ENABLED=true`.
+/// Extracted so the gate logic can be unit-tested without an async runtime.
+fn is_inventory_enabled() -> bool {
+    env::var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED").as_deref() == Ok("true")
+}
+
 pub async fn run_inventory_reporter(
     api_key: &str,
     dd_site: &str,
     https_proxy: Option<&str>,
     env_type: EnvironmentType,
 ) {
+    if !is_inventory_enabled() {
+        // Rollout gate: inventory is opt-in during the ramp. Default is off.
+        return;
+    }
+
     let Some(workload_type) = supported_workload_type(&env_type) else {
         // Unsupported workload: skip silently.
         return;
@@ -323,9 +334,9 @@ fn build_azure_function_identity() -> (String, String) {
     }
 
     let resource_id = format!(
-        "//microsoft.azure/functionApps/{}/{}/{}",
-        sub,
-        rg,
+        "/subscriptions/{}/resourcegroups/{}/providers/microsoft.web/sites/{}",
+        sub.to_lowercase(),
+        rg.to_lowercase(),
         name.to_lowercase()
     );
     (resource_id, name)
@@ -607,7 +618,7 @@ mod tests {
         let (id, name) = build_azure_function_identity();
 
         assert_eq!(name, "my-func-app");
-        assert_eq!(id, "//microsoft.azure/functionApps/abc123/my-rg/my-func-app");
+        assert_eq!(id, "/subscriptions/abc123/resourcegroups/my-rg/providers/microsoft.web/sites/my-func-app");
 
         unsafe {
             env::remove_var("WEBSITE_SITE_NAME");
@@ -911,5 +922,30 @@ mod tests {
     #[test]
     fn parse_rg_missing_plus_returns_none() {
         assert!(parse_rg_from_owner_name("noplushere").is_none());
+    }
+
+    // ── Inventory gate ───────────────────────────────────────────────────────
+
+    #[test]
+    fn gate_off_by_default() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe { env::remove_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED"); }
+        assert!(!is_inventory_enabled(), "gate must be off when env var is absent");
+    }
+
+    #[test]
+    fn gate_on_when_set_to_true() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe { env::set_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED", "true"); }
+        assert!(is_inventory_enabled(), "gate must be on when env var is 'true'");
+        unsafe { env::remove_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED"); }
+    }
+
+    #[test]
+    fn gate_off_when_set_to_other_value() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe { env::set_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED", "false"); }
+        assert!(!is_inventory_enabled(), "gate must be off when env var is not 'true'");
+        unsafe { env::remove_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED"); }
     }
 }

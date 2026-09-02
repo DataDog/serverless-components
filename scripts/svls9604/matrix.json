@@ -1,0 +1,34 @@
+{
+  "runtimes": ["python", "node", "go", "java", "dotnet", "ruby", "php"],
+  "profiles": {
+    "gcp": [
+      {"id": "SI-01", "provider": "gcp", "workload_type": "cloud_run_service", "deployment_model": "in-container", "runtimes": "all", "variants": ["busy", "coldstart"]},
+      {"id": "SI-02", "provider": "gcp", "workload_type": "cloud_run_service", "deployment_model": "sidecar", "runtimes": "all", "variants": ["busy", "coldstart"]},
+      {"id": "SI-03", "provider": "gcp", "workload_type": "cloud_run_job", "deployment_model": "in-container", "runtimes": ["python"], "variants": ["execution"]},
+      {"id": "SI-04", "provider": "gcp", "workload_type": "cloud_run_function", "deployment_model": "sidecar", "runtimes": "all", "variants": ["busy", "coldstart"]},
+      {"id": "SC-02", "provider": "gcp", "workload_type": "cloud_function", "runtimes": ["node"], "variants": ["function"]}
+    ],
+    "gcp-sanity": [
+      {"id": "SI-01", "provider": "gcp", "workload_type": "cloud_run_service", "deployment_model": "in-container", "runtimes": ["python"], "variants": ["busy"]},
+      {"id": "SI-03", "provider": "gcp", "workload_type": "cloud_run_job", "deployment_model": "in-container", "runtimes": ["python"], "variants": ["execution"]},
+      {"id": "SI-04", "provider": "gcp", "workload_type": "cloud_run_function", "deployment_model": "sidecar", "runtimes": ["python"], "variants": ["busy"]},
+      {"id": "SC-02", "provider": "gcp", "workload_type": "cloud_function", "runtimes": ["node"], "variants": ["function"]}
+    ],
+    "azure-sanity": [
+      {"id": "SI-05", "provider": "azure", "workload_type": "azure_container_app", "deployment_model": "in-container", "runtimes": ["python"], "variants": ["busy"]},
+      {"id": "SI-06", "provider": "azure", "workload_type": "azure_container_app", "deployment_model": "sidecar", "runtimes": ["python"], "variants": ["busy"]},
+      {"id": "SI-07", "provider": "azure", "workload_type": "azure_app_service", "deployment_model": "in-container", "runtimes": ["python"], "variants": ["busy"]},
+      {"id": "SI-08", "provider": "azure", "workload_type": "azure_app_service", "deployment_model": "sidecar", "runtimes": ["python"], "variants": ["busy"]},
+      {"id": "SI-09", "provider": "azure", "workload_type": "azure_app_service", "deployment_model": "sidecar", "runtimes": ["python"], "variants": ["busy"], "shape": "linux-code"},
+      {"id": "SC-01", "provider": "azure", "workload_type": "azure_function", "runtimes": ["node"], "variants": ["function"]}
+    ],
+    "azure": [
+      {"id": "SI-05", "provider": "azure", "workload_type": "azure_container_app", "deployment_model": "in-container", "runtimes": "all", "variants": ["busy", "coldstart"]},
+      {"id": "SI-06", "provider": "azure", "workload_type": "azure_container_app", "deployment_model": "sidecar", "runtimes": "all", "variants": ["busy", "coldstart"]},
+      {"id": "SI-07", "provider": "azure", "workload_type": "azure_app_service", "deployment_model": "in-container", "runtimes": "all", "variants": ["busy", "coldstart"]},
+      {"id": "SI-08", "provider": "azure", "workload_type": "azure_app_service", "deployment_model": "sidecar", "runtimes": "all", "variants": ["busy", "coldstart"]},
+      {"id": "SI-09", "provider": "azure", "workload_type": "azure_app_service", "deployment_model": "sidecar", "runtimes": ["node", "dotnet", "python"], "variants": ["busy", "coldstart"], "shape": "linux-code"},
+      {"id": "SC-01", "provider": "azure", "workload_type": "azure_function", "runtimes": ["node"], "variants": ["function"]}
+    ]
+  }
+}
