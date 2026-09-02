@@ -355,13 +355,20 @@ fn parse_rg_from_owner_name(owner_name: &str) -> Option<String> {
     let without_webspace = stripped.strip_suffix("webspace")?;
     let last_dash = without_webspace.rfind('-')?;
     let rg = &without_webspace[..last_dash];
-    if rg.is_empty() { None } else { Some(rg.to_string()) }
+    if rg.is_empty() {
+        None
+    } else {
+        Some(rg.to_string())
+    }
 }
 
 fn build_cloud_function_identity() -> (String, String) {
     // Gen2 Cloud Run Functions set FUNCTION_TARGET alongside K_SERVICE.
     // These belong in serverless_init_agent, not serverless_compat_agent.
-    if env::var("FUNCTION_TARGET").map(|v| !v.is_empty()).unwrap_or(false) {
+    if env::var("FUNCTION_TARGET")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
         return (String::new(), String::new());
     }
 
@@ -403,7 +410,9 @@ async fn fetch_gcp_metadata_value(
 ) -> Option<String> {
     let client = create_reqwest_client_builder()
         .and_then(|b| {
-            b.timeout(Duration::from_secs(2)).build().map_err(Into::into)
+            b.timeout(Duration::from_secs(2))
+                .build()
+                .map_err(Into::into)
         })
         .ok()?;
 
@@ -416,7 +425,10 @@ async fn fetch_gcp_metadata_value(
         .ok()?;
 
     if !resp.status().is_success() {
-        warn!("inventory: GCP metadata server returned {} for {label}", resp.status());
+        warn!(
+            "inventory: GCP metadata server returned {} for {label}",
+            resp.status()
+        );
         return None;
     }
 
@@ -429,14 +441,21 @@ async fn fetch_gcp_metadata_value(
 async fn fetch_gcp_region_from_metadata() -> Option<String> {
     // Response: "projects/<project-number>/regions/<region-name>"
     fetch_gcp_metadata_value("instance/region", "region", |body| {
-        body.split('/').next_back().filter(|s| !s.is_empty()).map(str::to_string)
+        body.split('/')
+            .next_back()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
     })
     .await
 }
 
 async fn fetch_gcp_project_from_metadata() -> Option<String> {
     fetch_gcp_metadata_value("project/project-id", "project-id", |body| {
-        if body.is_empty() { None } else { Some(body.to_string()) }
+        if body.is_empty() {
+            None
+        } else {
+            Some(body.to_string())
+        }
     })
     .await
 }
@@ -484,7 +503,11 @@ fn enrich_azure_function_fields(metadata: &mut serde_json::Value) {
     let runtime = env::var("DD_SERVERLESS_COMPAT_RUNTIME")
         .ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| env::var("FUNCTIONS_WORKER_RUNTIME").ok().filter(|s| !s.is_empty()));
+        .or_else(|| {
+            env::var("FUNCTIONS_WORKER_RUNTIME")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
     if let Some(rt) = runtime {
         metadata["runtime"] = serde_json::Value::String(rt);
     }
@@ -495,7 +518,9 @@ fn enrich_azure_function_fields(metadata: &mut serde_json::Value) {
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            env::var("FUNCTIONS_WORKER_RUNTIME_VERSION").ok().filter(|s| !s.is_empty())
+            env::var("FUNCTIONS_WORKER_RUNTIME_VERSION")
+                .ok()
+                .filter(|s| !s.is_empty())
         });
     if let Some(v) = runtime_ver {
         metadata["serverless_compat_runtime_version"] = serde_json::Value::String(v);
@@ -562,8 +587,7 @@ fn detect_gcp_gen1_runtime() -> (String, String) {
 }
 
 fn build_client(https_proxy: Option<&str>) -> Result<reqwest::Client, Box<dyn std::error::Error>> {
-    let mut builder =
-        create_reqwest_client_builder()?.timeout(Duration::from_secs(10));
+    let mut builder = create_reqwest_client_builder()?.timeout(Duration::from_secs(10));
 
     if let Some(proxy) = https_proxy {
         builder = builder.proxy(reqwest::Proxy::https(proxy)?);
@@ -596,12 +620,18 @@ mod tests {
 
     #[test]
     fn azure_function_workload_type() {
-        assert_eq!(supported_workload_type(&EnvironmentType::AzureFunction), Some("azure_function"));
+        assert_eq!(
+            supported_workload_type(&EnvironmentType::AzureFunction),
+            Some("azure_function")
+        );
     }
 
     #[test]
     fn cloud_function_workload_type() {
-        assert_eq!(supported_workload_type(&EnvironmentType::CloudFunction), Some("cloud_function"));
+        assert_eq!(
+            supported_workload_type(&EnvironmentType::CloudFunction),
+            Some("cloud_function")
+        );
     }
 
     // ── Azure Function identity ──────────────────────────────────────────────
@@ -618,7 +648,10 @@ mod tests {
         let (id, name) = build_azure_function_identity();
 
         assert_eq!(name, "my-func-app");
-        assert_eq!(id, "/subscriptions/abc123/resourcegroups/my-rg/providers/microsoft.web/sites/my-func-app");
+        assert_eq!(
+            id,
+            "/subscriptions/abc123/resourcegroups/my-rg/providers/microsoft.web/sites/my-func-app"
+        );
 
         unsafe {
             env::remove_var("WEBSITE_SITE_NAME");
@@ -634,13 +667,19 @@ mod tests {
         unsafe {
             env::set_var("WEBSITE_SITE_NAME", "my-func");
             env::remove_var("WEBSITE_RESOURCE_GROUP");
-            env::set_var("WEBSITE_OWNER_NAME", "sub123+my-resource-group-westus2webspace-Linux");
+            env::set_var(
+                "WEBSITE_OWNER_NAME",
+                "sub123+my-resource-group-westus2webspace-Linux",
+            );
         }
 
         let (id, name) = build_azure_function_identity();
 
         assert_eq!(name, "my-func");
-        assert!(id.contains("/my-resource-group/"), "expected RG in id: {id}");
+        assert!(
+            id.contains("/my-resource-group/"),
+            "expected RG in id: {id}"
+        );
 
         unsafe {
             env::remove_var("WEBSITE_SITE_NAME");
@@ -658,7 +697,10 @@ mod tests {
         }
 
         let (id, _name) = build_azure_function_identity();
-        assert!(id.is_empty(), "missing WEBSITE_SITE_NAME must produce empty resource_id");
+        assert!(
+            id.is_empty(),
+            "missing WEBSITE_SITE_NAME must produce empty resource_id"
+        );
 
         unsafe {
             env::remove_var("WEBSITE_RESOURCE_GROUP");
@@ -731,8 +773,14 @@ mod tests {
 
         let (id, name) = build_cloud_function_identity();
 
-        assert!(id.is_empty(), "Gen2 must produce empty resource_id; got: {id}");
-        assert!(name.is_empty(), "Gen2 must produce empty resource_name; got: {name}");
+        assert!(
+            id.is_empty(),
+            "Gen2 must produce empty resource_id; got: {id}"
+        );
+        assert!(
+            name.is_empty(),
+            "Gen2 must produce empty resource_name; got: {name}"
+        );
 
         unsafe {
             env::remove_var("K_SERVICE");
@@ -781,8 +829,14 @@ mod tests {
 
         let (id, name) = build_cloud_function_identity();
 
-        assert!(id.is_empty(), "incomplete identity must produce empty resource_id");
-        assert_eq!(name, "my-fn", "resource_name should still be set for metadata retry");
+        assert!(
+            id.is_empty(),
+            "incomplete identity must produce empty resource_id"
+        );
+        assert_eq!(
+            name, "my-fn",
+            "resource_name should still be set for metadata retry"
+        );
 
         unsafe {
             env::remove_var("FUNCTION_NAME");
@@ -821,12 +875,18 @@ mod tests {
         assert_eq!(meta["flavor"], "serverless-compat");
         assert_eq!(meta["workload_type"], "azure_function");
         assert_eq!(meta["report_reason"], "startup");
-        assert_eq!(meta["resource_id"], "//microsoft.azure/functionApps/sub/rg/my-func");
+        assert_eq!(
+            meta["resource_id"],
+            "//microsoft.azure/functionApps/sub/rg/my-func"
+        );
         assert_eq!(meta["resource_name"], "my-func");
         assert!(meta.contains_key("serverless_compat_version"));
 
         // UUID must NOT appear inside agent_metadata.
-        assert!(!meta.contains_key("uuid"), "uuid must not be inside agent_metadata");
+        assert!(
+            !meta.contains_key("uuid"),
+            "uuid must not be inside agent_metadata"
+        );
 
         // platform_version must not appear — not in the REDAPL schema.
         assert!(!meta.contains_key("platform_version"));
@@ -849,7 +909,10 @@ mod tests {
         )
         .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(payload["agent_metadata"]["serverless_compat_version"], "3.7.1");
+        assert_eq!(
+            payload["agent_metadata"]["serverless_compat_version"],
+            "3.7.1"
+        );
 
         unsafe {
             env::remove_var("DD_SERVERLESS_COMPAT_VERSION");
@@ -929,23 +992,42 @@ mod tests {
     #[test]
     fn gate_off_by_default() {
         let _lock = ENV_LOCK.lock().unwrap();
-        unsafe { env::remove_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED"); }
-        assert!(!is_inventory_enabled(), "gate must be off when env var is absent");
+        unsafe {
+            env::remove_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED");
+        }
+        assert!(
+            !is_inventory_enabled(),
+            "gate must be off when env var is absent"
+        );
     }
 
     #[test]
     fn gate_on_when_set_to_true() {
         let _lock = ENV_LOCK.lock().unwrap();
-        unsafe { env::set_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED", "true"); }
-        assert!(is_inventory_enabled(), "gate must be on when env var is 'true'");
-        unsafe { env::remove_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED"); }
+        unsafe {
+            env::set_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED", "true");
+        }
+        assert!(
+            is_inventory_enabled(),
+            "gate must be on when env var is 'true'"
+        );
+        unsafe {
+            env::remove_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED");
+        }
     }
 
     #[test]
     fn gate_off_when_set_to_other_value() {
         let _lock = ENV_LOCK.lock().unwrap();
-        unsafe { env::set_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED", "false"); }
-        assert!(!is_inventory_enabled(), "gate must be off when env var is not 'true'");
-        unsafe { env::remove_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED"); }
+        unsafe {
+            env::set_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED", "false");
+        }
+        assert!(
+            !is_inventory_enabled(),
+            "gate must be off when env var is not 'true'"
+        );
+        unsafe {
+            env::remove_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED");
+        }
     }
 }
