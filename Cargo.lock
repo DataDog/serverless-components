@@ -614,6 +614,7 @@ dependencies = [
  "libdd-trace-protobuf 4.0.0 (git+https://github.com/DataDog/libdatadog?rev=72fa86854c823361b7d234545f1a2f2d21f944fe)",
  "libdd-trace-stats 6.0.0 (git+https://github.com/DataDog/libdatadog?rev=72fa86854c823361b7d234545f1a2f2d21f944fe)",
  "libdd-trace-utils 9.0.0 (git+https://github.com/DataDog/libdatadog?rev=72fa86854c823361b7d234545f1a2f2d21f944fe)",
+ "prost 0.14.3",
  "reqwest",
  "rmp-serde",
  "serde",
