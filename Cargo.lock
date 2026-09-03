@@ -584,11 +584,13 @@ dependencies = [
  "dogstatsd",
  "libdd-trace-utils 9.0.0 (git+https://github.com/DataDog/libdatadog?rev=72fa86854c823361b7d234545f1a2f2d21f944fe)",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "zstd",
 ]
 
