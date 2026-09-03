@@ -25,8 +25,6 @@ jobs:
       - run: |
           chmod +x target/bin/linux-amd64/datadog-serverless-compat
           chmod +x target/bin/windows-amd64/datadog-serverless-compat.exe
-          upx target/bin/linux-amd64/datadog-serverless-compat --lzma
-          upx target/bin/windows-amd64/datadog-serverless-compat.exe --lzma
       - run: zip -r datadog-serverless-compat.zip ./*
         working-directory: target
       - uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
