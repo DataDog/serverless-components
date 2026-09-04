@@ -25,14 +25,14 @@ tracing = { version = "0.1", default-features = false }
 serde = { version = "1.0.145", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { version = "1.0.58", default-features = false }
-libdd-capabilities.workspace = true
-libdd-capabilities-impl = { workspace = true, features = ["https"] }
+libdd-capabilities = "3.0.0"
+libdd-capabilities-impl = "4.0.0"
+libdd-library-config = "3.0.0"
+libdd-trace-protobuf = "4.0.1"
+libdd-trace-stats = { version = "7.0.0", features = ["stats-obfuscation"] }
 libdd-common = { workspace = true, features = ["https"] }
-libdd-library-config.workspace = true
-libdd-trace-protobuf.workspace = true
-libdd-trace-stats = { workspace = true, features = ["https", "stats-obfuscation"] }
-libdd-trace-utils = { workspace = true, features = ["https", "mini_agent"] }
 libdd-trace-obfuscation = { workspace = true, features = ["https"] }
+libdd-trace-utils = { workspace = true, features = ["https", "mini_agent"] }
 datadog-fips = { path = "../datadog-fips" }
 reqwest = { version = "0.12.23", features = [
     "json",
