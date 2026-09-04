@@ -16,6 +16,21 @@ license = "Apache-2.0"
 homepage = "https://github.com/DataDog/serverless-components"
 repository = "https://github.com/DataDog/serverless-components"
 
+[workspace.dependencies]
+# Keep these in lockstep with the versions pinned by dd-trace-rs's
+# `datadog-opentelemetry`: the Lambda extension links both, and a mismatch
+# resolves to two copies of every shared libdatadog crate.
+# https://github.com/DataDog/dd-trace-rs/blob/datadog-opentelemetry-v0.5.2/Cargo.toml
+datadog-opentelemetry = { version = "0.5.2", default-features = false }
+libdd-capabilities = { version = "3.0.0", default-features = false }
+libdd-capabilities-impl = { version = "4.0.0", default-features = false }
+libdd-common = { version = "5.2.0", default-features = false }
+libdd-library-config = { version = "3.0.0", default-features = false }
+libdd-trace-obfuscation = { version = "6.0.0", default-features = false }
+libdd-trace-protobuf = { version = "4.0.1", default-features = false }
+libdd-trace-stats = { version = "7.0.0", default-features = false }
+libdd-trace-utils = { version = "10.1.0", default-features = false }
+
 [profile.release]
 opt-level = "z"
 lto = true

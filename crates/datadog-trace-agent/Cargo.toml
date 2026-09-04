@@ -25,16 +25,14 @@ tracing = { version = "0.1", default-features = false }
 serde = { version = "1.0.145", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { version = "1.0.58", default-features = false }
-libdd-capabilities = { git = "https://github.com/DataDog/libdatadog", rev = "72fa86854c823361b7d234545f1a2f2d21f944fe" }
-libdd-capabilities-impl = { git = "https://github.com/DataDog/libdatadog", rev = "72fa86854c823361b7d234545f1a2f2d21f944fe" }
-libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "72fa86854c823361b7d234545f1a2f2d21f944fe" }
-libdd-library-config = { git = "https://github.com/DataDog/libdatadog", rev = "72fa86854c823361b7d234545f1a2f2d21f944fe" }
-libdd-trace-protobuf = { git = "https://github.com/DataDog/libdatadog", rev = "72fa86854c823361b7d234545f1a2f2d21f944fe" }
-libdd-trace-stats = { git = "https://github.com/DataDog/libdatadog", rev = "72fa86854c823361b7d234545f1a2f2d21f944fe" }
-libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "72fa86854c823361b7d234545f1a2f2d21f944fe", features = [
-    "mini_agent",
-] }
-libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog", rev = "72fa86854c823361b7d234545f1a2f2d21f944fe" }
+libdd-capabilities.workspace = true
+libdd-capabilities-impl = { workspace = true, features = ["https"] }
+libdd-common = { workspace = true, features = ["https"] }
+libdd-library-config.workspace = true
+libdd-trace-protobuf.workspace = true
+libdd-trace-stats = { workspace = true, features = ["https", "stats-obfuscation"] }
+libdd-trace-utils = { workspace = true, features = ["https", "mini_agent"] }
+libdd-trace-obfuscation = { workspace = true, features = ["https"] }
 datadog-fips = { path = "../datadog-fips" }
 reqwest = { version = "0.12.23", features = [
     "json",
@@ -49,6 +47,4 @@ serial_test = "2.0.0"
 duplicate = "2.0.1"
 temp-env = "0.3.6"
 tempfile = "3.3.0"
-libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "72fa86854c823361b7d234545f1a2f2d21f944fe", features = [
-    "test-utils",
-] }
+libdd-trace-utils = { workspace = true, features = ["test-utils"] }
