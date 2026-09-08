@@ -123,6 +123,7 @@ mod tests {
             proxy_request_max_retries: 3,
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 100,
+            enqueue_permit_timeout_secs: 2,
             trace_intake: Endpoint {
                 url: hyper::Uri::from_static("https://trace.agent.notdog.com/traces"),
                 api_key: Some("dummy_api_key".into()),

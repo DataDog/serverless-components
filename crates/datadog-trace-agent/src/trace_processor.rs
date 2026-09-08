@@ -115,12 +115,25 @@ impl TraceChunkProcessor for ChunkProcessor {
         }
     }
 }
+/// Maximum number of trace-enqueue tasks that may be in flight (spawned but not yet finished
+/// handing their pieces to the flusher) at once
+const MAX_IN_FLIGHT_ENQUEUES: usize = 10;
+
 #[derive(Clone)]
 pub struct ServerlessTraceProcessor {
     pub stats_concentrator: Option<StatsConcentratorHandle>,
+    enqueue_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl ServerlessTraceProcessor {
+    #[allow(clippy::must_use_candidate)]
+    pub fn new(stats_concentrator: Option<StatsConcentratorHandle>) -> Self {
+        ServerlessTraceProcessor {
+            stats_concentrator,
+            enqueue_permits: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_ENQUEUES)),
+        }
+    }
+
     fn send_to_concentrator(
         concentrator: &StatsConcentratorHandle,
         payload: &TracerPayloadCollection,
@@ -290,7 +303,30 @@ impl TraceProcessor for ServerlessTraceProcessor {
             })
             .collect();
 
+        // Bound how many enqueue tasks can be in flight at once, so a slow/retrying flush
+        // (which holds the aggregator lock, see aggregator.rs) can't let unbounded spawned
+        // tasks pile up in memory. If no permit frees up in time, drop the traces rather
+        // than hold this request open indefinitely.
+        let permit = match tokio::time::timeout(
+            std::time::Duration::from_secs(config.enqueue_permit_timeout_secs),
+            self.enqueue_permits.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) | Err(_) => {
+                warn!(
+                    "Could not acquire an enqueue permit in time; shedding load, dropping traces"
+                );
+                return log_and_create_traces_success_http_response(
+                    "Successfully buffered traces to be flushed.",
+                    StatusCode::OK,
+                );
+            }
+        };
+
         tokio::spawn(async move {
+            let _permit = permit; // released when this task ends
             for send_data in send_datas {
                 if let Err(err) = tx.send(send_data).await {
                     error!("Error sending traces to the trace flusher: {err}");
@@ -344,6 +380,7 @@ mod tests {
             proxy_request_max_retries: 3,
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 100,
+            enqueue_permit_timeout_secs: 2,
             trace_intake: Endpoint {
                 url: hyper::Uri::from_static("https://trace.agent.notdog.com/traces"),
                 api_key: Some("dummy_api_key".into()),
@@ -502,9 +539,7 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor {
-            stats_concentrator: None,
-        };
+        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -577,9 +612,7 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor {
-            stats_concentrator: None,
-        };
+        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -665,9 +698,7 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor {
-            stats_concentrator: None,
-        };
+        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
