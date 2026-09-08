@@ -681,7 +681,8 @@ mod tests {
             env::remove_var("WEBSITE_RESOURCE_GROUP");
         }
 
-        let (id, name) = build_azure_function_identity("sub123+my-resource-group-westus2webspace-Linux");
+        let (id, name) =
+            build_azure_function_identity("sub123+my-resource-group-westus2webspace-Linux");
 
         assert_eq!(name, "my-func");
         assert!(
