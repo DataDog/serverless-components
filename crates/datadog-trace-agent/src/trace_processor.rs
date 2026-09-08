@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use http_body_util::BodyExt;
 use hyper::{StatusCode, http};
 use libdd_common::http_common;
 use libdd_library_config::tracer_metadata::TracerMetadata;
@@ -208,7 +209,12 @@ impl TraceProcessor for ServerlessTraceProcessor {
         {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) | Err(_) => {
+                // The traces are dropped. The body is still drained so the connection can be
+                // kept alive for the next request instead of being closed.
                 warn!("Could not acquire an enqueue permit in time; dropping traces");
+                if let Err(err) = body.collect().await {
+                    debug!("Error draining /v0.4/traces request body while dropping traces: {err}");
+                }
                 return log_and_create_traces_success_http_response(
                     "Dropped traces due to enqueue capacity",
                     StatusCode::OK,
