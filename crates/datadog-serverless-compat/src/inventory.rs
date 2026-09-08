@@ -6,7 +6,7 @@ use libdd_trace_utils::trace_utils::EnvironmentType;
 use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::interval;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 /// How often to send a periodic inventory report while the mini-agent is running.
 const INVENTORY_INTERVAL: Duration = Duration::from_secs(30 * 60);
@@ -108,7 +108,15 @@ async fn send_report(
     process_id: &str,
     report_reason: &str,
 ) {
-    let (mut resource_id, resource_name) = build_resource_identity(env_type);
+    // Read WEBSITE_OWNER_NAME once for Azure; reused by both identity derivation
+    // and payload enrichment to avoid two env reads for the same value.
+    let azure_owner_name = if matches!(env_type, EnvironmentType::AzureFunction) {
+        env::var("WEBSITE_OWNER_NAME").unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let (mut resource_id, resource_name) = build_resource_identity(env_type, &azure_owner_name);
 
     // Gen1 Cloud Functions: if FUNCTION_NAME was present but region/project were
     // absent from env vars, try the GCP instance metadata server to complete the
@@ -159,6 +167,7 @@ async fn send_report(
         &resource_id,
         &resource_name,
         env_type,
+        &azure_owner_name,
     ) {
         Ok(b) => b,
         Err(e) => {
@@ -171,11 +180,11 @@ async fn send_report(
 
     for attempt in 0..=MAX_RETRIES {
         match do_send(client, &url, api_key, body.clone()).await {
-            Ok(status) if status < 300 || status == 202 => {
-                info!(
+            Ok(status) if status < 300 => {
+                debug!(
                     "inventory: report sent \
                      (report_reason={report_reason}, workload_type={workload_type}, \
-                     resource_id={resource_id}, process_id={process_id}, status={status})"
+                     status={status})"
                 );
                 return;
             }
@@ -205,8 +214,9 @@ async fn send_report(
             }
             Err(e) => {
                 warn!(
-                    "inventory: transport error after {attempt} attempts \
-                     (report_reason={report_reason}, error={e})"
+                    "inventory: transport error after {} attempts \
+                     (report_reason={report_reason}, error={e})",
+                    attempt + 1,
                 );
                 return;
             }
@@ -241,12 +251,16 @@ fn build_payload(
     resource_id: &str,
     resource_name: &str,
     env_type: &EnvironmentType,
+    azure_owner_name: &str,
 ) -> Result<Vec<u8>, serde_json::Error> {
     // Must be nanoseconds to match time.Now().UnixNano() expected by EPRW.
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0);
+        .unwrap_or_else(|e| {
+            warn!("inventory: system clock error, timestamp will be 0: {e}");
+            0
+        });
 
     // serverless_compat_version: prefer DD_SERVERLESS_COMPAT_VERSION (set by the
     // language package wrapping this binary); fall back to the Rust crate version
@@ -280,7 +294,7 @@ fn build_payload(
     }
 
     // Platform-specific optional fields (runtime, region, cloud IDs, etc.).
-    enrich_platform_fields(&mut metadata, env_type);
+    enrich_platform_fields(&mut metadata, env_type, azure_owner_name);
 
     // Hostname intentionally absent: setting it (even to "") causes EPRW to
     // attempt a host_id lookup that fails for serverless workloads, rejecting
@@ -299,9 +313,9 @@ fn build_payload(
 /// `resource_id` is the canonical cloud resource identifier used as the primary
 /// key in `serverless_compat_agent`. An empty `resource_id` means the required
 /// environment variables are absent; the caller must skip the write.
-fn build_resource_identity(env_type: &EnvironmentType) -> (String, String) {
+fn build_resource_identity(env_type: &EnvironmentType, azure_owner_name: &str) -> (String, String) {
     match env_type {
-        EnvironmentType::AzureFunction => build_azure_function_identity(),
+        EnvironmentType::AzureFunction => build_azure_function_identity(azure_owner_name),
         EnvironmentType::CloudFunction => build_cloud_function_identity(),
         EnvironmentType::LambdaFunction | EnvironmentType::AzureSpringApp => {
             (String::new(), String::new())
@@ -309,10 +323,8 @@ fn build_resource_identity(env_type: &EnvironmentType) -> (String, String) {
     }
 }
 
-fn build_azure_function_identity() -> (String, String) {
+fn build_azure_function_identity(owner_name: &str) -> (String, String) {
     let name = env::var("WEBSITE_SITE_NAME").unwrap_or_default();
-    // WEBSITE_OWNER_NAME = "{subscription_guid}+{rg}-{region}webspace[-os]"
-    let owner_name = env::var("WEBSITE_OWNER_NAME").unwrap_or_default();
 
     let sub = owner_name
         .split('+')
@@ -326,7 +338,7 @@ fn build_azure_function_identity() -> (String, String) {
     let rg = env::var("WEBSITE_RESOURCE_GROUP")
         .ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| parse_rg_from_owner_name(&owner_name))
+        .or_else(|| parse_rg_from_owner_name(owner_name))
         .unwrap_or_default();
 
     if name.is_empty() || rg.is_empty() || sub.is_empty() {
@@ -461,17 +473,19 @@ async fn fetch_gcp_project_from_metadata() -> Option<String> {
 }
 
 /// Adds platform-specific optional fields to `metadata`.
-fn enrich_platform_fields(metadata: &mut serde_json::Value, env_type: &EnvironmentType) {
+fn enrich_platform_fields(
+    metadata: &mut serde_json::Value,
+    env_type: &EnvironmentType,
+    azure_owner_name: &str,
+) {
     match env_type {
-        EnvironmentType::AzureFunction => enrich_azure_function_fields(metadata),
+        EnvironmentType::AzureFunction => enrich_azure_function_fields(metadata, azure_owner_name),
         EnvironmentType::CloudFunction => enrich_cloud_function_fields(metadata),
         EnvironmentType::LambdaFunction | EnvironmentType::AzureSpringApp => {}
     }
 }
 
-fn enrich_azure_function_fields(metadata: &mut serde_json::Value) {
-    let owner_name = env::var("WEBSITE_OWNER_NAME").unwrap_or_default();
-
+fn enrich_azure_function_fields(metadata: &mut serde_json::Value, owner_name: &str) {
     // Region: prefer REGION_NAME; fall back to parsing WEBSITE_OWNER_NAME.
     let region = env::var("REGION_NAME")
         .ok()
