@@ -446,7 +446,7 @@ async fn fetch_gcp_metadata_value(
 
     let body = resp.text().await.ok()?;
     let result = parse(body.trim());
-    info!("inventory: GCP metadata server {label}: {:?}", result);
+    debug!("inventory: GCP metadata server {label}: {:?}", result);
     result
 }
 
@@ -656,10 +656,9 @@ mod tests {
         unsafe {
             env::set_var("WEBSITE_SITE_NAME", "my-func-app");
             env::set_var("WEBSITE_RESOURCE_GROUP", "my-rg");
-            env::set_var("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace");
         }
 
-        let (id, name) = build_azure_function_identity();
+        let (id, name) = build_azure_function_identity("abc123+my-rg-eastuswebspace");
 
         assert_eq!(name, "my-func-app");
         assert_eq!(
@@ -670,7 +669,6 @@ mod tests {
         unsafe {
             env::remove_var("WEBSITE_SITE_NAME");
             env::remove_var("WEBSITE_RESOURCE_GROUP");
-            env::remove_var("WEBSITE_OWNER_NAME");
         }
     }
 
@@ -681,13 +679,9 @@ mod tests {
         unsafe {
             env::set_var("WEBSITE_SITE_NAME", "my-func");
             env::remove_var("WEBSITE_RESOURCE_GROUP");
-            env::set_var(
-                "WEBSITE_OWNER_NAME",
-                "sub123+my-resource-group-westus2webspace-Linux",
-            );
         }
 
-        let (id, name) = build_azure_function_identity();
+        let (id, name) = build_azure_function_identity("sub123+my-resource-group-westus2webspace-Linux");
 
         assert_eq!(name, "my-func");
         assert!(
@@ -697,7 +691,6 @@ mod tests {
 
         unsafe {
             env::remove_var("WEBSITE_SITE_NAME");
-            env::remove_var("WEBSITE_OWNER_NAME");
         }
     }
 
@@ -707,10 +700,9 @@ mod tests {
         unsafe {
             env::remove_var("WEBSITE_SITE_NAME");
             env::set_var("WEBSITE_RESOURCE_GROUP", "my-rg");
-            env::set_var("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace");
         }
 
-        let (id, _name) = build_azure_function_identity();
+        let (id, _name) = build_azure_function_identity("abc123+my-rg-eastuswebspace");
         assert!(
             id.is_empty(),
             "missing WEBSITE_SITE_NAME must produce empty resource_id"
@@ -718,7 +710,6 @@ mod tests {
 
         unsafe {
             env::remove_var("WEBSITE_RESOURCE_GROUP");
-            env::remove_var("WEBSITE_OWNER_NAME");
         }
     }
 
@@ -874,6 +865,7 @@ mod tests {
             "//microsoft.azure/functionApps/sub/rg/my-func",
             "my-func",
             &EnvironmentType::AzureFunction,
+            "",
         )
         .expect("build_payload must not fail");
 
@@ -920,6 +912,7 @@ mod tests {
             "//microsoft.azure/functionApps/s/r/f",
             "f",
             &EnvironmentType::AzureFunction,
+            "",
         )
         .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -947,6 +940,7 @@ mod tests {
             "//microsoft.azure/functionApps/s/r/f",
             "f",
             &EnvironmentType::AzureFunction,
+            "",
         )
         .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -970,6 +964,7 @@ mod tests {
             "//cloudfunctions.googleapis.com/projects/p/locations/r/functions/fn",
             "fn",
             &EnvironmentType::CloudFunction,
+            "",
         )
         .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
