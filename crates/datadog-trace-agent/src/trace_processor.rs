@@ -198,6 +198,24 @@ impl TraceProcessor for ServerlessTraceProcessor {
             return response;
         }
 
+        // Bound how many requests can be in the decode/enrich/split/enqueue pipeline at once
+        // and carried through to the spawned enqueue task at the end
+        let permit = match tokio::time::timeout(
+            std::time::Duration::from_secs(config.enqueue_permit_timeout_secs),
+            self.enqueue_permits.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) | Err(_) => {
+                warn!("Could not acquire an enqueue permit in time; dropping traces");
+                return log_and_create_traces_success_http_response(
+                    "Dropped traces due to enqueue capacity",
+                    StatusCode::OK,
+                );
+            }
+        };
+
         let tracer_header_tags = (&parts.headers).into();
 
         // deserialize traces from the request body, convert to protobuf structs (see trace-protobuf
@@ -303,28 +321,6 @@ impl TraceProcessor for ServerlessTraceProcessor {
             })
             .collect();
 
-        // Bound how many enqueue tasks can be in flight at once, so a slow/retrying flush
-        // (which holds the aggregator lock, see aggregator.rs) can't let unbounded spawned
-        // tasks pile up in memory. If no permit frees up in time, drop the traces rather
-        // than hold this request open indefinitely.
-        let permit = match tokio::time::timeout(
-            std::time::Duration::from_secs(config.enqueue_permit_timeout_secs),
-            self.enqueue_permits.clone().acquire_owned(),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(_)) | Err(_) => {
-                warn!(
-                    "Could not acquire an enqueue permit in time; shedding load, dropping traces"
-                );
-                return log_and_create_traces_success_http_response(
-                    "Successfully buffered traces to be flushed.",
-                    StatusCode::OK,
-                );
-            }
-        };
-
         tokio::spawn(async move {
             let _permit = permit; // released when this task ends
             for send_data in send_datas {
@@ -354,14 +350,15 @@ mod tests {
         config::{Config, Tags},
         peer_tags::peer_tag_keys,
         trace_processor::{
-            self, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY, TraceProcessor, encoded_size,
-            split_oversized_payloads,
+            self, MAX_IN_FLIGHT_ENQUEUES, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY, TraceProcessor,
+            encoded_size, split_oversized_payloads,
         },
     };
     use libdd_common::{Endpoint, http_common};
     use libdd_trace_protobuf::pb;
     use libdd_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
-    use libdd_trace_utils::trace_utils::MiniAgentMetadata;
+    use libdd_trace_utils::trace_utils::{MiniAgentMetadata, SendData};
+    use libdd_trace_utils::tracer_header_tags::TracerHeaderTags;
     use libdd_trace_utils::{
         test_utils::create_test_json_span, trace_utils, tracer_payload::TracerPayloadCollection,
     };
@@ -722,6 +719,147 @@ mod tests {
             send_data.len() > MAX_CONTENT_SIZE_BYTES,
             "expected the standalone piece to still be reported as oversized (size {})",
             send_data.len()
+        );
+    }
+
+    fn small_trace_request() -> http_common::HttpRequest {
+        let start = get_current_timestamp_nanos();
+        let json_span = create_test_json_span(11, 222, 333, start, false);
+        let bytes = rmp_serde::to_vec(&vec![vec![json_span]]).unwrap();
+        Request::builder()
+            .header("datadog-meta-tracer-version", "4.0.0")
+            .header("datadog-meta-lang", "nodejs")
+            .header("datadog-meta-lang-version", "v19.7.0")
+            .header("datadog-meta-lang-interpreter", "v8")
+            .header("datadog-container-id", "33")
+            .header("content-length", "100")
+            .body(http_common::Body::from(bytes))
+            .unwrap()
+    }
+
+    fn dummy_send_data(config: &Config) -> trace_utils::SendData {
+        SendData::new(
+            1,
+            TracerPayloadCollection::V07(Vec::new()),
+            TracerHeaderTags::default(),
+            &config.trace_intake,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_permits_bound_in_flight_tasks_and_shed_load() {
+        let (tx, mut rx): (
+            Sender<trace_utils::SendData>,
+            Receiver<trace_utils::SendData>,
+        ) = mpsc::channel(1);
+
+        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
+        let config = Arc::new(Config {
+            enqueue_permit_timeout_secs: 0,
+            ..create_test_config()
+        });
+
+        // Pre-fill the channel's one slot so every enqueue attempt below blocks on tx.send()
+        // (and holds its permit) instead of succeeding immediately.
+        tx.try_send(dummy_send_data(&config)).unwrap();
+
+        // Saturate all MAX_IN_FLIGHT_ENQUEUES permits: each call acquires a permit and spawns
+        // a task that then blocks forever on tx.send(), since nothing drains rx yet. Permit
+        // acquisition happens synchronously inside process_traces before it returns, so by the
+        // time this loop finishes, all permits are deterministically held - no race.
+        for _ in 0..MAX_IN_FLIGHT_ENQUEUES {
+            let res = trace_processor
+                .process_traces(
+                    config.clone(),
+                    small_trace_request(),
+                    tx.clone(),
+                    Arc::new(create_test_metadata()),
+                )
+                .await;
+            assert!(res.is_ok());
+        }
+        assert_eq!(
+            trace_processor.enqueue_permits.available_permits(),
+            0,
+            "expected all permits to be held after saturating requests"
+        );
+
+        // All permits are held, so this request can't get one in time (timeout is 0) and
+        // should shed load rather than hang - still a 200, but its trace is dropped before
+        // ever reaching tx.send() (permit acquisition happens before decode).
+        let res = trace_processor
+            .process_traces(
+                config.clone(),
+                small_trace_request(),
+                tx.clone(),
+                Arc::new(create_test_metadata()),
+            )
+            .await;
+        assert!(res.is_ok());
+
+        // Drop the original sender - the shed 11th request never created a clone of its own,
+        // since it sheds before decoding/building anything. The channel will only close once
+        // every clone held by the 10 blocked tasks is also dropped, which happens as each one
+        // is unblocked in turn by draining the item ahead of it.
+        drop(tx);
+
+        let mut received = 0;
+        while rx.recv().await.is_some() {
+            received += 1;
+        }
+        assert_eq!(
+            received,
+            MAX_IN_FLIGHT_ENQUEUES + 1,
+            "expected exactly the dummy plus the 10 saturating payloads, nothing from the shed 11th"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_permit_releases_after_send_completes() {
+        let (tx, mut rx): (
+            Sender<trace_utils::SendData>,
+            Receiver<trace_utils::SendData>,
+        ) = mpsc::channel(MAX_IN_FLIGHT_ENQUEUES + 1);
+
+        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
+        // Uses the default (non-zero) enqueue_permit_timeout_secs, so the 11th request's permit
+        // acquire has real time to succeed once an earlier request's send completes and
+        // releases its permit, rather than racing a 0-second timeout against task scheduling.
+        let config = Arc::new(create_test_config());
+
+        // With enough channel capacity for every send to complete immediately, all
+        // MAX_IN_FLIGHT_ENQUEUES requests should succeed and their permits should be released
+        // right away - leaving room for one more request to succeed too, not shed.
+        for _ in 0..=MAX_IN_FLIGHT_ENQUEUES {
+            let res = trace_processor
+                .process_traces(
+                    config.clone(),
+                    small_trace_request(),
+                    tx.clone(),
+                    Arc::new(create_test_metadata()),
+                )
+                .await;
+            assert!(res.is_ok());
+            // Give the previous request's spawned enqueue task a chance to run its (instant,
+            // since the channel has room) send and release its permit before the next request
+            // tries to acquire one.
+            tokio::task::yield_now().await;
+        }
+
+        // Drop the original sender so the channel closes once every clone held by the 11
+        // completed send tasks is also dropped, then drain to closure for a deterministic
+        // count instead of a try_recv() snapshot that could race a still-completing task.
+        drop(tx);
+
+        let mut received = 0;
+        while rx.recv().await.is_some() {
+            received += 1;
+        }
+        assert_eq!(
+            received,
+            MAX_IN_FLIGHT_ENQUEUES + 1,
+            "expected every request's permit to be released after its send completed, \
+             allowing all of them to succeed rather than shedding load"
         );
     }
 }
