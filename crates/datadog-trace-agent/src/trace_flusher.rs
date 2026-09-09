@@ -113,23 +113,32 @@ impl std::fmt::Debug for ProxyHttpClient {
 }
 
 impl ProxyHttpClient {
-    // `HttpClientTrait::new_client` takes no arguments, so we use `with_proxy` to
-    // take in the proxy URL and build the client. `new_client` is never called on our code path.
+    // The `HttpClientCapability` constructors take no arguments, so we use `with_proxy` to
+    // take in the proxy URL and build the client. Neither `new_client` nor
+    // `new_without_connection_pooling` is called on our code path — we only ever hand an
+    // already-built instance to `SendData::send` — so their proxy-less clients are unused.
     fn with_proxy(proxy_https: Option<&String>) -> Result<Self, Box<dyn Error>> {
-        if let Some(proxy) = proxy_https {
-            let proxy =
-                hyper_http_proxy::Proxy::new(hyper_http_proxy::Intercept::Https, proxy.parse()?);
-            let proxy_connector =
-                hyper_http_proxy::ProxyConnector::from_proxy(Connector::default(), proxy)?;
-            Ok(Self {
-                client: http_common::client_builder().build(proxy_connector),
-            })
-        } else {
-            let proxy_connector = hyper_http_proxy::ProxyConnector::new(Connector::default())?;
-            Ok(Self {
-                client: http_common::client_builder().build(proxy_connector),
-            })
+        Self::with_proxy_pooling(proxy_https, true)
+    }
+
+    fn with_proxy_pooling(
+        proxy_https: Option<&String>,
+        connection_pooling: bool,
+    ) -> Result<Self, Box<dyn Error>> {
+        let proxy_connector = match proxy_https {
+            Some(proxy) => hyper_http_proxy::ProxyConnector::from_proxy(
+                Connector::default(),
+                hyper_http_proxy::Proxy::new(hyper_http_proxy::Intercept::Https, proxy.parse()?),
+            )?,
+            None => hyper_http_proxy::ProxyConnector::new(Connector::default())?,
+        };
+        let mut builder = http_common::client_builder();
+        if !connection_pooling {
+            builder.pool_max_idle_per_host(0);
         }
+        Ok(Self {
+            client: builder.build(proxy_connector),
+        })
     }
 }
 
@@ -137,6 +146,12 @@ impl HttpClientCapability for ProxyHttpClient {
     #[allow(clippy::expect_used)]
     fn new_client() -> Self {
         Self::with_proxy(None).expect("building proxy connector with default TLS should not fail")
+    }
+
+    #[allow(clippy::expect_used)]
+    fn new_without_connection_pooling() -> Self {
+        Self::with_proxy_pooling(None, false)
+            .expect("building proxy connector with default TLS should not fail")
     }
 
     fn request(

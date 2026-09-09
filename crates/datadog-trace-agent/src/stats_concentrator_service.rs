@@ -134,6 +134,9 @@ impl StatsConcentratorService {
             peer_tags,
             override_cardinality_limits,
             additional_metric_tags,
+            // Spans are already obfuscated by the trace processor before they reach the
+            // concentrator, so the concentrator's own resource obfuscation stays off.
+            None,
         )
     }
 
