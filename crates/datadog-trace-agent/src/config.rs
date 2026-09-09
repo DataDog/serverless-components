@@ -112,6 +112,8 @@ pub struct Config {
     pub proxy_request_retry_backoff_base_ms: u64,
     /// timeout for environment verification, in milliseconds
     pub verify_env_timeout_ms: u64,
+    /// How long to wait for a trace-enqueue permit before shedding load, in seconds
+    pub enqueue_permit_timeout_secs: u64,
     pub proxy_url: Option<String>,
     pub env: String,
     pub peer_tags: Vec<String>,
@@ -241,6 +243,7 @@ impl Config {
             proxy_request_max_retries: 3,
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 100,
+            enqueue_permit_timeout_secs: 2,
             dd_apm_receiver_port,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name,
@@ -919,6 +922,7 @@ pub mod test_helpers {
             proxy_request_max_retries: 3,
             proxy_request_retry_backoff_base_ms: 100,
             verify_env_timeout_ms: 1000,
+            enqueue_permit_timeout_secs: 2,
             proxy_url: None,
             env: "none".to_string(),
             peer_tags: peer_tag_keys().unwrap(),

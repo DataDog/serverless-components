@@ -97,9 +97,9 @@ pub fn create_mini_agent_with_real_flushers(
     let aggregator = Arc::new(tokio::sync::Mutex::new(TraceAggregator::default()));
     let mini_agent = MiniAgent {
         config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor {
-            stats_concentrator: Some(stats_concentrator_handle.clone()),
-        }),
+        trace_processor: Arc::new(ServerlessTraceProcessor::new(Some(
+            stats_concentrator_handle.clone(),
+        ))),
         trace_flusher: Arc::new(ServerlessTraceFlusher::new(
             aggregator.clone(),
             config.clone(),
@@ -249,9 +249,7 @@ async fn test_mini_agent_tcp_handles_requests() {
     let test_port = config.dd_apm_receiver_port;
     let mini_agent = MiniAgent {
         config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor {
-            stats_concentrator: None,
-        }),
+        trace_processor: Arc::new(ServerlessTraceProcessor::new(None)),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
         stats_flusher: Arc::new(MockStatsFlusher),
@@ -365,9 +363,7 @@ async fn test_mini_agent_named_pipe_handles_requests() {
 
     let mini_agent = MiniAgent {
         config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor {
-            stats_concentrator: None,
-        }),
+        trace_processor: Arc::new(ServerlessTraceProcessor::new(None)),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
         stats_flusher: Arc::new(MockStatsFlusher),
@@ -539,9 +535,7 @@ async fn test_mini_agent_tcp_proxies_dsm_requests() {
 
     let mini_agent = MiniAgent {
         config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor {
-            stats_concentrator: None,
-        }),
+        trace_processor: Arc::new(ServerlessTraceProcessor::new(None)),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
         stats_flusher: Arc::new(MockStatsFlusher),
