@@ -21,10 +21,11 @@ use datadog_trace_agent::{
 };
 use http_body_util::BodyExt;
 use hyper::StatusCode;
-use serde_json::Value;
+use libdd_trace_utils::test_utils::create_test_json_span;
+use serde_json::{Value, json};
 use serial_test::serial;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 #[cfg(all(windows, feature = "windows-pipes"))]
 use common::helpers::send_named_pipe_request;
@@ -97,9 +98,10 @@ pub fn create_mini_agent_with_real_flushers(
     let aggregator = Arc::new(tokio::sync::Mutex::new(TraceAggregator::default()));
     let mini_agent = MiniAgent {
         config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor::new(Some(
-            stats_concentrator_handle.clone(),
-        ))),
+        trace_processor: Arc::new(ServerlessTraceProcessor::new(
+            Some(stats_concentrator_handle.clone()),
+            ServerlessTraceProcessor::new_error_sampler(&config),
+        )),
         trace_flusher: Arc::new(ServerlessTraceFlusher::new(
             aggregator.clone(),
             config.clone(),
@@ -249,7 +251,10 @@ async fn test_mini_agent_tcp_handles_requests() {
     let test_port = config.dd_apm_receiver_port;
     let mini_agent = MiniAgent {
         config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor::new(None)),
+        trace_processor: Arc::new(ServerlessTraceProcessor::new(
+            None,
+            ServerlessTraceProcessor::new_error_sampler(&config),
+        )),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
         stats_flusher: Arc::new(MockStatsFlusher),
@@ -363,7 +368,10 @@ async fn test_mini_agent_named_pipe_handles_requests() {
 
     let mini_agent = MiniAgent {
         config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor::new(None)),
+        trace_processor: Arc::new(ServerlessTraceProcessor::new(
+            None,
+            ServerlessTraceProcessor::new_error_sampler(&config),
+        )),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
         stats_flusher: Arc::new(MockStatsFlusher),
@@ -535,7 +543,10 @@ async fn test_mini_agent_tcp_proxies_dsm_requests() {
 
     let mini_agent = MiniAgent {
         config: config.clone(),
-        trace_processor: Arc::new(ServerlessTraceProcessor::new(None)),
+        trace_processor: Arc::new(ServerlessTraceProcessor::new(
+            None,
+            ServerlessTraceProcessor::new_error_sampler(&config),
+        )),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
         stats_flusher: Arc::new(MockStatsFlusher),
@@ -1246,4 +1257,202 @@ async fn test_mini_agent_dual_transport_with_real_flushers() {
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
     verify_stats_request(&mock_server).await;
+}
+
+/// Builds a mixed four-trace payload for the error rescue wire test: an
+/// eligible errored automatic-drop chunk, a healthy automatic-drop chunk, an
+/// explicit user drop, and a positive-priority chunk.
+fn create_error_rescue_test_payload() -> Vec<u8> {
+    let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
+    let span = |trace_id: u64, name: &str, error: i64, priority: f64| {
+        let mut span = create_test_json_span(trace_id, trace_id + 1, 0, start, false);
+        span["name"] = json!(name);
+        span["error"] = json!(error);
+        span["metrics"]["_sampling_priority_v1"] = json!(priority);
+        span
+    };
+    let traces = vec![
+        vec![span(700, "rescued_error_p0", 1, 0.0)],
+        vec![span(701, "healthy_p0", 0, 0.0)],
+        vec![span(702, "user_drop_p0", 1, -1.0)],
+        vec![span(703, "priority_1", 1, 1.0)],
+    ];
+    rmp_serde::to_vec(&traces).expect("Failed to serialize error rescue test trace")
+}
+
+/// End-to-end error rescue verification against the outbound wire payload and
+/// agent-computed stats: an eligible errored P0 chunk is rescued (positive
+/// `_dd.errors_sr` on the root, priority still 0) while all other chunks are
+/// forwarded unchanged, and every submitted span still contributes to stats.
+/// This proves the wire contract only; backend retention of rescued chunks is
+/// established by the backend implementation, not by this fake intake.
+#[cfg(test)]
+#[tokio::test]
+#[serial]
+async fn test_error_rescue_outbound_payload_and_stats() {
+    use libdd_trace_protobuf::pb::AgentPayload;
+    use prost::Message as _;
+
+    let mock_server: MockServer = MockServer::start().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut config = create_tcp_test_config(8137); // use different port to avoid race condition with other tests
+    configure_mock_endpoints(&mut config, &mock_server.url());
+    config.agent_stats_computation_enabled = true;
+    // Deterministic rescue settings: every eligible chunk is kept at 1.0.
+    config.error_sampler = datadog_agent_trace_sampler::ErrorSamplerConfig {
+        mode: datadog_agent_trace_sampler::ErrorSamplerMode::AlwaysKeep,
+        target_tps: 1.0,
+        extra_sample_rate: 1.0,
+    };
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let agent_handle = tokio::spawn(async move {
+        let _ = mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await;
+    });
+
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    let trace_response = send_tcp_request(
+        test_port,
+        "/v0.4/traces",
+        "POST",
+        Some(create_error_rescue_test_payload()),
+        &[],
+    )
+    .await
+    .expect("Failed to send /v0.4/traces request");
+    assert_eq!(trace_response.status(), StatusCode::OK);
+
+    verify_trace_request(&mock_server).await;
+
+    // Decode the actual outbound protobuf payload(s) and locate each submitted
+    // chunk by its root span name.
+    let trace_reqs = mock_server.get_requests_for_path("/api/v0.2/traces");
+    let mut chunks_by_root_name: std::collections::HashMap<
+        String,
+        libdd_trace_protobuf::pb::TraceChunk,
+    > = std::collections::HashMap::new();
+    for req in &trace_reqs {
+        let agent_payload = AgentPayload::decode(&req.body[..])
+            .expect("Failed to decode outbound AgentPayload protobuf");
+        for tracer_payload in agent_payload.tracer_payloads {
+            for chunk in tracer_payload.chunks {
+                let root_name = chunk
+                    .spans
+                    .iter()
+                    .find(|s| s.parent_id == 0)
+                    .map(|s| s.name.clone())
+                    .expect("chunk has a root span");
+                chunks_by_root_name.insert(root_name, chunk);
+            }
+        }
+    }
+
+    let names = [
+        "rescued_error_p0",
+        "healthy_p0",
+        "user_drop_p0",
+        "priority_1",
+    ];
+    for name in names {
+        assert!(
+            chunks_by_root_name.contains_key(name),
+            "expected chunk {name} to be forwarded to the backend, got: {:?}",
+            chunks_by_root_name.keys().collect::<Vec<_>>()
+        );
+    }
+
+    let errors_sr_of = |name: &str| -> Option<f64> {
+        chunks_by_root_name[name]
+            .spans
+            .iter()
+            .find(|s| s.parent_id == 0)
+            .and_then(|root| root.metrics.get("_dd.errors_sr").copied())
+    };
+
+    // The eligible errored automatic-drop chunk is rescued: positive
+    // `_dd.errors_sr` on the root, chunk priority still 0.
+    assert_eq!(
+        errors_sr_of("rescued_error_p0"),
+        Some(1.0),
+        "rescued root must carry a positive _dd.errors_sr"
+    );
+    assert_eq!(
+        chunks_by_root_name["rescued_error_p0"].priority, 0,
+        "rescued chunk priority must remain 0, no promotion"
+    );
+
+    // Non-candidate chunks receive no rescue metric and keep their priority.
+    assert_eq!(errors_sr_of("healthy_p0"), None, "healthy P0 not rescued");
+    assert_eq!(chunks_by_root_name["healthy_p0"].priority, 0);
+    assert_eq!(
+        errors_sr_of("user_drop_p0"),
+        None,
+        "explicit user drop never rescued"
+    );
+    assert_eq!(chunks_by_root_name["user_drop_p0"].priority, -1);
+    assert_eq!(
+        errors_sr_of("priority_1"),
+        None,
+        "positive priority not rescued"
+    );
+    assert_eq!(chunks_by_root_name["priority_1"].priority, 1);
+
+    // Wait for the stats flush, then assert agent-computed stats include all
+    // four submitted spans, independent of rescue decisions.
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+    let _ = shutdown_tx.send(true);
+    let _ = agent_handle.await;
+
+    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
+    assert!(
+        !stats_reqs.is_empty(),
+        "Expected at least one stats request"
+    );
+
+    let all_groups: Vec<_> = stats_reqs
+        .iter()
+        .map(|req| decode_stats_payload(&req.body))
+        .flat_map(|payload| {
+            payload
+                .stats
+                .into_iter()
+                .flat_map(|csp| csp.stats.into_iter())
+                .flat_map(|bucket| bucket.stats.into_iter())
+        })
+        .collect();
+
+    for name in names {
+        let group = all_groups.iter().find(|g| g.name == name);
+        assert!(
+            group.is_some(),
+            "expected span {name} to contribute to agent-computed stats, got: {:?}",
+            all_groups.iter().map(|g| &g.name).collect::<Vec<_>>()
+        );
+        assert!(
+            group.unwrap().hits > 0,
+            "expected span {name} to have a positive hit count in stats"
+        );
+    }
 }
