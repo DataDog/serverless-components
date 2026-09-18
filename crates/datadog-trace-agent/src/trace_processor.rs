@@ -177,30 +177,58 @@ impl ServerlessTraceProcessor {
     /// Chunks are never removed or reordered: unrescued chunks stay in the
     /// payload and the backend discards them.
     ///
-    /// `now_unix_secs` is passed in explicitly so tests can exercise the
-    /// rolling window without sleeping.
-    fn apply_error_rescue(
-        &self,
-        payload: &mut TracerPayloadCollection,
-        config: &Config,
-        now_unix_secs: i64,
-    ) {
-        let TracerPayloadCollection::V07(tracer_payloads) = payload else {
-            return;
-        };
+    fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
         let mut sampler = self.lock_sampler();
         // Skip all view construction when the sampler is disabled by config
         // (target_tps <= 0): nothing can be rescued.
         if sampler.is_disabled() {
             return;
         }
+        // Read the clock while holding the sampler lock so that concurrent
+        // requests deliver timestamps in lock-acquisition order, which is
+        // monotonic. Reading the clock before acquiring the lock could hand the
+        // sampler an older time after a newer one, moving the rolling window
+        // backwards and clearing counts from the current bucket, which would
+        // undercount TPS and rescue too many error chunks.
+        let now_unix_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
+    }
+
+    /// Test-only variant that injects a synthetic timestamp so tests can
+    /// exercise the rolling window without sleeping.
+    #[cfg(test)]
+    fn apply_error_rescue_at(
+        &self,
+        payload: &mut TracerPayloadCollection,
+        config: &Config,
+        now_unix_secs: i64,
+    ) {
+        let mut sampler = self.lock_sampler();
+        if sampler.is_disabled() {
+            return;
+        }
+        self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
+    }
+
+    fn rescue_with_sampler(
+        &self,
+        payload: &mut TracerPayloadCollection,
+        config: &Config,
+        now_unix_secs: i64,
+        sampler: &mut ErrorsSampler,
+    ) {
+        let TracerPayloadCollection::V07(tracer_payloads) = payload else {
+            return;
+        };
         for tracer_payload in tracer_payloads.iter_mut() {
             // The sampler keys its per-signature rate limits on the env the
             // tracer reported for this payload, falling back to the agent's
             // configured env, consistent with how stats are flushed.
             let env: &str = resolve_payload_env(&tracer_payload.env, &config.env);
             for chunk in tracer_payload.chunks.iter_mut() {
-                sample_and_stamp(&mut sampler, chunk, env, now_unix_secs);
+                sample_and_stamp(sampler, chunk, env, now_unix_secs);
             }
         }
     }
@@ -437,10 +465,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
         // the newly inserted metric is included in the recomputed outbound size. It is
         // gated on agent stats computation: without it, P0 chunks are not expected here.
         if config.agent_stats_computation_enabled {
-            let now_unix_secs = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs() as i64);
-            self.apply_error_rescue(&mut payload, &config, now_unix_secs);
+            self.apply_error_rescue(&mut payload, &config);
         }
 
         let pieces: Vec<(TracerPayloadCollection, usize)> = match payload {
@@ -1113,7 +1138,7 @@ mod tests {
             chunks,
             ..Default::default()
         }]);
-        processor.apply_error_rescue(&mut payload, config, now_unix_secs);
+        processor.apply_error_rescue_at(&mut payload, config, now_unix_secs);
         match payload {
             TracerPayloadCollection::V07(mut payloads) => payloads.remove(0).chunks,
             _ => unreachable!(),
