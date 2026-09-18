@@ -661,6 +661,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "datadog-agent-trace-sampler",
  "datadog-fips",
  "duplicate",
  "flate2",
