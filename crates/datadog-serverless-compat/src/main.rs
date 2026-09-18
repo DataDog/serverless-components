@@ -186,6 +186,7 @@ pub async fn main() {
 
     let trace_processor = Arc::new(trace_processor::ServerlessTraceProcessor::new(
         stats_concentrator.as_ref().map(|c| c.handle.clone()),
+        trace_processor::ServerlessTraceProcessor::new_error_sampler(&config),
     ));
 
     let stats_flusher = Arc::new(stats_flusher::ServerlessStatsFlusher {
