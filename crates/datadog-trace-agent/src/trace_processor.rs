@@ -1361,6 +1361,7 @@ mod tests {
         let start = get_current_timestamp_nanos();
         let mut json_span = create_test_json_span(11, 222, 333, start, true);
         // Root span with an error and an automatic-drop priority: eligible.
+        json_span["error"] = serde_json::json!(1);
         json_span["metrics"]["_sampling_priority_v1"] = serde_json::json!(0.0);
         let bytes = rmp_serde::to_vec(&vec![vec![json_span]]).unwrap();
         let request = Request::builder()
@@ -1768,6 +1769,7 @@ mod tests {
 
         let start = get_current_timestamp_nanos();
         let mut json_span = create_test_json_span(11, 222, 333, start, true);
+        json_span["error"] = serde_json::json!(1);
         json_span["metrics"]["_sampling_priority_v1"] = serde_json::json!(0.0);
         let bytes = rmp_serde::to_vec(&vec![vec![json_span]]).unwrap();
         let request = Request::builder()
