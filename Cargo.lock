@@ -712,6 +712,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "datadog-agent-trace-sampler",
  "datadog-fips",
  "datadog-mock-intake",
  "duplicate",
