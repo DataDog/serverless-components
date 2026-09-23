@@ -66,6 +66,7 @@ pub struct Config<E: ConfigExtension = NoExtension> {
     pub dd_url: String,
     pub url: String,
     pub additional_endpoints: HashMap<String, Vec<String>>,
+    pub additional_endpoints_secret_arn: String,
 
     // Unified Service Tagging
     pub env: Option<String>,
@@ -84,6 +85,7 @@ pub struct Config<E: ConfigExtension = NoExtension> {
     pub logs_config_use_compression: bool,
     pub logs_config_compression_level: i32,
     pub logs_config_additional_endpoints: Vec<LogsAdditionalEndpoint>,
+    pub logs_config_additional_endpoints_secret_arn: String,
     pub observability_pipelines_worker_logs_enabled: bool,
     pub observability_pipelines_worker_logs_url: String,
 
@@ -98,6 +100,7 @@ pub struct Config<E: ConfigExtension = NoExtension> {
     pub apm_config_compression_level: i32,
     pub apm_features: Vec<String>,
     pub apm_additional_endpoints: HashMap<String, Vec<String>>,
+    pub apm_additional_endpoints_secret_arn: String,
     pub apm_filter_tags_require: Option<Vec<String>>,
     pub apm_filter_tags_reject: Option<Vec<String>>,
     pub apm_filter_tags_regex_require: Option<Vec<String>>,
@@ -184,6 +187,7 @@ impl<E: ConfigExtension> Default for Config<E> {
             dd_url: String::default(),
             url: String::default(),
             additional_endpoints: HashMap::new(),
+            additional_endpoints_secret_arn: String::default(),
 
             // Unified Service Tagging
             env: None,
@@ -200,6 +204,7 @@ impl<E: ConfigExtension> Default for Config<E> {
             logs_config_use_compression: true,
             logs_config_compression_level: 3,
             logs_config_additional_endpoints: Vec::new(),
+            logs_config_additional_endpoints_secret_arn: String::default(),
             observability_pipelines_worker_logs_enabled: false,
             observability_pipelines_worker_logs_url: String::default(),
 
@@ -212,6 +217,7 @@ impl<E: ConfigExtension> Default for Config<E> {
             apm_config_compression_level: 3,
             apm_features: vec![],
             apm_additional_endpoints: HashMap::new(),
+            apm_additional_endpoints_secret_arn: String::default(),
             apm_filter_tags_require: None,
             apm_filter_tags_reject: None,
             apm_filter_tags_regex_require: None,

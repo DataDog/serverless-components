@@ -108,6 +108,13 @@ pub struct EnvConfig {
     /// <https://docs.datadoghq.com/agent/configuration/dual-shipping/?tab=helm#environment-variable-configuration>
     #[serde(deserialize_with = "deserialize_additional_endpoints")]
     pub additional_endpoints: HashMap<String, Vec<String>>,
+    /// @env `DD_ADDITIONAL_ENDPOINTS_SECRET_ARN`
+    ///
+    /// ARN of an AWS Secrets Manager secret whose content is the same JSON
+    /// shape as `DD_ADDITIONAL_ENDPOINTS`.
+    /// <https://docs.datadoghq.com/serverless/aws_lambda/configuration/?tab=awssecretsmanager#send-telemetry-to-multiple-datadog-organizations>
+    #[serde(deserialize_with = "deserialize_optional_string")]
+    pub additional_endpoints_secret_arn: Option<String>,
 
     // Unified Service Tagging
     /// @env `DD_ENV`
@@ -169,6 +176,13 @@ pub struct EnvConfig {
     /// <https://docs.datadoghq.com/agent/configuration/dual-shipping/?tab=helm#environment-variable-configuration-6>
     #[serde(deserialize_with = "deserialize_logs_additional_endpoints")]
     pub logs_config_additional_endpoints: Vec<LogsAdditionalEndpoint>,
+    /// @env `DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS_SECRET_ARN`
+    ///
+    /// ARN of an AWS Secrets Manager secret whose content is the same JSON
+    /// shape as `DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS`.
+    /// <https://docs.datadoghq.com/serverless/aws_lambda/configuration/?tab=awssecretsmanager#send-telemetry-to-multiple-datadog-organizations>
+    #[serde(deserialize_with = "deserialize_optional_string")]
+    pub logs_config_additional_endpoints_secret_arn: Option<String>,
 
     /// @env `DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED`
     /// When true, emit plain json suitable for Observability Pipelines
@@ -225,6 +239,13 @@ pub struct EnvConfig {
     /// <https://docs.datadoghq.com/agent/configuration/dual-shipping/?tab=helm#environment-variable-configuration-1>
     #[serde(deserialize_with = "deserialize_additional_endpoints")]
     pub apm_additional_endpoints: HashMap<String, Vec<String>>,
+    /// @env `DD_APM_ADDITIONAL_ENDPOINTS_SECRET_ARN`
+    ///
+    /// ARN of an AWS Secrets Manager secret whose content is the same JSON
+    /// shape as `DD_APM_ADDITIONAL_ENDPOINTS`.
+    /// <https://docs.datadoghq.com/serverless/aws_lambda/configuration/?tab=awssecretsmanager#send-telemetry-to-multiple-datadog-organizations>
+    #[serde(deserialize_with = "deserialize_optional_string")]
+    pub apm_additional_endpoints_secret_arn: Option<String>,
     /// @env `DD_APM_FILTER_TAGS_REQUIRE`
     ///
     /// Space-separated list of key:value tag pairs that spans must match to be kept.
@@ -404,6 +425,7 @@ fn merge_config<E: ConfigExtension>(config: &mut Config<E>, env_config: &EnvConf
     merge_string!(config, env_config, dd_url);
     merge_string!(config, env_config, url);
     merge_hashmap!(config, env_config, additional_endpoints);
+    merge_string!(config, env_config, additional_endpoints_secret_arn);
 
     merge_option_to_value!(config, env_config, compression_level);
 
@@ -420,6 +442,11 @@ fn merge_config<E: ConfigExtension>(config: &mut Config<E>, env_config: &EnvConf
     );
     merge_option_to_value!(config, env_config, logs_config_compression_level);
     merge_vec!(config, env_config, logs_config_additional_endpoints);
+    merge_string!(
+        config,
+        env_config,
+        logs_config_additional_endpoints_secret_arn
+    );
     merge_option_to_value!(
         config,
         env_config,
@@ -450,6 +477,7 @@ fn merge_config<E: ConfigExtension>(config: &mut Config<E>, env_config: &EnvConf
     merge_option_to_value!(config, env_config, apm_config_compression_level);
     merge_vec!(config, env_config, apm_features);
     merge_hashmap!(config, env_config, apm_additional_endpoints);
+    merge_string!(config, env_config, apm_additional_endpoints_secret_arn);
     merge_option!(config, env_config, apm_filter_tags_require);
     merge_option!(config, env_config, apm_filter_tags_reject);
     merge_option!(config, env_config, apm_filter_tags_regex_require);
@@ -741,6 +769,18 @@ mod tests {
                 "keep",
             ),
             ("DD_OTLP_CONFIG_METRICS_SUMMARIES_MODE", "noquantiles"),
+            (
+                "DD_ADDITIONAL_ENDPOINTS_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-additional-endpoints",
+            ),
+            (
+                "DD_APM_ADDITIONAL_ENDPOINTS_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-apm-additional-endpoints",
+            ),
+            (
+                "DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-logs-additional-endpoints",
+            ),
         ];
 
         // Programmatic guard: count `pub ` fields in the EnvConfig struct from
@@ -812,6 +852,15 @@ mod tests {
             expected.otlp_config_metrics_sums_initial_cumulativ_monotonic_value =
                 Some("keep".to_string());
             expected.otlp_config_metrics_summaries_mode = Some("noquantiles".to_string());
+            expected.additional_endpoints_secret_arn =
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-additional-endpoints"
+                    .to_string();
+            expected.apm_additional_endpoints_secret_arn =
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-apm-additional-endpoints"
+                    .to_string();
+            expected.logs_config_additional_endpoints_secret_arn =
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-logs-additional-endpoints"
+                    .to_string();
 
             assert_eq!(config, expected);
             Ok(())
@@ -844,6 +893,10 @@ mod tests {
                 "DD_ADDITIONAL_ENDPOINTS",
                 "{\"https://app.datadoghq.com\": [\"apikey2\", \"apikey3\"], \"https://app.datadoghq.eu\": [\"apikey4\"]}",
             );
+            jail.set_env(
+                "DD_ADDITIONAL_ENDPOINTS_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-additional-endpoints",
+            );
 
             // Unified Service Tagging
             jail.set_env("DD_ENV", "test-env");
@@ -865,6 +918,10 @@ mod tests {
                 "DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS",
                 "[{\"api_key\": \"apikey2\", \"Host\": \"agent-http-intake.logs.datadoghq.com\", \"Port\": 443, \"is_reliable\": true}]",
             );
+            jail.set_env(
+                "DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-logs-additional-endpoints",
+            );
 
             // APM
             jail.set_env("DD_SERVICE_MAPPING", "old-service:new-service");
@@ -885,6 +942,10 @@ mod tests {
                 "enable_otlp_compute_top_level_by_span_kind,enable_stats_by_span_kind",
             );
             jail.set_env("DD_APM_ADDITIONAL_ENDPOINTS", "{\"https://trace.agent.datadoghq.com\": [\"apikey2\", \"apikey3\"], \"https://trace.agent.datadoghq.eu\": [\"apikey4\"]}");
+            jail.set_env(
+                "DD_APM_ADDITIONAL_ENDPOINTS_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-apm-additional-endpoints",
+            );
             jail.set_env("DD_APM_FILTER_TAGS_REQUIRE", "env:production service:api");
             jail.set_env("DD_APM_FILTER_TAGS_REJECT", "debug:true env:test");
             jail.set_env(
@@ -992,6 +1053,9 @@ mod tests {
                         vec!["apikey4".to_string()],
                     ),
                 ]),
+                additional_endpoints_secret_arn:
+                    "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-additional-endpoints"
+                        .to_string(),
                 env: Some("test-env".to_string()),
                 service: Some("test-service".to_string()),
                 version: Some("1.0.0".to_string()),
@@ -1015,6 +1079,9 @@ mod tests {
                     port: 443,
                     is_reliable: true,
                 }],
+                logs_config_additional_endpoints_secret_arn:
+                    "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-logs-additional-endpoints"
+                        .to_string(),
                 observability_pipelines_worker_logs_enabled: false,
                 observability_pipelines_worker_logs_url: String::default(),
                 service_mapping: HashMap::from([(
@@ -1045,6 +1112,9 @@ mod tests {
                         vec!["apikey4".to_string()],
                     ),
                 ]),
+                apm_additional_endpoints_secret_arn:
+                    "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-apm-additional-endpoints"
+                        .to_string(),
                 apm_filter_tags_require: Some(vec![
                     "env:production".to_string(),
                     "service:api".to_string(),
@@ -1207,6 +1277,65 @@ mod tests {
             assert_eq!(config.dogstatsd_so_rcvbuf, None);
             assert_eq!(config.dogstatsd_buffer_size, None);
             assert_eq!(config.dogstatsd_queue_size, None);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_additional_endpoints_secret_arn_defaults_to_empty_when_unset() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            let mut config: Config = Config::default();
+            EnvConfigSource
+                .load(&mut config)
+                .expect("Failed to load config");
+
+            assert!(config.additional_endpoints_secret_arn.is_empty());
+            assert!(config.apm_additional_endpoints_secret_arn.is_empty());
+            assert!(
+                config
+                    .logs_config_additional_endpoints_secret_arn
+                    .is_empty()
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_additional_endpoints_secret_arn_from_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env(
+                "DD_ADDITIONAL_ENDPOINTS_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-metrics",
+            );
+            jail.set_env(
+                "DD_APM_ADDITIONAL_ENDPOINTS_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-apm",
+            );
+            jail.set_env(
+                "DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS_SECRET_ARN",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-logs",
+            );
+
+            let mut config: Config = Config::default();
+            EnvConfigSource
+                .load(&mut config)
+                .expect("Failed to load config");
+
+            assert_eq!(
+                config.additional_endpoints_secret_arn,
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-metrics"
+            );
+            assert_eq!(
+                config.apm_additional_endpoints_secret_arn,
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-apm"
+            );
+            assert_eq!(
+                config.logs_config_additional_endpoints_secret_arn,
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:dd-logs"
+            );
             Ok(())
         });
     }

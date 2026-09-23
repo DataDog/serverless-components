@@ -1061,6 +1061,7 @@ otlp_config:
                         vec!["apikey4".to_string()],
                     ),
                 ]),
+                additional_endpoints_secret_arn: String::new(),
                 env: Some("test-env".to_string()),
                 service: Some("test-service".to_string()),
                 version: Some("1.0.0".to_string()),
@@ -1084,6 +1085,7 @@ otlp_config:
                     port: 443,
                     is_reliable: true,
                 }],
+                logs_config_additional_endpoints_secret_arn: String::new(),
                 observability_pipelines_worker_logs_enabled: false,
                 observability_pipelines_worker_logs_url: String::default(),
                 service_mapping: HashMap::from([(
@@ -1109,6 +1111,7 @@ otlp_config:
                         vec!["apikey4".to_string()],
                     ),
                 ]),
+                apm_additional_endpoints_secret_arn: String::new(),
                 trace_propagation_style: vec![TracePropagationStyle::Datadog],
                 trace_propagation_style_extract: vec![TracePropagationStyle::TraceContext],
                 trace_propagation_extract_first: true,
