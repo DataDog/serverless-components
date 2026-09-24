@@ -184,12 +184,6 @@ impl ServerlessTraceProcessor {
     /// payload and the backend discards them.
     ///
     fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
-        let mut sampler = self.lock_sampler();
-        // Skip all view construction when the sampler is disabled by config
-        // (target_tps <= 0): nothing can be rescued.
-        if sampler.is_disabled() {
-            return;
-        }
         // Read the clock while holding the sampler lock so that concurrent
         // requests deliver timestamps in lock-acquisition order, and clamp so a
         // backward wall-clock step cannot move the sampler's rolling window
@@ -198,12 +192,14 @@ impl ServerlessTraceProcessor {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         let now_unix_secs = self.clamp_sampler_timestamp(now_unix_secs);
-        self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
+        self.apply_error_rescue_at(payload, config, now_unix_secs);
     }
 
-    /// Test-only variant that injects a synthetic timestamp so tests can
-    /// exercise the rolling window without sleeping.
-    #[cfg(test)]
+    /// Applies the rescue pass for an explicit timestamp, taking the sampler
+    /// lock and skipping all view construction when the sampler is disabled
+    /// by config (target_tps <= 0). Used by `apply_error_rescue` with the
+    /// clamped wall clock, and directly by tests with a synthetic timestamp
+    /// so they can exercise the rolling window without sleeping.
     fn apply_error_rescue_at(
         &self,
         payload: &mut TracerPayloadCollection,
@@ -293,15 +289,15 @@ impl ServerlessTraceProcessor {
     }
 }
 
-/// Chooses the env used to key the error sampler's per-signature rates: the
-/// tracer payload's own env when nonempty, otherwise the agent's configured
-/// env. This matches how stats prefer the payload env and fall back to the
-/// agent config env.
-fn resolve_payload_env<'a>(tracer_payload_env: &'a str, config_env: &'a str) -> &'a str {
-    if tracer_payload_env.is_empty() {
+/// Chooses the env used to key per-signature state: the payload-reported env
+/// when nonempty, otherwise the agent's configured env. Shared by stats
+/// flushing and error-rescue sampling so the fallback rule can't drift
+/// between the two.
+pub(crate) fn resolve_payload_env<'a>(payload_env: &'a str, config_env: &'a str) -> &'a str {
+    if payload_env.is_empty() {
         config_env
     } else {
-        tracer_payload_env
+        payload_env
     }
 }
 
@@ -636,9 +632,7 @@ mod tests {
     }
 
     fn default_error_sampler() -> Arc<std::sync::Mutex<ErrorsSampler>> {
-        Arc::new(std::sync::Mutex::new(ErrorsSampler::new(
-            ErrorSamplerConfig::default(),
-        )))
+        sampler_for(&ErrorSamplerConfig::default())
     }
 
     fn create_test_metadata() -> MiniAgentMetadata {
@@ -1537,18 +1531,7 @@ mod tests {
         // sample rate, views) against direct crate usage.
         let mut standalone = ErrorsSampler::new(sampler_config);
         for (chunk, id) in chunks.iter().zip(&ids) {
-            let views: Vec<SpanView> = chunk
-                .spans
-                .iter()
-                .map(|s| SpanView {
-                    service: &s.service,
-                    name: &s.name,
-                    resource: &s.resource,
-                    error: s.error != 0,
-                    http_status_code: s.meta.get("http.status_code").map(String::as_str),
-                    error_type: s.meta.get("error.type").map(String::as_str),
-                })
-                .collect();
+            let views: Vec<SpanView> = chunk.spans.iter().map(super::span_view).collect();
             let trace = equivalent_trace_view(chunk, &config.env, &views);
             let expected = standalone.sample(RESCUE_NOW, &trace);
             let actual = match errors_sr(root(chunk)) {
