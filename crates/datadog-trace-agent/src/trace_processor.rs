@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use async_trait::async_trait;
+use datadog_agent_trace_sampler::{ErrorsSampler, SampleDecision, SpanView, TraceView};
 use http_body_util::BodyExt;
 use hyper::{StatusCode, http};
 use libdd_common::http_common;
 use libdd_library_config::tracer_metadata::TracerMetadata;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, warn};
 
@@ -26,6 +30,12 @@ use crate::{
 };
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
+
+/// The root-span metric the backend uses to rescue traces the ordinary P0 drop
+/// would discard: a positive `_dd.errors_sr` resolves the chunk's ingestion
+/// reason to `error`, which is retained at low priority without any priority
+/// promotion.
+const ERRORS_SR_METRIC_KEY: &str = "_dd.errors_sr";
 
 /// Rough upper bound on the protobuf framing overhead added when a V07 `TracerPayload` is
 /// wrapped in the outer `AgentPayload` envelope before being sent
@@ -124,14 +134,118 @@ const MAX_IN_FLIGHT_ENQUEUES: usize = 10;
 pub struct ServerlessTraceProcessor {
     pub stats_concentrator: Option<StatsConcentratorHandle>,
     enqueue_permits: Arc<tokio::sync::Semaphore>,
+    /// Shared error rescue sampler. The `Arc` means processor clones (one per
+    /// connection) share a single sampler state and TPS budget for the whole
+    /// process lifetime.
+    error_sampler: Arc<Mutex<ErrorsSampler>>,
+    /// Last timestamp handed to the sampler, shared across clones. Clamps the
+    /// clock so a backward wall-clock step cannot move sampler bucket IDs
+    /// backwards. Updated only under the sampler lock.
+    last_sampler_timestamp: Arc<AtomicI64>,
 }
 
 impl ServerlessTraceProcessor {
     #[allow(clippy::must_use_candidate)]
-    pub fn new(stats_concentrator: Option<StatsConcentratorHandle>) -> Self {
+    pub fn new(
+        stats_concentrator: Option<StatsConcentratorHandle>,
+        error_sampler: Arc<Mutex<ErrorsSampler>>,
+    ) -> Self {
         ServerlessTraceProcessor {
             stats_concentrator,
             enqueue_permits: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_ENQUEUES)),
+            error_sampler,
+            last_sampler_timestamp: Arc::new(AtomicI64::new(i64::MIN)),
+        }
+    }
+
+    /// Builds the error rescue sampler from parsed config settings.
+    #[must_use]
+    pub fn new_error_sampler(config: &Config) -> Arc<Mutex<ErrorsSampler>> {
+        Arc::new(Mutex::new(ErrorsSampler::new(config.error_sampler)))
+    }
+
+    /// Locks the shared sampler, recovering from a poisoned guard (a panic in
+    /// another thread while holding the lock) instead of panicking on unlock.
+    fn lock_sampler(&self) -> MutexGuard<'_, ErrorsSampler> {
+        self.error_sampler
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Applies the error rescue pass to a payload collection.
+    ///
+    /// For every V07 chunk that would be dropped by the backend's ordinary P0
+    /// drop (chunk priority is exactly 0, i.e. an automatic drop, not an
+    /// explicit user drop or the no-priority sentinel) and contains at least
+    /// one span with a non-zero error flag, consults the shared error sampler.
+    /// On a keep, stamps the sampler's `_dd.errors_sr` on the chunk's root
+    /// span; the backend keeps such chunks without any priority promotion.
+    /// Chunks are never removed or reordered: unrescued chunks stay in the
+    /// payload and the backend discards them.
+    ///
+    fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
+        let mut sampler = self.lock_sampler();
+        // Skip all view construction when the sampler is disabled by config
+        // (target_tps <= 0): nothing can be rescued.
+        if sampler.is_disabled() {
+            return;
+        }
+        // Read the clock while holding the sampler lock so that concurrent
+        // requests deliver timestamps in lock-acquisition order, and clamp so a
+        // backward wall-clock step cannot move the sampler's rolling window
+        // backwards, which would undercount TPS and rescue too many chunks.
+        let now_unix_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let now_unix_secs = self.clamp_sampler_timestamp(now_unix_secs);
+        self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
+    }
+
+    /// Test-only variant that injects a synthetic timestamp so tests can
+    /// exercise the rolling window without sleeping.
+    #[cfg(test)]
+    fn apply_error_rescue_at(
+        &self,
+        payload: &mut TracerPayloadCollection,
+        config: &Config,
+        now_unix_secs: i64,
+    ) {
+        let mut sampler = self.lock_sampler();
+        if sampler.is_disabled() {
+            return;
+        }
+        self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
+    }
+
+    /// Clamps the timestamp so it never moves backwards relative to the last
+    /// one handed to the shared sampler, and records it as the new floor. Must
+    /// be called while holding the sampler lock, alongside the clock read, so
+    /// concurrent requests cannot interleave a read with the clamp.
+    fn clamp_sampler_timestamp(&self, now_unix_secs: i64) -> i64 {
+        let previous = self
+            .last_sampler_timestamp
+            .fetch_max(now_unix_secs, Ordering::Relaxed);
+        now_unix_secs.max(previous)
+    }
+
+    fn rescue_with_sampler(
+        &self,
+        payload: &mut TracerPayloadCollection,
+        config: &Config,
+        now_unix_secs: i64,
+        sampler: &mut ErrorsSampler,
+    ) {
+        let TracerPayloadCollection::V07(tracer_payloads) = payload else {
+            return;
+        };
+        for tracer_payload in tracer_payloads.iter_mut() {
+            // The sampler keys its per-signature rate limits on the env the
+            // tracer reported for this payload, falling back to the agent's
+            // configured env, consistent with how stats are flushed.
+            let env: &str = resolve_payload_env(&tracer_payload.env, &config.env);
+            for chunk in tracer_payload.chunks.iter_mut() {
+                sample_and_stamp(sampler, chunk, env, now_unix_secs);
+            }
         }
     }
 
@@ -176,6 +290,88 @@ impl ServerlessTraceProcessor {
             };
             error!("Unsupported tracer payload version {version}. Failed to send trace stats.");
         }
+    }
+}
+
+/// Chooses the env used to key per-signature state: the payload-reported env
+/// when nonempty, otherwise the agent's configured env. Shared by stats
+/// flushing and error-rescue sampling so the fallback rule can't drift
+/// between the two.
+pub(crate) fn resolve_payload_env<'a>(payload_env: &'a str, config_env: &'a str) -> &'a str {
+    if payload_env.is_empty() {
+        config_env
+    } else {
+        payload_env
+    }
+}
+
+/// Builds the sampler's read-only view of a span from its already enriched and
+/// obfuscated fields.
+fn span_view(span: &pb::Span) -> SpanView<'_> {
+    SpanView {
+        service: &span.service,
+        name: &span.name,
+        resource: &span.resource,
+        error: span.error != 0,
+        http_status_code: span.meta.get("http.status_code").map(String::as_str),
+        error_type: span.meta.get("error.type").map(String::as_str),
+    }
+}
+
+/// Consults the error sampler for one chunk and, on a keep, stamps the
+/// sampler's `_dd.errors_sr` value on the chunk's root span.
+///
+/// Only automatic-drop chunks are candidates: chunk priority must be exactly 0.
+/// Explicit user drops (-1), other negative priorities, positive priorities,
+/// and the no-priority sentinel (`i8::MIN`) are all left untouched. The chunk
+/// must contain at least one span with a non-zero error flag; HTTP status or
+/// error metadata alone does not qualify. The root is resolved with
+/// `get_root_span_index`: empty chunks are left unchanged, and non-empty
+/// chunks always resolve a root, falling back to the last span when no span
+/// has `parent_id 0` (e.g. a cyclic chunk). Chunks are never removed here: on
+/// a Drop decision the unrescued chunk is forwarded as-is and the backend's
+/// ordinary P0 drop handles it.
+fn sample_and_stamp(
+    sampler: &mut ErrorsSampler,
+    chunk: &mut pb::TraceChunk,
+    env: &str,
+    now_unix_secs: i64,
+) {
+    if chunk.priority != 0 {
+        return;
+    }
+    // An error anywhere in the chunk makes it a rescue candidate, not just an
+    // error on the root span. Checked before the root-span search because
+    // non-errored chunks are the common case on this path.
+    if !chunk.spans.iter().any(|span| span.error != 0) {
+        return;
+    }
+    let Ok(root_index) = trace_utils::get_root_span_index(&chunk.spans) else {
+        // No identifiable root span: leave the chunk unchanged rather than
+        // guessing an index.
+        return;
+    };
+
+    let Some(root) = chunk.spans.get(root_index) else {
+        return;
+    };
+    let views: Vec<SpanView> = chunk.spans.iter().map(span_view).collect();
+    let trace = TraceView {
+        env,
+        trace_id: root.trace_id,
+        root_index,
+        // The raw `_sample_rate` wire value is passed through: the shared
+        // sampler sanitizes non-finite or out-of-range rates to 1.0 itself.
+        root_global_sample_rate: root.metrics.get("_sample_rate").copied().unwrap_or(1.0),
+        spans: &views,
+    };
+    let decision = sampler.sample(now_unix_secs, &trace);
+
+    if let SampleDecision::Keep { errors_sr } = decision
+        && let Some(root) = chunk.spans.get_mut(root_index)
+    {
+        root.metrics
+            .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
     }
 }
 
@@ -282,6 +478,14 @@ impl TraceProcessor for ServerlessTraceProcessor {
             Self::send_to_concentrator(concentrator, &payload);
         }
 
+        // Error rescue runs after stats submission so the concentrator observes every
+        // submitted chunk exactly as the tracer sent it, and before payload splitting so
+        // the newly inserted metric is included in the recomputed outbound size. It is
+        // gated on agent stats computation: without it, P0 chunks are not expected here.
+        if config.agent_stats_computation_enabled {
+            self.apply_error_rescue(&mut payload, &config);
+        }
+
         let pieces: Vec<(TracerPayloadCollection, usize)> = match payload {
             TracerPayloadCollection::V07(payloads) => {
                 let split_budget =
@@ -360,6 +564,9 @@ mod tests {
             encoded_size, split_oversized_payloads,
         },
     };
+    use datadog_agent_trace_sampler::{
+        ErrorSamplerConfig, ErrorSamplerMode, ErrorsSampler, SampleDecision, SpanView, TraceView,
+    };
     use libdd_common::{Endpoint, http_common};
     use libdd_trace_protobuf::pb;
     use libdd_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
@@ -424,7 +631,12 @@ mod tests {
             additional_metric_tags: vec![],
             additional_metric_tags_cardinality_limit: None,
             agent_stats_computation_enabled: false,
+            error_sampler: ErrorSamplerConfig::default(),
         }
+    }
+
+    fn default_error_sampler() -> Arc<std::sync::Mutex<ErrorsSampler>> {
+        sampler_for(&ErrorSamplerConfig::default())
     }
 
     fn create_test_metadata() -> MiniAgentMetadata {
@@ -542,7 +754,8 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
+        let trace_processor =
+            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -615,7 +828,8 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
+        let trace_processor =
+            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -701,7 +915,8 @@ mod tests {
             .body(http_common::Body::from(bytes))
             .unwrap();
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
+        let trace_processor =
+            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -759,7 +974,8 @@ mod tests {
             Receiver<trace_utils::SendData>,
         ) = mpsc::channel(1);
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
+        let trace_processor =
+            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
         let config = Arc::new(Config {
             enqueue_permit_timeout_secs: 0,
             ..create_test_config()
@@ -827,7 +1043,8 @@ mod tests {
             Receiver<trace_utils::SendData>,
         ) = mpsc::channel(MAX_IN_FLIGHT_ENQUEUES + 1);
 
-        let trace_processor = trace_processor::ServerlessTraceProcessor::new(None);
+        let trace_processor =
+            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
         // Uses the default (non-zero) enqueue_permit_timeout_secs, so the 11th request's permit
         // acquire has real time to succeed once an earlier request's send completes and
         // releases its permit, rather than racing a 0-second timeout against task scheduling.
@@ -867,5 +1084,778 @@ mod tests {
             "expected every request's permit to be released after its send completed, \
              allowing all of them to succeed rather than shedding load"
         );
+    }
+
+    // ---- Error rescue tests ----
+
+    const RESCUE_NOW: i64 = 1_700_000_000;
+
+    fn test_span(trace_id: u64, span_id: u64, parent_id: u64, error: i32) -> pb::Span {
+        pb::Span {
+            service: "test-service".to_string(),
+            name: "test-operation".to_string(),
+            resource: "GET /test".to_string(),
+            trace_id,
+            span_id,
+            parent_id,
+            error,
+            ..Default::default()
+        }
+    }
+
+    fn test_chunk(spans: Vec<pb::Span>, priority: i32) -> pb::TraceChunk {
+        pb::TraceChunk {
+            spans,
+            priority,
+            ..Default::default()
+        }
+    }
+
+    fn errored_root_chunk(trace_id: u64, priority: i32) -> pb::TraceChunk {
+        test_chunk(vec![test_span(trace_id, trace_id + 1, 0, 1)], priority)
+    }
+
+    fn rescue_config(error_sampler: ErrorSamplerConfig) -> Config {
+        Config {
+            agent_stats_computation_enabled: true,
+            env: "agent-env".to_string(),
+            error_sampler,
+            ..create_test_config()
+        }
+    }
+
+    fn always_keep_sampler_config() -> ErrorSamplerConfig {
+        ErrorSamplerConfig {
+            mode: ErrorSamplerMode::AlwaysKeep,
+            target_tps: 10.0,
+            extra_sample_rate: 1.0,
+        }
+    }
+
+    fn rate_limited_sampler_config(target_tps: f64) -> ErrorSamplerConfig {
+        ErrorSamplerConfig {
+            mode: ErrorSamplerMode::RateLimited,
+            target_tps,
+            extra_sample_rate: 1.0,
+        }
+    }
+
+    fn sampler_for(config: &ErrorSamplerConfig) -> Arc<std::sync::Mutex<ErrorsSampler>> {
+        Arc::new(std::sync::Mutex::new(ErrorsSampler::new(*config)))
+    }
+
+    fn run_rescue(
+        processor: &trace_processor::ServerlessTraceProcessor,
+        config: &Config,
+        chunks: Vec<pb::TraceChunk>,
+        now_unix_secs: i64,
+    ) -> Vec<pb::TraceChunk> {
+        let mut payload = TracerPayloadCollection::V07(vec![pb::TracerPayload {
+            chunks,
+            ..Default::default()
+        }]);
+        processor.apply_error_rescue_at(&mut payload, config, now_unix_secs);
+        match payload {
+            TracerPayloadCollection::V07(mut payloads) => payloads.remove(0).chunks,
+            _ => unreachable!(),
+        }
+    }
+
+    fn root(chunk: &pb::TraceChunk) -> &pb::Span {
+        // All fixtures in this section place the root first or resolve it the
+        // same way the processor does.
+        &chunk.spans[0]
+    }
+
+    fn errors_sr(span: &pb::Span) -> Option<f64> {
+        span.metrics.get("_dd.errors_sr").copied()
+    }
+
+    /// Builds the equivalent standalone `TraceView` for a fixture chunk, used to
+    /// compare adapter decisions with direct shared-sampler usage.
+    fn equivalent_trace_view<'a>(
+        chunk: &pb::TraceChunk,
+        env: &'a str,
+        views: &'a [SpanView<'a>],
+    ) -> TraceView<'a> {
+        let root_index = trace_utils::get_root_span_index(&chunk.spans).unwrap();
+        let root = &chunk.spans[root_index];
+        TraceView {
+            env,
+            trace_id: root.trace_id,
+            root_index,
+            root_global_sample_rate: root.metrics.get("_sample_rate").copied().unwrap_or(1.0),
+            spans: views,
+        }
+    }
+
+    #[test]
+    fn test_rescue_stamps_errored_p0_root_and_keeps_priority() {
+        let config = rescue_config(always_keep_sampler_config());
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        let chunks = run_rescue(
+            &processor,
+            &config,
+            vec![errored_root_chunk(0xdead_beef, 0)],
+            RESCUE_NOW,
+        );
+
+        assert_eq!(chunks.len(), 1, "rescued chunk must still be forwarded");
+        assert_eq!(chunks[0].priority, 0, "priority must not be promoted");
+        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
+    }
+
+    #[test]
+    fn test_rescue_stamps_actual_root_when_error_is_on_child() {
+        let config = rescue_config(always_keep_sampler_config());
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        // Healthy root first, errored child second: only the root may be stamped.
+        let spans = vec![
+            test_span(0xfeed, 0x101, 0, 0),
+            test_span(0xfeed, 0x102, 0x101, 1),
+        ];
+        let chunks = run_rescue(&processor, &config, vec![test_chunk(spans, 0)], RESCUE_NOW);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(errors_sr(&chunks[0].spans[0]), Some(1.0), "root stamped");
+        assert_eq!(
+            errors_sr(&chunks[0].spans[1]),
+            None,
+            "errored child must not be stamped"
+        );
+    }
+
+    #[test]
+    fn test_rescue_uses_resolved_root_not_first_span() {
+        let config = rescue_config(always_keep_sampler_config());
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        // Root (parent_id 0) appears last; the first span is a child.
+        let spans = vec![
+            test_span(0xbeef, 0x201, 0x203, 0),
+            test_span(0xbeef, 0x202, 0x203, 1),
+            test_span(0xbeef, 0x203, 0, 0),
+        ];
+        let chunks = run_rescue(&processor, &config, vec![test_chunk(spans, 0)], RESCUE_NOW);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            errors_sr(&chunks[0].spans[2]),
+            Some(1.0),
+            "the resolved root (last span) must be stamped"
+        );
+        assert_eq!(errors_sr(&chunks[0].spans[0]), None);
+        assert_eq!(errors_sr(&chunks[0].spans[1]), None);
+    }
+
+    #[test]
+    fn test_no_error_flags_leaves_chunk_unchanged_and_spends_no_budget() {
+        // With RateLimited, counting is global across signatures via
+        // `all_sigs_seen`, so if the healthy chunks below were wrongly fed to
+        // the sampler, the final errored chunk's rate would drop below 1.0 and
+        // it would not be stamped with 1.0. Correct behavior: only errored
+        // chunks reach the sampler, so the errored chunk is the first count and
+        // is kept at rate 1.0.
+        let config = rescue_config(rate_limited_sampler_config(1.0));
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        let mut chunks = Vec::new();
+        for i in 0..9_u64 {
+            chunks.push(errored_root_chunk(0xa000 + i, 0));
+            // Strip the error flag: healthy P0 chunk with a distinct signature.
+            chunks.last_mut().unwrap().spans[0].error = 0;
+        }
+        chunks.push(errored_root_chunk(0xb000, 0));
+
+        let chunks = run_rescue(&processor, &config, chunks, RESCUE_NOW);
+
+        for (i, chunk) in chunks.iter().enumerate() {
+            let is_last = i == chunks.len() - 1;
+            assert_eq!(
+                errors_sr(root(chunk)),
+                if is_last { Some(1.0) } else { None },
+                "chunk {i}: only the errored chunk may be rescued"
+            );
+        }
+    }
+
+    #[test]
+    fn test_http_500_metadata_alone_is_not_an_error() {
+        let config = rescue_config(always_keep_sampler_config());
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        let mut span = test_span(0xc0de, 0xc0de + 1, 0, 0);
+        span.meta
+            .insert("http.status_code".to_string(), "500".to_string());
+        span.meta
+            .insert("error.type".to_string(), "Error".to_string());
+
+        let chunks = run_rescue(
+            &processor,
+            &config,
+            vec![test_chunk(vec![span], 0)],
+            RESCUE_NOW,
+        );
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(errors_sr(root(&chunks[0])), None);
+    }
+
+    #[test]
+    fn test_non_automatic_drop_priorities_are_never_rescued() {
+        let config = rescue_config(always_keep_sampler_config());
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        // -1 (explicit user drop), other negatives, positive priorities, and
+        // the no-priority sentinel (i8::MIN) are all out of scope.
+        let priorities = [-1_i32, -5, 1, 2, i8::MIN as i32];
+        let chunks = run_rescue(
+            &processor,
+            &config,
+            priorities
+                .iter()
+                .map(|p| errored_root_chunk(0x1000_u64 + (*p).unsigned_abs() as u64, *p))
+                .collect(),
+            RESCUE_NOW,
+        );
+
+        for chunk in &chunks {
+            assert_eq!(
+                errors_sr(root(chunk)),
+                None,
+                "priority {} must not be rescued",
+                chunk.priority
+            );
+        }
+    }
+
+    #[test]
+    fn test_empty_chunk_does_not_panic_and_stays_unchanged() {
+        let config = rescue_config(always_keep_sampler_config());
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        // An empty chunk cannot be scored: root resolution fails and it must be
+        // left unchanged without panicking. For non-empty chunks,
+        // `get_root_span_index` always resolves (falling back to the last span
+        // when no span has parent_id 0), so the cyclic chunk below exercises
+        // the fallback path and gets stamped on the resolved fallback root.
+        let cyclic = test_chunk(
+            vec![
+                test_span(0xd00d, 0xd01, 0xd02, 1),
+                test_span(0xd00d, 0xd02, 0xd01, 0),
+            ],
+            0,
+        );
+
+        let chunks = run_rescue(
+            &processor,
+            &config,
+            vec![test_chunk(vec![], 0), cyclic],
+            RESCUE_NOW,
+        );
+
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].spans.is_empty(), "empty chunk unchanged");
+        assert_eq!(
+            errors_sr(&chunks[1].spans[1]),
+            Some(1.0),
+            "fallback root (last span) stamped"
+        );
+        assert_eq!(errors_sr(&chunks[1].spans[0]), None);
+    }
+
+    #[tokio::test]
+    async fn test_rescue_is_noop_when_agent_stats_disabled() {
+        let config = rescue_config(always_keep_sampler_config());
+        let config = Config {
+            agent_stats_computation_enabled: false,
+            ..config
+        };
+        let (tx, mut rx): (
+            Sender<trace_utils::SendData>,
+            tokio::sync::mpsc::Receiver<trace_utils::SendData>,
+        ) = mpsc::channel(1);
+
+        let start = get_current_timestamp_nanos();
+        let mut json_span = create_test_json_span(11, 222, 333, start, true);
+        // Root span with an error and an automatic-drop priority: eligible.
+        json_span["error"] = serde_json::json!(1);
+        json_span["metrics"]["_sampling_priority_v1"] = serde_json::json!(0.0);
+        let bytes = rmp_serde::to_vec(&vec![vec![json_span]]).unwrap();
+        let request = Request::builder()
+            .header("datadog-meta-tracer-version", "4.0.0")
+            .header("datadog-meta-lang", "nodejs")
+            .header("datadog-meta-lang-version", "v19.7.0")
+            .header("datadog-meta-lang-interpreter", "v8")
+            .header("content-length", "100")
+            .body(http_common::Body::from(bytes))
+            .unwrap();
+
+        let trace_processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+        let res = trace_processor
+            .process_traces(
+                Arc::new(config),
+                request,
+                tx,
+                Arc::new(create_test_metadata()),
+            )
+            .await;
+        assert!(res.is_ok());
+
+        let send_data = rx.recv().await.expect("payload forwarded");
+        let payloads = send_data.get_payloads();
+        let TracerPayloadCollection::V07(tracer_payloads) = payloads else {
+            panic!("expected V07 payload");
+        };
+        let chunk = &tracer_payloads[0].chunks[0];
+        assert_eq!(chunk.priority, 0);
+        for span in &chunk.spans {
+            assert_eq!(
+                errors_sr(span),
+                None,
+                "rescue must be a no-op when agent stats computation is disabled"
+            );
+        }
+    }
+
+    #[test]
+    fn test_disabled_tps_disables_rescue_in_both_modes() {
+        for mode in [ErrorSamplerMode::RateLimited, ErrorSamplerMode::AlwaysKeep] {
+            for tps in [0.0_f64, -3.0] {
+                let sampler_config = ErrorSamplerConfig {
+                    mode,
+                    target_tps: tps,
+                    extra_sample_rate: 1.0,
+                };
+                let config = rescue_config(sampler_config);
+                let processor = trace_processor::ServerlessTraceProcessor::new(
+                    None,
+                    sampler_for(&config.error_sampler),
+                );
+
+                let chunks = run_rescue(
+                    &processor,
+                    &config,
+                    vec![errored_root_chunk(0xe000, 0)],
+                    RESCUE_NOW,
+                );
+
+                assert_eq!(chunks.len(), 1, "chunk still forwarded");
+                assert_eq!(
+                    errors_sr(root(&chunks[0])),
+                    None,
+                    "mode {mode:?} tps {tps}: disabled sampler must not rescue"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_always_keep_rescues_every_eligible_chunk() {
+        let config = rescue_config(always_keep_sampler_config());
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        let chunks = run_rescue(
+            &processor,
+            &config,
+            (0..10_u64)
+                .map(|i| errored_root_chunk(0xf000 + i, 0))
+                .collect(),
+            RESCUE_NOW,
+        );
+
+        assert_eq!(chunks.len(), 10);
+        for chunk in &chunks {
+            assert_eq!(errors_sr(root(chunk)), Some(1.0));
+            assert_eq!(chunk.priority, 0);
+        }
+    }
+
+    #[test]
+    fn test_rate_limited_under_sustained_load_keeps_and_rejects() {
+        let sampler_config = rate_limited_sampler_config(10.0);
+        let config = rescue_config(sampler_config);
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        // 100 chunks with the same signature in one 5-second bucket: the
+        // default rate is 10 / (100 / 5) = 0.5, so a deterministic mix of keeps
+        // and rejections is expected. No exact keep count is asserted: the
+        // sampler is an adaptive rolling-window sampler, not a hard token
+        // bucket.
+        let ids: Vec<u64> = (0..100_u64).map(|i| 0x11_0000 + i).collect();
+        let input: Vec<pb::TraceChunk> = ids.iter().map(|id| errored_root_chunk(*id, 0)).collect();
+        let chunks = run_rescue(&processor, &config, input, RESCUE_NOW);
+
+        let keeps = chunks
+            .iter()
+            .filter(|c| errors_sr(root(c)).is_some())
+            .count();
+        let drops = chunks.len() - keeps;
+        assert!(keeps > 0, "expected some keeps, got none");
+        assert!(drops > 0, "expected some drops, got none");
+        assert_eq!(chunks.len(), 100, "every chunk is still forwarded");
+        for chunk in &chunks {
+            assert_eq!(chunk.priority, 0, "priority unchanged on rescue decision");
+        }
+
+        // The same input through a standalone shared sampler must produce the
+        // identical decision sequence, validating the adapter wiring (env,
+        // sample rate, views) against direct crate usage.
+        let mut standalone = ErrorsSampler::new(sampler_config);
+        for (chunk, id) in chunks.iter().zip(&ids) {
+            let views: Vec<SpanView> = chunk.spans.iter().map(super::span_view).collect();
+            let trace = equivalent_trace_view(chunk, &config.env, &views);
+            let expected = standalone.sample(RESCUE_NOW, &trace);
+            let actual = match errors_sr(root(chunk)) {
+                Some(errors_sr) => SampleDecision::Keep { errors_sr },
+                None => SampleDecision::Drop,
+            };
+            assert_eq!(actual, expected, "decision mismatch for trace id {id}");
+        }
+    }
+
+    #[test]
+    fn test_rate_limited_bucket_transitions_and_steady_state() {
+        let sampler_config = rate_limited_sampler_config(10.0);
+        let config = rescue_config(sampler_config);
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        // First bucket: 100 distinct signatures push the default rate to 0.5.
+        let ids: Vec<u64> = (0..100_u64).map(|i| 0x22_0000 + i).collect();
+        let first: Vec<pb::TraceChunk> = ids.iter().map(|id| errored_root_chunk(*id, 0)).collect();
+        let first_chunks = run_rescue(&processor, &config, first, RESCUE_NOW);
+        let first_keeps = first_chunks
+            .iter()
+            .filter(|c| errors_sr(root(c)).is_some())
+            .count();
+        assert!(
+            first_keeps > 0 && first_keeps < 100,
+            "mixed decisions in the first bucket"
+        );
+
+        // A full window later (the rolling window is 6 buckets of 5 seconds),
+        // the same IDs in a fresh bucket still produce mixed decisions, and
+        // every chunk is still forwarded.
+        let second: Vec<pb::TraceChunk> = ids.iter().map(|id| errored_root_chunk(*id, 0)).collect();
+        let second_chunks = run_rescue(&processor, &config, second, RESCUE_NOW + 40);
+        assert_eq!(second_chunks.len(), 100);
+        let second_keeps = second_chunks
+            .iter()
+            .filter(|c| errors_sr(root(c)).is_some())
+            .count();
+        assert!(
+            second_keeps > 0 && second_keeps < 100,
+            "mixed decisions after window rotation"
+        );
+    }
+
+    #[test]
+    fn test_processor_clones_share_one_budget() {
+        let sampler_config = rate_limited_sampler_config(1.0);
+        let config = rescue_config(sampler_config);
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+        let processor_clone = processor.clone();
+
+        // Ten errored chunks with the same signature but distinct IDs: five
+        // through the original, five through the clone. All must draw from the
+        // same budget, matching a standalone sampler fed the same sequence.
+        let ids: Vec<u64> = (0..10_u64).map(|i| 0x33_0000 + i).collect();
+        let mut observed = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            let target = if i < 5 { &processor } else { &processor_clone };
+            let chunks = run_rescue(
+                target,
+                &config,
+                vec![errored_root_chunk(*id, 0)],
+                RESCUE_NOW,
+            );
+            observed.push(errors_sr(root(&chunks[0])).is_some());
+        }
+
+        let mut standalone = ErrorsSampler::new(sampler_config);
+        let spans = [SpanView {
+            service: "test-service",
+            name: "test-operation",
+            resource: "GET /test",
+            error: true,
+            http_status_code: None,
+            error_type: None,
+        }];
+        for (i, id) in ids.iter().enumerate() {
+            let trace = TraceView {
+                env: &config.env,
+                trace_id: *id,
+                root_index: 0,
+                root_global_sample_rate: 1.0,
+                spans: &spans,
+            };
+            let expected = matches!(
+                standalone.sample(RESCUE_NOW, &trace),
+                SampleDecision::Keep { .. }
+            );
+            assert_eq!(
+                observed[i], expected,
+                "clone {i} decision diverged from the shared-budget standalone sampler"
+            );
+        }
+        assert!(
+            observed.iter().any(|kept| *kept),
+            "expected at least one keep"
+        );
+        assert!(
+            !observed.iter().all(|kept| *kept),
+            "expected at least one drop"
+        );
+    }
+
+    #[test]
+    fn test_sampler_timestamp_clamp_never_moves_backwards() {
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&rate_limited_sampler_config(1.0)),
+        );
+        // A clone shares the clamp floor with the original.
+        let clone = processor.clone();
+
+        assert_eq!(processor.clamp_sampler_timestamp(100), 100);
+        // Backward timestamps, through either instance, are clamped to the
+        // last value seen; forward ones update the floor.
+        assert_eq!(clone.clamp_sampler_timestamp(50), 100);
+        assert_eq!(processor.clamp_sampler_timestamp(100), 100);
+        assert_eq!(clone.clamp_sampler_timestamp(200), 200);
+        assert_eq!(processor.clamp_sampler_timestamp(199), 200);
+    }
+
+    #[test]
+    fn test_rescue_uses_payload_env_with_config_fallback() {
+        assert_eq!(
+            super::resolve_payload_env("tracer-env", "agent-env"),
+            "tracer-env",
+            "nonempty payload env wins"
+        );
+        assert_eq!(
+            super::resolve_payload_env("", "agent-env"),
+            "agent-env",
+            "empty payload env falls back to the agent config env"
+        );
+        assert_eq!(
+            super::resolve_payload_env("", ""),
+            "",
+            "both empty stays empty"
+        );
+    }
+
+    #[test]
+    fn test_rescue_preserves_chunk_metadata_and_span_order() {
+        let config = rescue_config(always_keep_sampler_config());
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        let mut root_span = test_span(0x501d, 0x502, 0, 0);
+        root_span
+            .metrics
+            .insert("_sampling_priority_v1".to_string(), 0.0);
+        root_span.metrics.insert("_sample_rate".to_string(), 0.25);
+        root_span
+            .metrics
+            .insert("_dd.span_sampling.rule".to_string(), 1.0);
+        let mut child = test_span(0x501d, 0x503, 0x502, 1);
+        child.meta.insert("keep".to_string(), "me".to_string());
+
+        let mut chunk = test_chunk(vec![root_span, child], 0);
+        chunk.tags.insert("_dd.p.dm".to_string(), "-4".to_string());
+        chunk
+            .tags
+            .insert("origin".to_string(), "synthetics".to_string());
+        chunk.origin = "synthetics".to_string();
+
+        let chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
+
+        assert_eq!(chunks.len(), 1);
+        let rescued = &chunks[0];
+        assert_eq!(rescued.priority, 0, "priority preserved");
+        assert_eq!(rescued.origin, "synthetics", "origin preserved");
+        assert_eq!(
+            rescued.tags.get("_dd.p.dm").map(String::as_str),
+            Some("-4"),
+            "decision maker preserved"
+        );
+        assert_eq!(
+            rescued.tags.get("origin").map(String::as_str),
+            Some("synthetics")
+        );
+        assert_eq!(
+            rescued.spans[0]
+                .metrics
+                .get("_dd.span_sampling.rule")
+                .copied(),
+            Some(1.0),
+            "single-span sampling metrics preserved"
+        );
+        assert_eq!(
+            rescued.spans[0]
+                .metrics
+                .get("_sampling_priority_v1")
+                .copied(),
+            Some(0.0),
+            "sampling priority metric preserved"
+        );
+        assert_eq!(
+            errors_sr(&rescued.spans[0]),
+            Some(1.0),
+            "root stamped despite existing metrics"
+        );
+        assert_eq!(
+            rescued.spans[1].meta.get("keep").map(String::as_str),
+            Some("me"),
+            "span metadata and order preserved"
+        );
+        assert_eq!(rescued.spans.len(), 2, "no spans added or removed");
+    }
+
+    #[test]
+    fn test_probabilistic_decision_maker_chunk_gets_no_workaround() {
+        // A priority-0 chunk carrying the chunk-level probabilistic decision
+        // maker (`_dd.p.dm = "-9"`) is rescued like any other automatic-drop
+        // chunk: priority and decision maker are preserved untouched. The
+        // backend resolves such chunks to the `probabilistic` ingestion reason
+        // before checking `_dd.errors_sr`, so it may still drop them; SCL does
+        // not work around that limitation.
+        let config = rescue_config(always_keep_sampler_config());
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        let mut chunk = errored_root_chunk(0x600d, 0);
+        chunk.tags.insert("_dd.p.dm".to_string(), "-9".to_string());
+
+        let chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].priority, 0, "priority preserved, no promotion");
+        assert_eq!(
+            chunks[0].tags.get("_dd.p.dm").map(String::as_str),
+            Some("-9"),
+            "probabilistic decision maker preserved, no rewrite"
+        );
+        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
+    }
+
+    #[test]
+    fn test_rescue_passes_raw_sample_rate_to_sampler() {
+        // The raw `_sample_rate` wire value is passed to the shared sampler,
+        // which sanitizes it. A value outside (0, 1] falls back to 1.0, so a
+        // bogus rate does not change the stamped rescue rate.
+        let sampler_config = rate_limited_sampler_config(10.0);
+        let config = rescue_config(sampler_config);
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+
+        let mut chunk = errored_root_chunk(0x77_00, 0);
+        chunk.spans[0]
+            .metrics
+            .insert("_sample_rate".to_string(), f64::NAN);
+
+        let chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
+
+        // Single signature, well under budget: sanitized rate 1.0 keeps it.
+        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn test_stats_concentrator_observes_pre_rescue_chunks() {
+        let config = rescue_config(always_keep_sampler_config());
+        let (stats_tx, mut stats_rx) = tokio::sync::mpsc::unbounded_channel();
+        let concentrator = super::StatsConcentratorHandle::new(stats_tx);
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            Some(concentrator),
+            sampler_for(&config.error_sampler),
+        );
+
+        let start = get_current_timestamp_nanos();
+        let mut json_span = create_test_json_span(11, 222, 333, start, true);
+        json_span["error"] = serde_json::json!(1);
+        json_span["metrics"]["_sampling_priority_v1"] = serde_json::json!(0.0);
+        let bytes = rmp_serde::to_vec(&vec![vec![json_span]]).unwrap();
+        let request = Request::builder()
+            .header("datadog-meta-tracer-version", "4.0.0")
+            .header("datadog-meta-lang", "nodejs")
+            .header("datadog-meta-lang-version", "v19.7.0")
+            .header("datadog-meta-lang-interpreter", "v8")
+            .header("content-length", "100")
+            .body(http_common::Body::from(bytes))
+            .unwrap();
+
+        let res = processor
+            .process_traces(
+                Arc::new(config),
+                request,
+                mpsc::channel(1).0,
+                Arc::new(create_test_metadata()),
+            )
+            .await;
+        assert!(res.is_ok());
+
+        // The concentrator must receive the chunk exactly as the tracer sent
+        // it: before rescue stamping, with no `_dd.errors_sr` anywhere.
+        let (chunk, _metadata) = match stats_rx.try_recv() {
+            Ok(crate::stats_concentrator_service::ConcentratorCommand::AddChunk(
+                chunk,
+                metadata,
+            )) => (*chunk, metadata),
+            Ok(_) => panic!("expected an AddChunk command"),
+            Err(err) => panic!("expected an AddChunk command, got {err}"),
+        };
+        assert_eq!(chunk.priority, 0);
+        for span in &chunk.spans {
+            assert_eq!(
+                errors_sr(span),
+                None,
+                "stats must observe the pre-rescue chunk"
+            );
+        }
     }
 }
