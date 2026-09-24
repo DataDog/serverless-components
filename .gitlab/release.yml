@@ -1,0 +1,272 @@
+stages:
+  - validate
+  - core
+  - languages
+
+variables:
+  GITHUB_RELEASE_POLICY: "serverless-components.gitlab.release"
+  RELEASE_FLOW: "draft"
+  RELEASE_PYTHON: "true"
+  RELEASE_DOTNET: "true"
+  RELEASE_GO: "true"
+  RELEASE_JAVA: "true"
+  RELEASE_JAVASCRIPT: "true"
+
+.release-runner:
+  image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.07-1
+  tags: ["arch:amd64"]
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
+  timeout: 4h
+  interruptible: false
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - release-results/
+
+validate-release-inputs:
+  stage: validate
+  image: registry.ddbuild.io/images/mirror/alpine:3.21
+  tags: ["arch:amd64"]
+  interruptible: false
+  script:
+    - .gitlab/scripts/validate-release-inputs.sh
+
+core-binary:
+  extends: .release-runner
+  stage: core
+  rules:
+    - if: '$RELEASE_FLOW == "draft" || $RELEASE_FLOW == "publish"'
+  script:
+    - export OPERATION_ID="ddci-${CI_PIPELINE_ID}"
+    - mkdir -p release-results
+    - >-
+      scripts/ci/github-release-control.sh create-tag
+      --repo DataDog/serverless-components
+      --policy "$GITHUB_RELEASE_POLICY"
+      --tag "datadog-serverless-compat/v${CORE_VERSION}"
+      --commit "$CORE_COMMIT"
+    - >-
+      scripts/ci/github-release-control.sh dispatch
+      --repo DataDog/serverless-components
+      --policy "$GITHUB_RELEASE_POLICY"
+      --workflow release-datadog-serverless-compat.yml
+      --ref "datadog-serverless-compat/v${CORE_VERSION}"
+      --commit "$CORE_COMMIT"
+      --operation-id "$OPERATION_ID"
+      --input "core-version=${CORE_VERSION}"
+      --input "operation-ID=${OPERATION_ID}"
+      --input "release-state=$([ "$RELEASE_FLOW" = draft ] && printf draft || printf published)"
+      --result-file release-results/core-binary.env
+
+core-npm:
+  extends: .release-runner
+  stage: core
+  rules:
+    - if: '$RELEASE_FLOW == "publish"'
+  script:
+    - export OPERATION_ID="ddci-${CI_PIPELINE_ID}"
+    - mkdir -p release-results
+    - >-
+      scripts/ci/github-release-control.sh create-tag
+      --repo DataDog/serverless-components
+      --policy "$GITHUB_RELEASE_POLICY"
+      --tag "datadog-serverless-compat/v${CORE_VERSION}"
+      --commit "$CORE_COMMIT"
+    - >-
+      scripts/ci/github-release-control.sh dispatch
+      --repo DataDog/serverless-components
+      --policy "$GITHUB_RELEASE_POLICY"
+      --workflow publish.yml
+      --ref "datadog-serverless-compat/v${CORE_VERSION}"
+      --commit "$CORE_COMMIT"
+      --operation-id "$OPERATION_ID"
+      --input "core-version=${CORE_VERSION}"
+      --input "operation-ID=${OPERATION_ID}"
+      --result-file release-results/core-npm.env
+
+published-core-prerequisite:
+  extends: .release-runner
+  stage: core
+  rules:
+    - if: '$RELEASE_FLOW == "release"'
+  script:
+    - >-
+      scripts/ci/github-release-control.sh require-published-release
+      --repo DataDog/serverless-components
+      --policy "$GITHUB_RELEASE_POLICY"
+      --tag "datadog-serverless-compat/v${CORE_VERSION}"
+      --commit "$CORE_COMMIT"
+
+python:
+  extends: .release-runner
+  stage: languages
+  rules:
+    - if: '$RELEASE_PYTHON == "true" && ($RELEASE_FLOW == "publish" || $RELEASE_FLOW == "release")'
+  script:
+    - export OPERATION_ID="ddci-${CI_PIPELINE_ID}"
+    - export RELEASE_STATE="$([ "$RELEASE_FLOW" = publish ] && printf draft || printf published)"
+    - mkdir -p release-results
+    - >-
+      scripts/ci/github-release-control.sh create-tag
+      --repo DataDog/datadog-serverless-compat-py
+      --policy "$GITHUB_RELEASE_POLICY"
+      --tag "v${PYTHON_VERSION}"
+      --commit "$PYTHON_COMMIT"
+    - >-
+      scripts/ci/github-release-control.sh dispatch
+      --repo DataDog/datadog-serverless-compat-py
+      --policy "$GITHUB_RELEASE_POLICY"
+      --workflow publish.yml
+      --ref "v${PYTHON_VERSION}"
+      --commit "$PYTHON_COMMIT"
+      --operation-id "$OPERATION_ID"
+      --input "package-version=${PYTHON_VERSION}"
+      --input "core-version=${CORE_VERSION}"
+      --input "operation-id=${OPERATION_ID}"
+      --input "release-state=${RELEASE_STATE}"
+      --result-file release-results/python.env
+
+dotnet:
+  extends: .release-runner
+  stage: languages
+  rules:
+    - if: '$RELEASE_DOTNET == "true" && ($RELEASE_FLOW == "publish" || $RELEASE_FLOW == "release")'
+  script:
+    - export OPERATION_ID="ddci-${CI_PIPELINE_ID}"
+    - export RELEASE_STATE="$([ "$RELEASE_FLOW" = publish ] && printf draft || printf published)"
+    - mkdir -p release-results
+    - >-
+      scripts/ci/github-release-control.sh create-tag
+      --repo DataDog/datadog-serverless-compat-dotnet
+      --policy "$GITHUB_RELEASE_POLICY"
+      --tag "v${DOTNET_VERSION}"
+      --commit "$DOTNET_COMMIT"
+    - >-
+      scripts/ci/github-release-control.sh dispatch
+      --repo DataDog/datadog-serverless-compat-dotnet
+      --policy "$GITHUB_RELEASE_POLICY"
+      --workflow publish.yaml
+      --ref "v${DOTNET_VERSION}"
+      --commit "$DOTNET_COMMIT"
+      --operation-id "$OPERATION_ID"
+      --input "package-version=${DOTNET_VERSION}"
+      --input "core-version=${CORE_VERSION}"
+      --input "operation-id=${OPERATION_ID}"
+      --input "release-state=${RELEASE_STATE}"
+      --result-file release-results/dotnet.env
+    - |
+      if [ "$RELEASE_STATE" = published ]; then
+        DNET_COMMIT="$(scripts/ci/github-release-control.sh resolve-ref \
+          --repo DataDog/dd-trace-dotnet \
+          --policy "$GITHUB_RELEASE_POLICY" \
+          --ref master)"
+        scripts/ci/github-release-control.sh dispatch \
+          --repo DataDog/dd-trace-dotnet \
+          --policy "$GITHUB_RELEASE_POLICY" \
+          --workflow auto_bump_serverless_compat.yml \
+          --ref master \
+          --commit "$DNET_COMMIT" \
+          --operation-id "$OPERATION_ID" \
+          --input "package-version=${DOTNET_VERSION}" \
+          --result-file release-results/dd-trace-dotnet.env
+      fi
+
+go:
+  extends: .release-runner
+  stage: languages
+  rules:
+    - if: '$RELEASE_GO == "true" && ($RELEASE_FLOW == "publish" || $RELEASE_FLOW == "release")'
+  script:
+    - export OPERATION_ID="ddci-${CI_PIPELINE_ID}"
+    - export RELEASE_STATE="$([ "$RELEASE_FLOW" = publish ] && printf draft || printf published)"
+    - export GO_RELEASE_BRANCH="release/serverless-compat-v${GO_VERSION}"
+    - mkdir -p release-results
+    - |
+      GO_DISPATCH_COMMIT="$(scripts/ci/github-release-control.sh ensure-branch \
+        --repo DataDog/datadog-serverless-compat-go \
+        --policy "$GITHUB_RELEASE_POLICY" \
+        --branch "$GO_RELEASE_BRANCH" \
+        --commit "$GO_COMMIT")"
+      export GO_DISPATCH_COMMIT
+    - >-
+      scripts/ci/github-release-control.sh dispatch
+      --repo DataDog/datadog-serverless-compat-go
+      --policy "$GITHUB_RELEASE_POLICY"
+      --workflow publish.yml
+      --ref "$GO_RELEASE_BRANCH"
+      --commit "$GO_DISPATCH_COMMIT"
+      --operation-id "$OPERATION_ID"
+      --input "package-version=${GO_VERSION}"
+      --input "published-core-version=${CORE_VERSION}"
+      --input "immutable-base-commit=${GO_COMMIT}"
+      --input "operation-id=${OPERATION_ID}"
+      --input "release-state=${RELEASE_STATE}"
+      --result-file release-results/go.env
+    - >-
+      scripts/ci/github-release-control.sh record-go-results
+      --repo DataDog/datadog-serverless-compat-go
+      --policy "$GITHUB_RELEASE_POLICY"
+      --tag "datadogserverlesscompat/v${GO_VERSION}"
+      --branch "$GO_RELEASE_BRANCH"
+      --result-file release-results/go.env
+
+java:
+  extends: .release-runner
+  stage: languages
+  rules:
+    - if: '$RELEASE_JAVA == "true" && ($RELEASE_FLOW == "publish" || $RELEASE_FLOW == "release")'
+  script:
+    - export OPERATION_ID="ddci-${CI_PIPELINE_ID}"
+    - export RELEASE_STATE="$([ "$RELEASE_FLOW" = publish ] && printf draft || printf published)"
+    - mkdir -p release-results
+    - >-
+      scripts/ci/github-release-control.sh create-tag
+      --repo DataDog/datadog-serverless-compat-java
+      --policy "$GITHUB_RELEASE_POLICY"
+      --tag "v${JAVA_VERSION}"
+      --commit "$JAVA_COMMIT"
+    - >-
+      scripts/ci/github-release-control.sh dispatch
+      --repo DataDog/datadog-serverless-compat-java
+      --policy "$GITHUB_RELEASE_POLICY"
+      --workflow publish.yaml
+      --ref "v${JAVA_VERSION}"
+      --commit "$JAVA_COMMIT"
+      --operation-id "$OPERATION_ID"
+      --input "package-version=${JAVA_VERSION}"
+      --input "published-core-version=${CORE_VERSION}"
+      --input "operation-ID=${OPERATION_ID}"
+      --input "release-state=${RELEASE_STATE}"
+      --result-file release-results/java.env
+
+javascript:
+  extends: .release-runner
+  stage: languages
+  rules:
+    - if: '$RELEASE_JAVASCRIPT == "true" && ($RELEASE_FLOW == "publish" || $RELEASE_FLOW == "release")'
+  script:
+    - export OPERATION_ID="ddci-${CI_PIPELINE_ID}"
+    - export RELEASE_STATE="$([ "$RELEASE_FLOW" = publish ] && printf draft || printf published)"
+    - mkdir -p release-results
+    - >-
+      scripts/ci/github-release-control.sh create-tag
+      --repo DataDog/datadog-serverless-compat-js
+      --policy "$GITHUB_RELEASE_POLICY"
+      --tag "v${JAVASCRIPT_VERSION}"
+      --commit "$JAVASCRIPT_COMMIT"
+    - >-
+      scripts/ci/github-release-control.sh dispatch
+      --repo DataDog/datadog-serverless-compat-js
+      --policy "$GITHUB_RELEASE_POLICY"
+      --workflow publish.yml
+      --ref "v${JAVASCRIPT_VERSION}"
+      --commit "$JAVASCRIPT_COMMIT"
+      --operation-id "$OPERATION_ID"
+      --input "package-version=${JAVASCRIPT_VERSION}"
+      --input "core-version=${CORE_VERSION}"
+      --input "operation-id=${OPERATION_ID}"
+      --input "release-state=${RELEASE_STATE}"
+      --result-file release-results/javascript.env
