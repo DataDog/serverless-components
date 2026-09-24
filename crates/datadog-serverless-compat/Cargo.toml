@@ -13,12 +13,15 @@ windows-enhanced-metrics = ["datadog-metrics-collector/windows-enhanced-metrics"
 [dependencies]
 datadog-logs-agent = { path = "../datadog-logs-agent" }
 datadog-metrics-collector = { path = "../datadog-metrics-collector" }
+datadog-serverless-compat-inventory = { path = "../datadog-serverless-compat-inventory" }
 datadog-trace-agent = { path = "../datadog-trace-agent" }
 libdd-trace-utils = { workspace = true, features = ["https"] }
 datadog-fips = { path = "../datadog-fips", default-features = false }
 dogstatsd = { path = "../dogstatsd", default-features = true }
 reqwest = { version = "0.12.4", default-features = false }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 tokio-util = { version = "0.7", default-features = false }
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = [
