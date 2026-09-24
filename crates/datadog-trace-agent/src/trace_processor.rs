@@ -1547,7 +1547,7 @@ mod tests {
                     error_type: s.meta.get("error.type").map(String::as_str),
                 })
                 .collect();
-            let trace = equivalent_trace_view(chunk, "test-env", &views);
+            let trace = equivalent_trace_view(chunk, &config.env, &views);
             let expected = standalone.sample(RESCUE_NOW, &trace);
             let actual = match errors_sr(root(chunk)) {
                 Some(errors_sr) => SampleDecision::Keep { errors_sr },
