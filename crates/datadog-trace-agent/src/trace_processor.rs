@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use async_trait::async_trait;
 use datadog_agent_trace_sampler::{ErrorsSampler, SampleDecision, SpanView, TraceView};
@@ -137,6 +138,10 @@ pub struct ServerlessTraceProcessor {
     /// connection) share a single sampler state and TPS budget for the whole
     /// process lifetime.
     error_sampler: Arc<Mutex<ErrorsSampler>>,
+    /// Last timestamp handed to the sampler, shared across clones. Clamps the
+    /// clock so a backward wall-clock step cannot move sampler bucket IDs
+    /// backwards. Updated only under the sampler lock.
+    last_sampler_timestamp: Arc<AtomicI64>,
 }
 
 impl ServerlessTraceProcessor {
@@ -149,6 +154,7 @@ impl ServerlessTraceProcessor {
             stats_concentrator,
             enqueue_permits: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_ENQUEUES)),
             error_sampler,
+            last_sampler_timestamp: Arc::new(AtomicI64::new(i64::MIN)),
         }
     }
 
@@ -185,14 +191,13 @@ impl ServerlessTraceProcessor {
             return;
         }
         // Read the clock while holding the sampler lock so that concurrent
-        // requests deliver timestamps in lock-acquisition order, which is
-        // monotonic. Reading the clock before acquiring the lock could hand the
-        // sampler an older time after a newer one, moving the rolling window
-        // backwards and clearing counts from the current bucket, which would
-        // undercount TPS and rescue too many error chunks.
+        // requests deliver timestamps in lock-acquisition order, and clamp so a
+        // backward wall-clock step cannot move the sampler's rolling window
+        // backwards, which would undercount TPS and rescue too many chunks.
         let now_unix_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
+        let now_unix_secs = self.clamp_sampler_timestamp(now_unix_secs);
         self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
     }
 
@@ -210,6 +215,17 @@ impl ServerlessTraceProcessor {
             return;
         }
         self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
+    }
+
+    /// Clamps the timestamp so it never moves backwards relative to the last
+    /// one handed to the shared sampler, and records it as the new floor. Must
+    /// be called while holding the sampler lock, alongside the clock read, so
+    /// concurrent requests cannot interleave a read with the clamp.
+    fn clamp_sampler_timestamp(&self, now_unix_secs: i64) -> i64 {
+        let previous = self
+            .last_sampler_timestamp
+            .fetch_max(now_unix_secs, Ordering::Relaxed);
+        now_unix_secs.max(previous)
     }
 
     fn rescue_with_sampler(
@@ -1639,6 +1655,24 @@ mod tests {
             !observed.iter().all(|kept| *kept),
             "expected at least one drop"
         );
+    }
+
+    #[test]
+    fn test_sampler_timestamp_clamp_never_moves_backwards() {
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&rate_limited_sampler_config(1.0)),
+        );
+        // A clone shares the clamp floor with the original.
+        let clone = processor.clone();
+
+        assert_eq!(processor.clamp_sampler_timestamp(100), 100);
+        // Backward timestamps, through either instance, are clamped to the
+        // last value seen; forward ones update the floor.
+        assert_eq!(clone.clamp_sampler_timestamp(50), 100);
+        assert_eq!(processor.clamp_sampler_timestamp(100), 100);
+        assert_eq!(clone.clamp_sampler_timestamp(200), 200);
+        assert_eq!(processor.clamp_sampler_timestamp(199), 200);
     }
 
     #[test]
