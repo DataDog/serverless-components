@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::Config;
+use crate::trace_processor::resolve_payload_env;
 use libdd_library_config::tracer_metadata::TracerMetadata;
 use libdd_trace_protobuf::pb::{ClientStatsPayload, TraceChunk};
 use libdd_trace_stats::span_concentrator::{CardinalityLimitConfig, SpanConcentrator};
@@ -191,11 +192,11 @@ impl StatsConcentratorService {
                     // Do not set hostname so the trace stats backend can aggregate stats properly
                     hostname: String::new(),
                     // Prefer env from the tracer payload, fall back to agent config
-                    env: metadata
-                        .service_env
-                        .clone()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| self.config.env.clone()),
+                    env: resolve_payload_env(
+                        metadata.service_env.as_deref().unwrap_or(""),
+                        &self.config.env,
+                    )
+                    .to_string(),
                     version: metadata.service_version.clone().unwrap_or_default(),
                     lang: metadata.tracer_language.clone(),
                     tracer_version: metadata.tracer_version.clone(),
