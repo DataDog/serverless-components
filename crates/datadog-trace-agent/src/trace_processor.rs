@@ -1632,7 +1632,7 @@ mod tests {
         }];
         for (i, id) in ids.iter().enumerate() {
             let trace = TraceView {
-                env: "test-env",
+                env: &config.env,
                 trace_id: *id,
                 root_index: 0,
                 root_global_sample_rate: 1.0,
