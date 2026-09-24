@@ -1,0 +1,19 @@
+# Copyright 2025-Present Datadog, Inc. https://www.datadoghq.com/
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "datadog-serverless-compat-inventory"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Fleet Automation inventory reporter for the Serverless Compat mini-agent"
+
+[dependencies]
+datadog-fips = { path = "../datadog-fips" }
+libdd-common = { git = "https://github.com/DataDog/libdatadog", rev = "a820699426f28cbabb3a74d87c7309d030b52e7c", default-features = false }
+libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "a820699426f28cbabb3a74d87c7309d030b52e7c" }
+reqwest = { version = "0.12.4", default-features = false, features = ["rustls-tls"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tracing = { version = "0.1", default-features = false }
+uuid = { version = "1", default-features = false, features = ["v4"] }

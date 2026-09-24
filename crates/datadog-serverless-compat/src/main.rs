@@ -28,7 +28,7 @@ use datadog_metrics_collector::azure_cpu::CpuMetricsCollector;
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
-mod inventory;
+use datadog_serverless_compat_inventory::run_inventory_reporter;
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_logs_agent::{
@@ -174,7 +174,7 @@ pub async fn main() {
         let https_proxy_inv = https_proxy.clone();
         let env_type_inv = env_type.clone();
         tokio::spawn(async move {
-            inventory::run_inventory_reporter(
+            run_inventory_reporter(
                 &api_key,
                 &dd_site_inv,
                 https_proxy_inv.as_deref(),

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
+use libdd_common::azure_app_services::{AzureMetadata, QueryEnv, UNKNOWN_VALUE};
 use libdd_trace_utils::trace_utils::EnvironmentType;
 use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -11,13 +12,9 @@ use tracing::{debug, warn};
 /// How often to send a periodic inventory report while the mini-agent is running.
 const INVENTORY_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
-/// Maximum retry attempts for transient failures (429, 5xx, transport errors).
+/// Maximum total send attempts for transient failures (429, 5xx, transport errors).
+/// Includes the initial attempt — 3 means one try plus up to two retries.
 const MAX_RETRIES: u32 = 3;
-
-/// Minimum Datadog agent protocol version accepted by EPRW (7.x.x format).
-/// Used only for HTTP transport headers. The actual Compat version is reported
-/// as `agent_metadata.serverless_compat_version`.
-const AGENT_VERSION: &str = "7.83.0";
 
 /// Supported Compat workload types. Unsupported env types (Lambda, Azure Spring
 /// Apps) are silently skipped so they never create a `serverless_compat_agent` row.
@@ -30,17 +27,17 @@ fn supported_workload_type(env_type: &EnvironmentType) -> Option<&'static str> {
     }
 }
 
-/// Runs the inventory reporter for the lifetime of the mini-agent.
-///
-/// Sends a startup report immediately, then a periodic report every
-/// [`INVENTORY_INTERVAL`]. Spawned as a background task — never panics,
-/// never blocks agent startup.
 /// Returns true only when `DD_SERVERLESS_COMPAT_INVENTORY_ENABLED=true`.
 /// Extracted so the gate logic can be unit-tested without an async runtime.
 fn is_inventory_enabled() -> bool {
     env::var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED").as_deref() == Ok("true")
 }
 
+/// Runs the inventory reporter for the lifetime of the mini-agent.
+///
+/// Sends a startup report immediately, then a periodic report every
+/// [`INVENTORY_INTERVAL`]. Spawned as a background task — never panics,
+/// never blocks agent startup.
 pub async fn run_inventory_reporter(
     api_key: &str,
     dd_site: &str,
@@ -108,15 +105,16 @@ async fn send_report(
     process_id: &str,
     report_reason: &str,
 ) {
-    // Read WEBSITE_OWNER_NAME once for Azure; reused by both identity derivation
-    // and payload enrichment to avoid two env reads for the same value.
-    let azure_owner_name = if matches!(env_type, EnvironmentType::AzureFunction) {
-        env::var("WEBSITE_OWNER_NAME").unwrap_or_default()
+    // Reuse libdatadog's canonical Azure parsing for identity and enrichment.
+    // This includes Flex Consumption's DD_AZURE_RESOURCE_GROUP fallback.
+    let azure_metadata = if matches!(env_type, EnvironmentType::AzureFunction) {
+        AzureMetadata::new_function(ProcessEnv)
     } else {
-        String::new()
+        None
     };
 
-    let (mut resource_id, resource_name) = build_resource_identity(env_type, &azure_owner_name);
+    let (mut resource_id, resource_name) =
+        build_resource_identity(env_type, azure_metadata.as_ref());
 
     // Gen1 Cloud Functions: if FUNCTION_NAME was present but region/project were
     // absent from env vars, try the GCP instance metadata server to complete the
@@ -167,7 +165,7 @@ async fn send_report(
         &resource_id,
         &resource_name,
         env_type,
-        &azure_owner_name,
+        azure_metadata.as_ref(),
     ) {
         Ok(b) => b,
         Err(e) => {
@@ -178,7 +176,7 @@ async fn send_report(
 
     let url = format!("https://api.{dd_site}/api/v1/metadata");
 
-    for attempt in 0..=MAX_RETRIES {
+    for attempt in 0..MAX_RETRIES {
         match do_send(client, &url, api_key, body.clone()).await {
             Ok(status) if status < 300 => {
                 debug!(
@@ -188,35 +186,36 @@ async fn send_report(
                 );
                 return;
             }
-            Ok(429) | Ok(500..=599) if attempt < MAX_RETRIES => {
+            Ok(429) | Ok(500..=599) if attempt + 1 < MAX_RETRIES => {
                 let backoff = Duration::from_secs(1 << attempt);
                 warn!(
                     "inventory: transient failure, retrying in {backoff:?} \
-                     (report_reason={report_reason}, attempt={attempt})"
+                     (report_reason={report_reason}, attempt={})",
+                    attempt + 1
                 );
                 tokio::time::sleep(backoff).await;
             }
             Ok(status) => {
                 warn!(
                     "inventory: intake rejected report \
-                     (report_reason={report_reason}, status={status}, \
-                     resource_id={resource_id}, process_id={process_id})"
+                     (report_reason={report_reason}, workload_type={workload_type}, \
+                     status={status})"
                 );
                 return;
             }
-            Err(e) if attempt < MAX_RETRIES => {
+            Err(e) if attempt + 1 < MAX_RETRIES => {
                 let backoff = Duration::from_secs(1 << attempt);
                 warn!(
                     "inventory: transport error, retrying in {backoff:?} \
-                     (report_reason={report_reason}, attempt={attempt}, error={e})"
+                     (report_reason={report_reason}, attempt={}, error={e})",
+                    attempt + 1
                 );
                 tokio::time::sleep(backoff).await;
             }
             Err(e) => {
                 warn!(
-                    "inventory: transport error after {} attempts \
-                     (report_reason={report_reason}, error={e})",
-                    attempt + 1,
+                    "inventory: transport error after {MAX_RETRIES} attempts \
+                     (report_reason={report_reason}, error={e})"
                 );
                 return;
             }
@@ -235,8 +234,10 @@ async fn do_send(
         .post(url)
         .header("DD-API-KEY", api_key)
         .header("Content-Type", "application/json")
-        .header("DD-Agent-Version", AGENT_VERSION)
-        .header("User-Agent", format!("datadog-agent/{AGENT_VERSION}"))
+        .header(
+            "User-Agent",
+            format!("datadog-serverless-compat/{}", env!("CARGO_PKG_VERSION")),
+        )
         .body(body)
         .send()
         .await?;
@@ -251,7 +252,7 @@ fn build_payload(
     resource_id: &str,
     resource_name: &str,
     env_type: &EnvironmentType,
-    azure_owner_name: &str,
+    azure_metadata: Option<&AzureMetadata>,
 ) -> Result<Vec<u8>, serde_json::Error> {
     // Must be nanoseconds to match time.Now().UnixNano() expected by EPRW.
     let timestamp = SystemTime::now()
@@ -294,7 +295,7 @@ fn build_payload(
     }
 
     // Platform-specific optional fields (runtime, region, cloud IDs, etc.).
-    enrich_platform_fields(&mut metadata, env_type, azure_owner_name);
+    enrich_platform_fields(&mut metadata, env_type, azure_metadata);
 
     // Hostname intentionally absent: setting it (even to "") causes EPRW to
     // attempt a host_id lookup that fails for serverless workloads, rejecting
@@ -313,9 +314,12 @@ fn build_payload(
 /// `resource_id` is the canonical cloud resource identifier used as the primary
 /// key in `serverless_compat_agent`. An empty `resource_id` means the required
 /// environment variables are absent; the caller must skip the write.
-fn build_resource_identity(env_type: &EnvironmentType, azure_owner_name: &str) -> (String, String) {
+fn build_resource_identity(
+    env_type: &EnvironmentType,
+    azure_metadata: Option<&AzureMetadata>,
+) -> (String, String) {
     match env_type {
-        EnvironmentType::AzureFunction => build_azure_function_identity(azure_owner_name),
+        EnvironmentType::AzureFunction => build_azure_function_identity(azure_metadata),
         EnvironmentType::CloudFunction => build_cloud_function_identity(),
         EnvironmentType::LambdaFunction | EnvironmentType::AzureSpringApp => {
             (String::new(), String::new())
@@ -323,66 +327,57 @@ fn build_resource_identity(env_type: &EnvironmentType, azure_owner_name: &str) -
     }
 }
 
-fn build_azure_function_identity(owner_name: &str) -> (String, String) {
-    let name = env::var("WEBSITE_SITE_NAME").unwrap_or_default();
+struct ProcessEnv;
 
-    let sub = owner_name
-        .split('+')
-        .next()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_default();
-
-    // WEBSITE_RESOURCE_GROUP is not always injected; parse from WEBSITE_OWNER_NAME
-    // when absent. Format after '+': "{rg}-{region}webspace[-Linux|-Windows]"
-    let rg = env::var("WEBSITE_RESOURCE_GROUP")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| parse_rg_from_owner_name(owner_name))
-        .unwrap_or_default();
-
-    if name.is_empty() || rg.is_empty() || sub.is_empty() {
-        return (String::new(), name);
+impl QueryEnv for ProcessEnv {
+    fn get_var(&self, name: &str) -> Option<String> {
+        env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
     }
+}
 
-    let resource_id = format!(
-        "/subscriptions/{}/resourcegroups/{}/providers/microsoft.web/sites/{}",
-        sub.to_lowercase(),
-        rg.to_lowercase(),
-        name.to_lowercase()
-    );
+fn known_azure_value(value: &str) -> Option<&str> {
+    (value != UNKNOWN_VALUE && !value.is_empty()).then_some(value)
+}
+
+fn build_azure_function_identity(metadata: Option<&AzureMetadata>) -> (String, String) {
+    let Some(metadata) = metadata else {
+        return (String::new(), String::new());
+    };
+
+    let name = known_azure_value(metadata.get_site_name())
+        .unwrap_or_default()
+        .to_string();
+    let Some(base_resource_id) = known_azure_value(metadata.get_resource_id()) else {
+        return (String::new(), name);
+    };
+
+    // Non-production deployment slots share WEBSITE_SITE_NAME with the parent app but
+    // expose a distinct ARM path: /sites/{name}/slots/{slot}. Azure sets WEBSITE_SLOT_NAME
+    // for every slot; the production slot uses the value "production". Appending the slot
+    // path ensures each slot gets its own inventory row rather than overwriting the parent.
+    let slot = env::var("WEBSITE_SLOT_NAME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("production"));
+
+    let resource_id = match slot {
+        Some(slot) => format!("{base_resource_id}/slots/{}", slot.to_lowercase()),
+        None => base_resource_id.to_string(),
+    };
     (resource_id, name)
 }
 
-/// Parses the resource group from `WEBSITE_OWNER_NAME`.
-///
-/// Format: `"{sub}+{rg}-{region}webspace[-Linux|-Windows]"`
-/// Strips the OS suffix, "webspace", then the trailing "-{region}" segment.
-fn parse_rg_from_owner_name(owner_name: &str) -> Option<String> {
-    let after_plus = owner_name.split('+').nth(1)?;
-    let stripped = after_plus
-        .strip_suffix("-Linux")
-        .or_else(|| after_plus.strip_suffix("-Windows"))
-        .unwrap_or(after_plus);
-    let without_webspace = stripped.strip_suffix("webspace")?;
-    let last_dash = without_webspace.rfind('-')?;
-    let rg = &without_webspace[..last_dash];
-    if rg.is_empty() {
-        None
-    } else {
-        Some(rg.to_string())
-    }
-}
-
 fn build_cloud_function_identity() -> (String, String) {
-    // Gen2 Cloud Run Functions set FUNCTION_TARGET alongside K_SERVICE.
-    // These belong in serverless_init_agent, not serverless_compat_agent.
-    if env::var("FUNCTION_TARGET")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-    {
-        return (String::new(), String::new());
-    }
+    // The compat binary is only ever installed in Gen1 Cloud Functions.
+    // Gen2 (Cloud Run Functions) uses serverless-init via sidecar instead.
+    // We no longer guard on FUNCTION_TARGET here: newer Gen1 runtimes
+    // (Python 3.11, Node.js 20+) run on Cloud Run infrastructure and set
+    // FUNCTION_TARGET to the entry-point name — indistinguishable from Gen2
+    // purely on env vars. Removing the guard is safe because the binary is
+    // only present when the user explicitly installed the compat package.
 
     // Gen1: FUNCTION_NAME is canonical; newer Gen1 runtimes on Cloud Run infra
     // may omit it and expose K_SERVICE instead.
@@ -420,21 +415,32 @@ async fn fetch_gcp_metadata_value(
     label: &str,
     parse: impl Fn(&str) -> Option<String>,
 ) -> Option<String> {
-    let client = create_reqwest_client_builder()
-        .and_then(|b| {
-            b.timeout(Duration::from_secs(2))
-                .build()
-                .map_err(Into::into)
-        })
-        .ok()?;
+    let client = match create_reqwest_client_builder().and_then(|builder| {
+        builder
+            .timeout(Duration::from_secs(2))
+            .build()
+            .map_err(Into::into)
+    }) {
+        Ok(client) => client,
+        Err(error) => {
+            warn!("inventory: failed to create GCP metadata client for {label}: {error}");
+            return None;
+        }
+    };
 
     let url = format!("http://metadata.google.internal/computeMetadata/v1/{path}");
-    let resp = client
+    let resp = match client
         .get(&url)
         .header("Metadata-Flavor", "Google")
         .send()
         .await
-        .ok()?;
+    {
+        Ok(response) => response,
+        Err(error) => {
+            warn!("inventory: failed to fetch GCP metadata {label}: {error}");
+            return None;
+        }
+    };
 
     if !resp.status().is_success() {
         warn!(
@@ -444,7 +450,13 @@ async fn fetch_gcp_metadata_value(
         return None;
     }
 
-    let body = resp.text().await.ok()?;
+    let body = match resp.text().await {
+        Ok(body) => body,
+        Err(error) => {
+            warn!("inventory: failed to read GCP metadata {label}: {error}");
+            return None;
+        }
+    };
     let result = parse(body.trim());
     debug!("inventory: GCP metadata server {label}: {:?}", result);
     result
@@ -476,68 +488,47 @@ async fn fetch_gcp_project_from_metadata() -> Option<String> {
 fn enrich_platform_fields(
     metadata: &mut serde_json::Value,
     env_type: &EnvironmentType,
-    azure_owner_name: &str,
+    azure_metadata: Option<&AzureMetadata>,
 ) {
     match env_type {
-        EnvironmentType::AzureFunction => enrich_azure_function_fields(metadata, azure_owner_name),
+        EnvironmentType::AzureFunction => enrich_azure_function_fields(metadata, azure_metadata),
         EnvironmentType::CloudFunction => enrich_cloud_function_fields(metadata),
         EnvironmentType::LambdaFunction | EnvironmentType::AzureSpringApp => {}
     }
 }
 
-fn enrich_azure_function_fields(metadata: &mut serde_json::Value, owner_name: &str) {
-    // Region: prefer REGION_NAME; fall back to parsing WEBSITE_OWNER_NAME.
+fn enrich_azure_function_fields(
+    metadata: &mut serde_json::Value,
+    azure_metadata: Option<&AzureMetadata>,
+) {
+    // REGION_NAME is the canonical Azure-provided region value.
     let region = env::var("REGION_NAME")
         .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            let after_plus = owner_name.split('+').nth(1)?;
-            let without_webspace = after_plus
-                .strip_suffix("-Linux")
-                .or_else(|| after_plus.strip_suffix("-Windows"))
-                .unwrap_or(after_plus)
-                .strip_suffix("webspace")?;
-            without_webspace.split('-').next_back().map(str::to_string)
-        });
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     if let Some(r) = region {
         metadata["region"] = serde_json::Value::String(r);
     }
 
-    if let Some(sub) = owner_name.split('+').next().filter(|s| !s.is_empty()) {
-        metadata["azure_subscription_id"] = serde_json::Value::String(sub.to_string());
-    }
-    if let Ok(rg) = env::var("WEBSITE_RESOURCE_GROUP")
-        && !rg.is_empty()
-    {
-        metadata["azure_resource_group"] = serde_json::Value::String(rg);
-    }
-
-    // Runtime: prefer DD_SERVERLESS_COMPAT_RUNTIME (set by language package);
-    // fall back to FUNCTIONS_WORKER_RUNTIME injected by Azure.
-    let runtime = env::var("DD_SERVERLESS_COMPAT_RUNTIME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            env::var("FUNCTIONS_WORKER_RUNTIME")
-                .ok()
-                .filter(|s| !s.is_empty())
-        });
-    if let Some(rt) = runtime {
-        metadata["runtime"] = serde_json::Value::String(rt);
-    }
-
-    // Runtime version: prefer DD_SERVERLESS_COMPAT_RUNTIME_VERSION (language package),
-    // then FUNCTIONS_WORKER_RUNTIME_VERSION, then language-specific vars.
-    let runtime_ver = env::var("DD_SERVERLESS_COMPAT_RUNTIME_VERSION")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            env::var("FUNCTIONS_WORKER_RUNTIME_VERSION")
-                .ok()
-                .filter(|s| !s.is_empty())
-        });
-    if let Some(v) = runtime_ver {
-        metadata["serverless_compat_runtime_version"] = serde_json::Value::String(v);
+    if let Some(azure_metadata) = azure_metadata {
+        for (field, value) in [
+            (
+                "azure_subscription_id",
+                azure_metadata.get_subscription_id(),
+            ),
+            ("azure_resource_group", azure_metadata.get_resource_group()),
+            // Preserve Azure's documented raw runtime values (for example node,
+            // python, dotnet, or dotnet-isolated); do not invent a second taxonomy.
+            ("runtime", azure_metadata.get_runtime()),
+            (
+                "serverless_compat_runtime_version",
+                azure_metadata.get_runtime_version(),
+            ),
+        ] {
+            if let Some(value) = known_azure_value(value) {
+                metadata[field] = serde_json::Value::String(value.to_string());
+            }
+        }
     }
 }
 
@@ -560,19 +551,10 @@ fn enrich_cloud_function_fields(metadata: &mut serde_json::Value) {
         metadata["gcp_project_id"] = serde_json::Value::String(p);
     }
 
-    // Runtime: prefer DD_SERVERLESS_COMPAT_RUNTIME (language package); fall back
-    // to detecting from well-known GCP Cloud Functions gen1 env vars.
-    let (lang, ver) = env::var("DD_SERVERLESS_COMPAT_RUNTIME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(|rt| {
-            let ver = env::var("DD_SERVERLESS_COMPAT_RUNTIME_VERSION")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_default();
-            (rt, ver)
-        })
-        .unwrap_or_else(detect_gcp_gen1_runtime);
+    // These values come from the GCP runtime itself. The language packages set
+    // DD_SERVERLESS_COMPAT_VERSION, which is a package version and must not be
+    // confused with the language runtime version.
+    let (lang, ver) = detect_gcp_gen1_runtime();
 
     if !lang.is_empty() {
         metadata["runtime"] = serde_json::Value::String(lang);
@@ -618,6 +600,27 @@ mod tests {
     static ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
+    unsafe fn clear_azure_function_env() {
+        for name in [
+            "DD_AZURE_RESOURCE_GROUP",
+            "FUNCTIONS_EXTENSION_VERSION",
+            "FUNCTIONS_WORKER_RUNTIME",
+            "FUNCTIONS_WORKER_RUNTIME_VERSION",
+            "REGION_NAME",
+            "WEBSITE_OWNER_NAME",
+            "WEBSITE_RESOURCE_GROUP",
+            "WEBSITE_SITE_NAME",
+            "WEBSITE_SKU",
+            "WEBSITE_SLOT_NAME",
+        ] {
+            unsafe { env::remove_var(name) };
+        }
+    }
+
+    fn current_azure_metadata() -> AzureMetadata {
+        AzureMetadata::new_function(ProcessEnv).expect("Azure Functions metadata should be built")
+    }
+
     // ── Workload type filtering ──────────────────────────────────────────────
 
     #[test]
@@ -654,11 +657,15 @@ mod tests {
     fn azure_function_identity_full() {
         let _lock = ENV_LOCK.lock().unwrap();
         unsafe {
+            clear_azure_function_env();
+            env::set_var("FUNCTIONS_WORKER_RUNTIME", "python");
+            env::set_var("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace");
             env::set_var("WEBSITE_SITE_NAME", "my-func-app");
             env::set_var("WEBSITE_RESOURCE_GROUP", "my-rg");
         }
 
-        let (id, name) = build_azure_function_identity("abc123+my-rg-eastuswebspace");
+        let azure_metadata = current_azure_metadata();
+        let (id, name) = build_azure_function_identity(Some(&azure_metadata));
 
         assert_eq!(name, "my-func-app");
         assert_eq!(
@@ -667,8 +674,7 @@ mod tests {
         );
 
         unsafe {
-            env::remove_var("WEBSITE_SITE_NAME");
-            env::remove_var("WEBSITE_RESOURCE_GROUP");
+            clear_azure_function_env();
         }
     }
 
@@ -677,12 +683,17 @@ mod tests {
         // WEBSITE_RESOURCE_GROUP absent; RG parsed from WEBSITE_OWNER_NAME.
         let _lock = ENV_LOCK.lock().unwrap();
         unsafe {
+            clear_azure_function_env();
+            env::set_var("FUNCTIONS_WORKER_RUNTIME", "python");
+            env::set_var(
+                "WEBSITE_OWNER_NAME",
+                "sub123+my-resource-group-westus2webspace-Linux",
+            );
             env::set_var("WEBSITE_SITE_NAME", "my-func");
-            env::remove_var("WEBSITE_RESOURCE_GROUP");
         }
 
-        let (id, name) =
-            build_azure_function_identity("sub123+my-resource-group-westus2webspace-Linux");
+        let azure_metadata = current_azure_metadata();
+        let (id, name) = build_azure_function_identity(Some(&azure_metadata));
 
         assert_eq!(name, "my-func");
         assert!(
@@ -691,7 +702,33 @@ mod tests {
         );
 
         unsafe {
-            env::remove_var("WEBSITE_SITE_NAME");
+            clear_azure_function_env();
+        }
+    }
+
+    #[test]
+    fn azure_function_identity_flex_consumption_uses_dd_resource_group() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe {
+            clear_azure_function_env();
+            env::set_var("FUNCTIONS_WORKER_RUNTIME", "python");
+            env::set_var("WEBSITE_OWNER_NAME", "abc123+flex-host");
+            env::set_var("WEBSITE_SITE_NAME", "my-flex-func");
+            env::set_var("WEBSITE_SKU", "FlexConsumption");
+            env::set_var("DD_AZURE_RESOURCE_GROUP", "My-Flex-RG");
+        }
+
+        let azure_metadata = current_azure_metadata();
+        let (id, name) = build_azure_function_identity(Some(&azure_metadata));
+
+        assert_eq!(name, "my-flex-func");
+        assert_eq!(
+            id,
+            "/subscriptions/abc123/resourcegroups/my-flex-rg/providers/microsoft.web/sites/my-flex-func"
+        );
+
+        unsafe {
+            clear_azure_function_env();
         }
     }
 
@@ -699,18 +736,100 @@ mod tests {
     fn azure_function_identity_missing_name_returns_empty() {
         let _lock = ENV_LOCK.lock().unwrap();
         unsafe {
-            env::remove_var("WEBSITE_SITE_NAME");
+            clear_azure_function_env();
+            env::set_var("FUNCTIONS_WORKER_RUNTIME", "python");
+            env::set_var("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace");
             env::set_var("WEBSITE_RESOURCE_GROUP", "my-rg");
         }
 
-        let (id, _name) = build_azure_function_identity("abc123+my-rg-eastuswebspace");
+        let azure_metadata = current_azure_metadata();
+        let (id, _name) = build_azure_function_identity(Some(&azure_metadata));
         assert!(
             id.is_empty(),
             "missing WEBSITE_SITE_NAME must produce empty resource_id"
         );
 
         unsafe {
-            env::remove_var("WEBSITE_RESOURCE_GROUP");
+            clear_azure_function_env();
+        }
+    }
+
+    #[test]
+    fn azure_function_identity_non_production_slot() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe {
+            clear_azure_function_env();
+            env::set_var("FUNCTIONS_WORKER_RUNTIME", "python");
+            env::set_var("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace");
+            env::set_var("WEBSITE_SITE_NAME", "my-func-app");
+            env::set_var("WEBSITE_RESOURCE_GROUP", "my-rg");
+            env::set_var("WEBSITE_SLOT_NAME", "staging");
+        }
+
+        let azure_metadata = current_azure_metadata();
+        let (id, name) = build_azure_function_identity(Some(&azure_metadata));
+
+        assert_eq!(name, "my-func-app");
+        assert!(
+            id.ends_with("/slots/staging"),
+            "non-production slot must appear in resource_id; got: {id}"
+        );
+
+        unsafe {
+            clear_azure_function_env();
+        }
+    }
+
+    #[test]
+    fn azure_function_identity_production_slot_omitted() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe {
+            clear_azure_function_env();
+            env::set_var("FUNCTIONS_WORKER_RUNTIME", "python");
+            env::set_var("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace");
+            env::set_var("WEBSITE_SITE_NAME", "my-func-app");
+            env::set_var("WEBSITE_RESOURCE_GROUP", "my-rg");
+            env::set_var("WEBSITE_SLOT_NAME", "Production");
+        }
+
+        let azure_metadata = current_azure_metadata();
+        let (id, _name) = build_azure_function_identity(Some(&azure_metadata));
+
+        assert!(
+            !id.contains("/slots/"),
+            "production slot must not appear in resource_id; got: {id}"
+        );
+
+        unsafe {
+            clear_azure_function_env();
+        }
+    }
+
+    #[test]
+    fn azure_function_enrichment_uses_platform_runtime_values() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe {
+            clear_azure_function_env();
+            env::set_var("FUNCTIONS_WORKER_RUNTIME", "dotnet-isolated");
+            env::set_var("FUNCTIONS_WORKER_RUNTIME_VERSION", "8.0");
+            env::set_var("REGION_NAME", "East US 2");
+            env::set_var("WEBSITE_OWNER_NAME", "abc123+my-rg-eastus2webspace");
+            env::set_var("WEBSITE_RESOURCE_GROUP", "my-rg");
+            env::set_var("WEBSITE_SITE_NAME", "my-func-app");
+        }
+
+        let azure_metadata = current_azure_metadata();
+        let mut metadata = serde_json::json!({});
+        enrich_azure_function_fields(&mut metadata, Some(&azure_metadata));
+
+        assert_eq!(metadata["runtime"], "dotnet-isolated");
+        assert_eq!(metadata["serverless_compat_runtime_version"], "8.0");
+        assert_eq!(metadata["region"], "East US 2");
+        assert_eq!(metadata["azure_subscription_id"], "abc123");
+        assert_eq!(metadata["azure_resource_group"], "my-rg");
+
+        unsafe {
+            clear_azure_function_env();
         }
     }
 
@@ -767,8 +886,10 @@ mod tests {
     }
 
     #[test]
-    fn cloud_function_gen2_with_function_target_skipped() {
-        // Gen2 Cloud Run Functions: FUNCTION_TARGET set → must not write to compat table.
+    fn cloud_function_newer_gen1_with_function_target_still_reported() {
+        // Newer Gen1 runtimes (Python 3.11+, Node.js 20+) run on Cloud Run
+        // infrastructure and set FUNCTION_TARGET alongside K_SERVICE. The compat
+        // binary's presence is the gate — we always report if installed.
         let _lock = ENV_LOCK.lock().unwrap();
         unsafe {
             env::set_var("K_SERVICE", "my-service");
@@ -779,13 +900,10 @@ mod tests {
 
         let (id, name) = build_cloud_function_identity();
 
+        assert_eq!(name, "my-service");
         assert!(
-            id.is_empty(),
-            "Gen2 must produce empty resource_id; got: {id}"
-        );
-        assert!(
-            name.is_empty(),
-            "Gen2 must produce empty resource_name; got: {name}"
+            id.contains("my-service"),
+            "newer Gen1 with FUNCTION_TARGET must still produce resource_id; got: {id}"
         );
 
         unsafe {
@@ -849,6 +967,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cloud_function_runtime_comes_from_platform() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        unsafe {
+            env::remove_var("NODE_VERSION");
+            env::remove_var("JAVA_VERSION");
+            env::remove_var("GO_VERSION");
+            env::set_var("PYTHON_VERSION", "3.12.7");
+        }
+
+        let mut metadata = serde_json::json!({});
+        enrich_cloud_function_fields(&mut metadata);
+
+        assert_eq!(metadata["runtime"], "python");
+        assert_eq!(metadata["serverless_compat_runtime_version"], "3.12.7");
+
+        unsafe {
+            env::remove_var("PYTHON_VERSION");
+        }
+    }
+
     // ── Payload structure ────────────────────────────────────────────────────
 
     #[test]
@@ -859,14 +998,16 @@ mod tests {
         }
 
         let process_id = "test-uuid-1234";
+        let resource_id =
+            "/subscriptions/sub/resourcegroups/rg/providers/microsoft.web/sites/my-func";
         let body = build_payload(
             process_id,
             "azure_function",
             "startup",
-            "//microsoft.azure/functionApps/sub/rg/my-func",
+            resource_id,
             "my-func",
             &EnvironmentType::AzureFunction,
-            "",
+            None,
         )
         .expect("build_payload must not fail");
 
@@ -882,10 +1023,7 @@ mod tests {
         assert_eq!(meta["flavor"], "serverless-compat");
         assert_eq!(meta["workload_type"], "azure_function");
         assert_eq!(meta["report_reason"], "startup");
-        assert_eq!(
-            meta["resource_id"],
-            "//microsoft.azure/functionApps/sub/rg/my-func"
-        );
+        assert_eq!(meta["resource_id"], resource_id);
         assert_eq!(meta["resource_name"], "my-func");
         assert!(meta.contains_key("serverless_compat_version"));
 
@@ -910,10 +1048,10 @@ mod tests {
             "pid",
             "azure_function",
             "startup",
-            "//microsoft.azure/functionApps/s/r/f",
+            "/subscriptions/s/resourcegroups/r/providers/microsoft.web/sites/f",
             "f",
             &EnvironmentType::AzureFunction,
-            "",
+            None,
         )
         .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -938,10 +1076,10 @@ mod tests {
             "pid",
             "azure_function",
             "startup",
-            "//microsoft.azure/functionApps/s/r/f",
+            "/subscriptions/s/resourcegroups/r/providers/microsoft.web/sites/f",
             "f",
             &EnvironmentType::AzureFunction,
-            "",
+            None,
         )
         .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -965,36 +1103,11 @@ mod tests {
             "//cloudfunctions.googleapis.com/projects/p/locations/r/functions/fn",
             "fn",
             &EnvironmentType::CloudFunction,
-            "",
+            None,
         )
         .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["agent_metadata"]["report_reason"], "periodic");
-    }
-
-    // ── RG parsing ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn parse_rg_linux_suffix() {
-        let rg = parse_rg_from_owner_name("sub+my-rg-eastuswebspace-Linux");
-        assert_eq!(rg.as_deref(), Some("my-rg"));
-    }
-
-    #[test]
-    fn parse_rg_windows_suffix() {
-        let rg = parse_rg_from_owner_name("sub+my-rg-westus2webspace-Windows");
-        assert_eq!(rg.as_deref(), Some("my-rg"));
-    }
-
-    #[test]
-    fn parse_rg_no_os_suffix() {
-        let rg = parse_rg_from_owner_name("sub+my-rg-eastuswebspace");
-        assert_eq!(rg.as_deref(), Some("my-rg"));
-    }
-
-    #[test]
-    fn parse_rg_missing_plus_returns_none() {
-        assert!(parse_rg_from_owner_name("noplushere").is_none());
     }
 
     // ── Inventory gate ───────────────────────────────────────────────────────

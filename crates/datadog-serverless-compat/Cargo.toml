@@ -13,6 +13,7 @@ windows-enhanced-metrics = ["datadog-metrics-collector/windows-enhanced-metrics"
 [dependencies]
 datadog-logs-agent = { path = "../datadog-logs-agent" }
 datadog-metrics-collector = { path = "../datadog-metrics-collector" }
+datadog-serverless-compat-inventory = { path = "../datadog-serverless-compat-inventory" }
 datadog-trace-agent = { path = "../datadog-trace-agent" }
 libdd-trace-utils = { git = "https://github.com/DataDog/libdatadog", rev = "a820699426f28cbabb3a74d87c7309d030b52e7c" }
 datadog-fips = { path = "../datadog-fips", default-features = false }
@@ -30,7 +31,6 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "env-filter",
     "tracing-log",
 ] }
-uuid = { version = "1", default-features = false, features = ["v4"] }
 zstd = { version = "0.13.3", default-features = false }
 
 [dev-dependencies]

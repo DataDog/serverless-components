@@ -585,6 +585,7 @@ dependencies = [
  "datadog-fips",
  "datadog-logs-agent",
  "datadog-metrics-collector",
+ "datadog-serverless-compat-inventory",
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils 8.0.0",
@@ -595,8 +596,21 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "uuid",
  "zstd",
+]
+
+[[package]]
+name = "datadog-serverless-compat-inventory"
+version = "0.1.0"
+dependencies = [
+ "datadog-fips",
+ "libdd-common 4.2.0",
+ "libdd-trace-utils 8.0.0",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
