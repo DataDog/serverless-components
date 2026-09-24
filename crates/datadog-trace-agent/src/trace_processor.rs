@@ -326,9 +326,11 @@ fn span_view(span: &pb::Span) -> SpanView<'_> {
 /// and the no-priority sentinel (`i8::MIN`) are all left untouched. The chunk
 /// must contain at least one span with a non-zero error flag; HTTP status or
 /// error metadata alone does not qualify. The root is resolved with
-/// `get_root_span_index`; empty or rootless chunks are left unchanged. Chunks
-/// are never removed here: on a Drop decision the unrescued chunk is forwarded
-/// as-is and the backend's ordinary P0 drop handles it.
+/// `get_root_span_index`: empty chunks are left unchanged, and non-empty
+/// chunks always resolve a root, falling back to the last span when no span
+/// has `parent_id 0` (e.g. a cyclic chunk). Chunks are never removed here: on
+/// a Drop decision the unrescued chunk is forwarded as-is and the backend's
+/// ordinary P0 drop handles it.
 fn sample_and_stamp(
     sampler: &mut ErrorsSampler,
     chunk: &mut pb::TraceChunk,
