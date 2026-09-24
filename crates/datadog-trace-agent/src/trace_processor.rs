@@ -184,6 +184,12 @@ impl ServerlessTraceProcessor {
     /// payload and the backend discards them.
     ///
     fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
+        let mut sampler = self.lock_sampler();
+        // Skip all view construction when the sampler is disabled by config
+        // (target_tps <= 0): nothing can be rescued.
+        if sampler.is_disabled() {
+            return;
+        }
         // Read the clock while holding the sampler lock so that concurrent
         // requests deliver timestamps in lock-acquisition order, and clamp so a
         // backward wall-clock step cannot move the sampler's rolling window
@@ -192,14 +198,12 @@ impl ServerlessTraceProcessor {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         let now_unix_secs = self.clamp_sampler_timestamp(now_unix_secs);
-        self.apply_error_rescue_at(payload, config, now_unix_secs);
+        self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
     }
 
-    /// Applies the rescue pass for an explicit timestamp, taking the sampler
-    /// lock and skipping all view construction when the sampler is disabled
-    /// by config (target_tps <= 0). Used by `apply_error_rescue` with the
-    /// clamped wall clock, and directly by tests with a synthetic timestamp
-    /// so they can exercise the rolling window without sleeping.
+    /// Test-only variant that injects a synthetic timestamp so tests can
+    /// exercise the rolling window without sleeping.
+    #[cfg(test)]
     fn apply_error_rescue_at(
         &self,
         payload: &mut TracerPayloadCollection,
