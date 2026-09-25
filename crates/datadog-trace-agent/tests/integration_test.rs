@@ -5,11 +5,10 @@ mod common;
 
 use common::helpers::{
     create_client_span_with_peer_tag_payload, create_test_client_stats_payload,
-    create_test_trace_payload, create_trace_with_span_kind_children_payload, decode_stats_payload,
-    send_tcp_request,
+    create_test_trace_payload, create_trace_with_span_kind_children_payload, send_tcp_request,
 };
-use common::mock_server::MockServer;
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
+use datadog_mock_intake::{MockIntake, PipelineStatsPayload};
 use datadog_trace_agent::{
     config::{Config, Tags, test_helpers::create_tcp_test_config},
     mini_agent::MiniAgent,
@@ -39,15 +38,15 @@ const FLUSH_WAIT_DURATION: Duration = Duration::from_millis(1500);
 // the timeout exists to fail loudly rather than hang indefinitely.
 const VERIFY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-async fn wait_for_request_at_path(mock_server: &common::mock_server::MockServer, path: &str) {
+async fn wait_for_capture(ready: impl Fn() -> bool, what: &str) {
     let deadline = tokio::time::Instant::now() + VERIFY_REQUEST_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
-        if !mock_server.get_requests_for_path(path).is_empty() {
+        if ready() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("Timed out after {VERIFY_REQUEST_TIMEOUT:?} waiting for request at {path}");
+    panic!("Timed out after {VERIFY_REQUEST_TIMEOUT:?} waiting for {what}");
 }
 
 /// Helper to configure a config with mock server endpoints
@@ -114,14 +113,18 @@ pub fn create_mini_agent_with_real_flushers(
     (mini_agent, stats_concentrator_service_handle)
 }
 
-/// Helper to verify trace request sent to mock server
-pub async fn verify_trace_request(mock_server: &common::mock_server::MockServer) {
-    wait_for_request_at_path(mock_server, "/api/v0.2/traces").await;
-    let trace_reqs = mock_server.get_requests_for_path("/api/v0.2/traces");
+/// Helper to verify trace request sent to the mock intake
+pub async fn verify_trace_request(mock_intake: &MockIntake) {
+    wait_for_capture(
+        || !mock_intake.trace_payloads().is_empty(),
+        "a trace request at /api/v0.2/traces",
+    )
+    .await;
+    let trace_reqs = mock_intake.requests_for_path("/api/v0.2/traces");
 
     assert!(
         !trace_reqs.is_empty(),
-        "Expected at least one trace request to mock server"
+        "Expected at least one trace request to mock intake"
     );
 
     let trace_req = &trace_reqs[0];
@@ -151,14 +154,18 @@ pub async fn verify_trace_request(mock_server: &common::mock_server::MockServer)
     );
 }
 
-/// Helper to verify stats request sent to mock server
-pub async fn verify_stats_request(mock_server: &common::mock_server::MockServer) {
-    wait_for_request_at_path(mock_server, "/api/v0.2/stats").await;
-    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
+/// Helper to verify stats request sent to the mock intake
+pub async fn verify_stats_request(mock_intake: &MockIntake) {
+    wait_for_capture(
+        || !mock_intake.stats_payloads().is_empty(),
+        "a stats request at /api/v0.2/stats",
+    )
+    .await;
+    let stats_reqs = mock_intake.requests_for_path("/api/v0.2/stats");
 
     assert!(
         !stats_reqs.is_empty(),
-        "Expected at least one stats request to mock server"
+        "Expected at least one stats request to mock intake"
     );
 
     let stats_req = &stats_reqs[0];
@@ -188,28 +195,35 @@ pub async fn verify_stats_request(mock_server: &common::mock_server::MockServer)
     );
 }
 
-/// Helper to verify stats request was not sent to mock server
-pub fn verify_no_stats_request(mock_server: &common::mock_server::MockServer) {
-    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
+/// Helper to verify stats request was not sent to mock intake
+pub fn verify_no_stats_request(mock_intake: &MockIntake) {
+    let stats_payloads = mock_intake.stats_payloads();
     assert!(
-        stats_reqs.is_empty(),
-        "Expected no stats request to mock server, received {} request(s)",
-        stats_reqs.len()
+        stats_payloads.is_empty(),
+        "Expected no stats request to mock intake, received {} request(s)",
+        stats_payloads.len()
     );
 }
 
-/// Helper to verify a DSM request sent to the mock server
+/// Helper to verify a DSM request sent to the mock intake. The forwarded body
+/// must arrive byte-for-byte unchanged AND be decodable by the intake: the
+/// decoded capture proves the proxy forwards a payload the real intake accepts.
 pub async fn verify_dsm_request(
-    mock_server: &common::mock_server::MockServer,
+    mock_intake: &MockIntake,
     expected_body: &[u8],
+    expected_edge_tags: &[&str],
     expected_additional_tags: &[&str],
 ) {
-    wait_for_request_at_path(mock_server, "/api/v0.1/pipeline_stats").await;
-    let dsm_reqs = mock_server.get_requests_for_path("/api/v0.1/pipeline_stats");
+    wait_for_capture(
+        || !mock_intake.pipeline_stats_payloads().is_empty(),
+        "a DSM request at /api/v0.1/pipeline_stats",
+    )
+    .await;
+    let dsm_reqs = mock_intake.requests_for_path("/api/v0.1/pipeline_stats");
 
     assert!(
         !dsm_reqs.is_empty(),
-        "Expected at least one DSM request to mock server"
+        "Expected at least one DSM request to mock intake"
     );
 
     let dsm_req = &dsm_reqs[0];
@@ -217,6 +231,17 @@ pub async fn verify_dsm_request(
     assert_eq!(
         dsm_req.body, expected_body,
         "Expected DSM payload body to be forwarded unchanged"
+    );
+
+    let decoded = &mock_intake.pipeline_stats_payloads()[0];
+    let edge_tags: Vec<&str> = decoded.stats[0].stats[0]
+        .edge_tags
+        .iter()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        edge_tags, expected_edge_tags,
+        "Expected decoded DSM payload to carry the fixture edge tags"
     );
 
     let api_key = dsm_req
@@ -469,11 +494,10 @@ async fn test_mini_agent_named_pipe_handles_requests() {
 #[tokio::test]
 #[serial]
 async fn test_mini_agent_tcp_with_real_flushers() {
-    let mock_server: MockServer = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let mut config = create_tcp_test_config(8127);
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.agent_stats_computation_enabled = true;
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
@@ -512,23 +536,22 @@ async fn test_mini_agent_tcp_with_real_flushers() {
             .expect("Failed to send /v0.4/traces request");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
-    verify_trace_request(&mock_server).await;
+    verify_trace_request(&mock_intake).await;
 
     // Trigger shutdown to force flush in progress concentrator buckets
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
-    verify_stats_request(&mock_server).await; // Stats generator should generate stats from trace payload
+    verify_stats_request(&mock_intake).await; // Stats generator should generate stats from trace payload
 }
 
 #[cfg(test)]
 #[tokio::test]
 #[serial]
 async fn test_mini_agent_tcp_proxies_dsm_requests() {
-    let mock_server: MockServer = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let mut config = create_tcp_test_config(8133);
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.tags = Tags::from_env_string("env:test,service:payments");
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
@@ -563,7 +586,23 @@ async fn test_mini_agent_tcp_proxies_dsm_requests() {
         "Mini agent server failed to start within timeout"
     );
 
-    let dsm_payload = br#"{"Stats":[{"EdgeTags":["direction:out","type:kafka"]}]}"#.to_vec();
+    // A valid DSM pipeline-stats payload: the proxy must forward it unchanged
+    // and the intake must accept and decode it.
+    let dsm_payload = rmp_serde::to_vec_named(&PipelineStatsPayload {
+        env: "local".to_string(),
+        service: "svc".to_string(),
+        tracer_version: "1.0".to_string(),
+        version: "2.0".to_string(),
+        tags: Vec::new(),
+        stats: vec![datadog_mock_intake::PipelineStatsBucket {
+            stats: vec![datadog_mock_intake::PipelineStatsPoint {
+                hash: 7,
+                parent_hash: 0,
+                edge_tags: vec!["direction:out".to_string(), "type:kafka".to_string()],
+            }],
+        }],
+    })
+    .expect("Failed to serialize DSM pipeline stats payload");
     let response = send_tcp_request(
         test_port,
         "/v0.1/pipeline_stats",
@@ -582,8 +621,9 @@ async fn test_mini_agent_tcp_proxies_dsm_requests() {
     assert_eq!(response.status(), StatusCode::OK);
 
     verify_dsm_request(
-        &mock_server,
+        &mock_intake,
         &dsm_payload,
+        &["direction:out", "type:kafka"],
         &[
             "host:worker-1",
             "default_env:prod",
@@ -602,11 +642,10 @@ async fn test_mini_agent_tcp_proxies_dsm_requests() {
 #[tokio::test]
 #[serial]
 async fn test_concentrator_task_death_shuts_down_mini_agent() {
-    let mock_server: MockServer = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let mut config = create_tcp_test_config(8129);
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
 
@@ -655,11 +694,10 @@ async fn test_concentrator_task_death_shuts_down_mini_agent() {
 #[tokio::test]
 #[serial]
 async fn test_tracer_and_agent_stats_disabled_produces_no_stats() {
-    let mock_server: MockServer = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let mut config = create_tcp_test_config(8128); // use different port to avoid race condition with other tests
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.agent_stats_computation_enabled = false;
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
@@ -696,10 +734,10 @@ async fn test_tracer_and_agent_stats_disabled_produces_no_stats() {
             .expect("Failed to send /v0.4/traces request");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
-    verify_trace_request(&mock_server).await;
+    verify_trace_request(&mock_intake).await;
     // Bounded wait to confirm absence of stats request — neither side computed stats.
     tokio::time::sleep(FLUSH_WAIT_DURATION).await;
-    verify_no_stats_request(&mock_server);
+    verify_no_stats_request(&mock_intake);
 
     // Clean up
     agent_handle.abort();
@@ -709,11 +747,10 @@ async fn test_tracer_and_agent_stats_disabled_produces_no_stats() {
 #[tokio::test]
 #[serial]
 async fn test_tracer_disabled_agent_stats_enabled_uses_agent_stats() {
-    let mock_server: MockServer = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let mut config = create_tcp_test_config(8136); // use different port to avoid race condition with other tests
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.agent_stats_computation_enabled = true;
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
@@ -752,8 +789,8 @@ async fn test_tracer_disabled_agent_stats_enabled_uses_agent_stats() {
             .expect("Failed to send /v0.4/traces request");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
-    verify_trace_request(&mock_server).await;
-    verify_stats_request(&mock_server).await; // Agent should compute stats
+    verify_trace_request(&mock_intake).await;
+    verify_stats_request(&mock_intake).await; // Agent should compute stats
 
     // Clean up
     agent_handle.abort();
@@ -762,11 +799,10 @@ async fn test_tracer_disabled_agent_stats_enabled_uses_agent_stats() {
 #[tokio::test]
 #[serial]
 async fn test_tracer_and_agent_stats_enabled_uses_agent_stats_no_duplicates() {
-    let mock_server: MockServer = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let mut config = create_tcp_test_config(8135); // use different port to avoid race condition with other tests
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.agent_stats_computation_enabled = true;
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
@@ -827,20 +863,16 @@ async fn test_tracer_and_agent_stats_enabled_uses_agent_stats_no_duplicates() {
     .expect("Failed to send /v0.4/traces request");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
-    verify_trace_request(&mock_server).await;
-    verify_stats_request(&mock_server).await;
+    verify_trace_request(&mock_intake).await;
+    verify_stats_request(&mock_intake).await;
 
     // The tracer computed stats should never reach the backend. Only the agent computed stats should reach the backend.
-    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
-    let has_marker = stats_reqs
-        .iter()
-        .map(|req| decode_stats_payload(&req.body))
-        .any(|payload| {
-            payload
-                .stats
-                .iter()
-                .any(|csp| csp.service == "tracer-marker-stats")
-        });
+    let has_marker = mock_intake.stats_payloads().iter().any(|payload| {
+        payload
+            .stats
+            .iter()
+            .any(|csp| csp.service == "tracer-marker-stats")
+    });
     assert!(
         !has_marker,
         "Expected tracer computed stats to be dropped, not forwarded to the backend"
@@ -853,11 +885,10 @@ async fn test_tracer_and_agent_stats_enabled_uses_agent_stats_no_duplicates() {
 #[tokio::test]
 #[serial]
 async fn test_tracer_stats_enabled_agent_stats_disabled_forwards_tracer_stats() {
-    let mock_server: MockServer = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let mut config = create_tcp_test_config(8134); // use different port to avoid race condition with other tests
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.agent_stats_computation_enabled = false;
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
@@ -898,17 +929,13 @@ async fn test_tracer_stats_enabled_agent_stats_disabled_forwards_tracer_stats() 
     .expect("Failed to send /v0.6/stats request");
     assert_eq!(stats_response.status(), StatusCode::ACCEPTED);
 
-    verify_stats_request(&mock_server).await;
-    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
-    let has_marker = stats_reqs
-        .iter()
-        .map(|req| decode_stats_payload(&req.body))
-        .any(|payload| {
-            payload
-                .stats
-                .iter()
-                .any(|csp| csp.service == "tracer-marker-stats")
-        });
+    verify_stats_request(&mock_intake).await;
+    let has_marker = mock_intake.stats_payloads().iter().any(|payload| {
+        payload
+            .stats
+            .iter()
+            .any(|csp| csp.service == "tracer-marker-stats")
+    });
     assert!(
         has_marker,
         "Expected tracer computed stats to be forwarded to the backend"
@@ -924,11 +951,10 @@ async fn test_tracer_stats_enabled_agent_stats_disabled_forwards_tracer_stats() 
 #[tokio::test]
 #[serial]
 async fn test_internal_span_kind_does_not_produce_stats() {
-    let mock_server = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let mut config = create_tcp_test_config(8132);
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.agent_stats_computation_enabled = true;
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
@@ -974,22 +1000,20 @@ async fn test_internal_span_kind_does_not_produce_stats() {
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
 
-    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
+    let stats_payloads = mock_intake.stats_payloads();
     assert!(
-        !stats_reqs.is_empty(),
+        !stats_payloads.is_empty(),
         "Expected a stats request from the root span"
     );
 
-    let all_groups: Vec<_> = stats_reqs
+    let all_groups: Vec<_> = stats_payloads
         .iter()
-        .map(|req| decode_stats_payload(&req.body))
         .flat_map(|payload| {
             payload
                 .stats
-                .into_iter()
-                .flat_map(|csp| csp.stats.into_iter())
-                .flat_map(|bucket| bucket.stats.into_iter())
-                .collect::<Vec<_>>()
+                .iter()
+                .flat_map(|csp| csp.stats.iter())
+                .flat_map(|bucket| bucket.stats.iter())
         })
         .collect();
 
@@ -1015,11 +1039,10 @@ async fn test_internal_span_kind_does_not_produce_stats() {
 #[tokio::test]
 #[serial]
 async fn test_peer_tags_in_flushed_stats() {
-    let mock_server = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let mut config = create_tcp_test_config(8131);
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.agent_stats_computation_enabled = true;
     let config = Arc::new(config);
     let test_port = config.dd_apm_receiver_port;
@@ -1065,13 +1088,13 @@ async fn test_peer_tags_in_flushed_stats() {
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
 
-    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
+    let stats_payloads = mock_intake.stats_payloads();
     assert!(
-        !stats_reqs.is_empty(),
+        !stats_payloads.is_empty(),
         "Expected at least one stats request"
     );
 
-    let payload = decode_stats_payload(&stats_reqs[0].body);
+    let payload = &stats_payloads[0];
     let all_peer_tags: Vec<&str> = payload
         .stats
         .iter()
@@ -1090,12 +1113,11 @@ async fn test_peer_tags_in_flushed_stats() {
 #[tokio::test]
 #[serial]
 async fn test_mini_agent_named_pipe_with_real_flushers() {
-    let mock_server = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let pipe_name = r"\\.\pipe\dd_trace_real_flusher_test";
     let mut config = create_tcp_test_config(0);
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.dd_apm_windows_pipe_name = Some(pipe_name.to_string());
     config.dd_apm_receiver_port = 0;
     config.agent_stats_computation_enabled = true;
@@ -1133,26 +1155,25 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
             .expect("Failed to send /v0.4/traces request over named pipe");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
-    verify_trace_request(&mock_server).await;
+    verify_trace_request(&mock_intake).await;
 
     // Trigger shutdown to force flush in progress concentrator buckets
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
-    verify_stats_request(&mock_server).await;
+    verify_stats_request(&mock_intake).await;
 }
 
 #[cfg(all(test, windows, feature = "windows-pipes"))]
 #[tokio::test]
 #[serial]
 async fn test_mini_agent_dual_transport_with_real_flushers() {
-    let mock_server = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
     let pipe_name = r"\\.\pipe\dd_trace_dual_transport_test";
     let tcp_port: u16 = 8130;
 
     let mut config = create_tcp_test_config(tcp_port);
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.dd_apm_windows_pipe_name = Some(pipe_name.to_string());
     // Both transports are deliberately set on the same agent: a non-zero TCP
     // port AND a pipe name. They must come up concurrently.
@@ -1215,12 +1236,16 @@ async fn test_mini_agent_dual_transport_with_real_flushers() {
             .expect("Failed to send /v0.4/traces request over named pipe");
     assert_eq!(pipe_response.status(), StatusCode::OK);
 
-    wait_for_request_at_path(&mock_server, "/api/v0.2/traces").await;
+    wait_for_capture(
+        || !mock_intake.trace_payloads().is_empty(),
+        "a trace request at /api/v0.2/traces",
+    )
+    .await;
 
     // Both payloads must reach the same backend through the shared flusher
     // pipeline. The flusher may batch them into one POST or two; either is
     // fine, what matters is that both service-name needles show up.
-    let trace_reqs = mock_server.get_requests_for_path("/api/v0.2/traces");
+    let trace_reqs = mock_intake.requests_for_path("/api/v0.2/traces");
     assert!(
         !trace_reqs.is_empty(),
         "no trace POST reached backend; expected traces from both transports"
@@ -1245,5 +1270,5 @@ async fn test_mini_agent_dual_transport_with_real_flushers() {
     // a transport, agent_handle would hang or stats wouldn't arrive.
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
-    verify_stats_request(&mock_server).await;
+    verify_stats_request(&mock_intake).await;
 }
