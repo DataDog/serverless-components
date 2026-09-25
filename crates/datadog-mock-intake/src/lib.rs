@@ -21,11 +21,11 @@
 //!
 //! `MockIntake::start()` binds `127.0.0.1:0` with defaults and is used by the
 //! trace-agent integration tests in this workspace and by the APM / DSM
-//! integration tests in `bottlecap`. The standalone `fake-intake` binary in
+//! integration tests in `bottlecap`. The standalone `mock-intake` binary in
 //! the `datadog-lambda-extension` repository wraps this crate with request
 //! summaries, optional stats failure injection
-//! (`FAKE_INTAKE_FAIL_STATS_FIRST_N`), and optional JSON dumps
-//! (`FAKE_INTAKE_DUMP_DIR`) for local debugging against a live tracer.
+//! (`MOCK_INTAKE_FAIL_STATS_FIRST_N`), and optional JSON dumps
+//! (`MOCK_INTAKE_DUMP_DIR`) for local debugging against a live tracer.
 //!
 //! This crate is self-contained (no host config, logging framework, or trace
 //! processing dependencies) so it stays usable from multiple repositories.
