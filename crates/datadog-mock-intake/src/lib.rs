@@ -62,39 +62,45 @@ use tokio::task::JoinHandle;
 /// before decompression.
 const MAX_BODY_SIZE: usize = 2_097_152;
 
+/// Maximum accepted size for a decompressed body. `MAX_BODY_SIZE` caps the
+/// wire body, but gzip/zstd can still expand a small compressed body into a
+/// much larger one; this bounds that expansion so a pathological or
+/// malformed payload cannot exhaust memory.
+const MAX_DECOMPRESSED_SIZE: usize = 64 * 1024 * 1024;
+
 /// A DSM pipeline-stats payload as it lands on `/api/v0.1/pipeline_stats`.
 /// Only the fields tests assert on are decoded; serde ignores the rest
 /// (including the `serde_bytes` latency sketches). JSON dumps therefore
 /// contain only these fields, not the full wire payload.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PipelineStatsPayload {
-    #[serde(rename = "Env")]
+    #[serde(rename = "Env", default)]
     pub env: String,
-    #[serde(rename = "Service")]
+    #[serde(rename = "Service", default)]
     pub service: String,
-    #[serde(rename = "TracerVersion")]
+    #[serde(rename = "TracerVersion", default)]
     pub tracer_version: String,
-    #[serde(rename = "Version")]
+    #[serde(rename = "Version", default)]
     pub version: String,
-    #[serde(rename = "Tags")]
+    #[serde(rename = "Tags", default)]
     pub tags: Vec<String>,
-    #[serde(rename = "Stats")]
+    #[serde(rename = "Stats", default)]
     pub stats: Vec<PipelineStatsBucket>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PipelineStatsBucket {
-    #[serde(rename = "Stats")]
+    #[serde(rename = "Stats", default)]
     pub stats: Vec<PipelineStatsPoint>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PipelineStatsPoint {
-    #[serde(rename = "Hash")]
+    #[serde(rename = "Hash", default)]
     pub hash: u64,
-    #[serde(rename = "ParentHash")]
+    #[serde(rename = "ParentHash", default)]
     pub parent_hash: u64,
-    #[serde(rename = "EdgeTags")]
+    #[serde(rename = "EdgeTags", default)]
     pub edge_tags: Vec<String>,
 }
 
@@ -499,14 +505,16 @@ fn handle_stats(
         );
     }
 
-    if let Some(payload) = &handled.decoded {
+    if state.options.dump_dir.is_some()
+        && let Some(payload) = &handled.decoded
+    {
         dump_request(
             state,
             handled.request_id,
             "/api/v0.2/stats",
             headers,
             handled.status,
-            serde_json::to_value(payload).unwrap_or_else(|_| serde_json::Value::Null),
+            serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
         );
     }
 
@@ -570,7 +578,9 @@ fn handle_traces(
         );
     }
 
-    if let Some(payload) = &handled.decoded {
+    if state.options.dump_dir.is_some()
+        && let Some(payload) = &handled.decoded
+    {
         dump_request(
             state,
             handled.request_id,
@@ -635,14 +645,16 @@ fn handle_pipeline_stats(
         );
     }
 
-    if let Some(payload) = &handled.decoded {
+    if state.options.dump_dir.is_some()
+        && let Some(payload) = &handled.decoded
+    {
         dump_request(
             state,
             handled.request_id,
             "/api/v0.1/pipeline_stats",
             headers,
             handled.status,
-            serde_json::to_value(payload).unwrap_or_else(|_| serde_json::Value::Null),
+            serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
         );
     }
 
@@ -1004,15 +1016,16 @@ fn decompress(headers: &hyper::HeaderMap, body: &Bytes) -> Result<Vec<u8>, Strin
 
     match encoding.as_str() {
         "gzip" => {
-            let mut decoder = flate2::read::GzDecoder::new(body.as_ref());
-            let mut out = Vec::new();
-            decoder
-                .read_to_end(&mut out)
-                .map_err(|e| format!("mock_intake: gzip decode failed: {e}"))?;
-            Ok(out)
+            let decoder = flate2::read::GzDecoder::new(body.as_ref());
+            read_capped(decoder, MAX_DECOMPRESSED_SIZE)
+                .map_err(|e| format!("mock_intake: gzip decode failed: {e}"))
         }
-        "zstd" => zstd::stream::decode_all(body.as_ref())
-            .map_err(|e| format!("mock_intake: zstd decode failed: {e}")),
+        "zstd" => {
+            let decoder = zstd::stream::read::Decoder::new(body.as_ref())
+                .map_err(|e| format!("mock_intake: zstd decoder init failed: {e}"))?;
+            read_capped(decoder, MAX_DECOMPRESSED_SIZE)
+                .map_err(|e| format!("mock_intake: zstd decode failed: {e}"))
+        }
         _ => {
             if !encoding.is_empty() {
                 eprintln!(
@@ -1022,6 +1035,25 @@ fn decompress(headers: &hyper::HeaderMap, body: &Bytes) -> Result<Vec<u8>, Strin
             Ok(body.to_vec())
         }
     }
+}
+
+/// Read `reader` to the end, rejecting output past `cap` bytes instead of
+/// buffering it. Guards decompression against small inputs that expand into
+/// an unbounded amount of memory (a decompression bomb).
+fn read_capped(reader: impl Read, cap: usize) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    // Ask for one byte more than the cap so an exactly-at-cap payload isn't
+    // mistaken for a truncated, over-cap one.
+    reader
+        .take(cap as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("read failed: {e}"))?;
+    if out.len() > cap {
+        return Err(format!(
+            "decompressed body exceeds {cap} byte cap, rejecting as a likely decompression bomb"
+        ));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
