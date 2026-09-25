@@ -1,0 +1,30 @@
+# Copyright 2025-Present Datadog, Inc. https://www.datadoghq.com/
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "datadog-mock-intake"
+version = "0.1.0"
+license.workspace = true
+edition.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+bytes = "1.10.1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+http-body-util = "0.1"
+hyper = { version = "1.6", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+libdd-trace-protobuf = "4.0.1"
+prost = "0.14.1"
+rmp-serde = { version = "1.3.1", default-features = false }
+serde = { version = "1.0.145", features = ["derive"] }
+serde_json = "1.0"
+thiserror = { version = "1.0.58", default-features = false }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+zstd = { version = "0.13.3", default-features = false }
+
+[dev-dependencies]
+reqwest = { version = "0.12.23", default-features = false }
+tempfile = "3.3.0"
