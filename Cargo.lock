@@ -586,6 +586,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-mock-intake"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "flate2",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libdd-trace-protobuf",
+ "prost 0.14.3",
+ "reqwest",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "zstd",
+]
+
+[[package]]
 name = "datadog-opentelemetry"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -664,8 +685,8 @@ dependencies = [
  "async-trait",
  "bytes",
  "datadog-fips",
+ "datadog-mock-intake",
  "duplicate",
- "flate2",
  "http-body-util",
  "hyper",
  "hyper-http-proxy",
@@ -3015,9 +3036,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
