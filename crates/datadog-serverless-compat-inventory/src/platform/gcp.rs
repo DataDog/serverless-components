@@ -10,6 +10,7 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 const METADATA_BASE_URL: &str = "http://metadata.google.internal/computeMetadata/v1";
+const MAX_METADATA_RESPONSE_BYTES: usize = 1024;
 
 struct Identity {
     name: String,
@@ -22,16 +23,26 @@ pub(super) async fn collect() -> Option<PlatformData> {
 }
 
 async fn collect_from<E: QueryEnv>(env: E) -> Option<PlatformData> {
+    collect_from_with_metadata_base(env, METADATA_BASE_URL).await
+}
+
+async fn collect_from_with_metadata_base<E: QueryEnv>(
+    env: E,
+    metadata_base_url: &str,
+) -> Option<PlatformData> {
     let mut identity = identity_from_env(&env)?;
 
     match (&identity.region, &identity.project) {
         (None, None) => {
-            let (region, project) = tokio::join!(fetch_region(), fetch_project());
+            let (region, project) = tokio::join!(
+                fetch_region(metadata_base_url),
+                fetch_project(metadata_base_url)
+            );
             identity.region = region;
             identity.project = project;
         }
-        (None, Some(_)) => identity.region = fetch_region().await,
-        (Some(_), None) => identity.project = fetch_project().await,
+        (None, Some(_)) => identity.region = fetch_region(metadata_base_url).await,
+        (Some(_), None) => identity.project = fetch_project(metadata_base_url).await,
         (Some(_), Some(_)) => {}
     }
 
@@ -106,12 +117,15 @@ fn detect_runtime(env: &impl QueryEnv) -> Option<(&'static str, String)> {
 }
 
 async fn fetch_metadata_value(
+    base_url: &str,
     path: &str,
     label: &str,
     parse: impl FnOnce(&str) -> Option<String>,
 ) -> Option<String> {
     let client = match create_reqwest_client_builder().and_then(|builder| {
         builder
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(2))
             .build()
             .map_err(Into::into)
@@ -123,8 +137,8 @@ async fn fetch_metadata_value(
         }
     };
 
-    let response = match client
-        .get(format!("{METADATA_BASE_URL}/{path}"))
+    let mut response = match client
+        .get(format!("{}/{path}", base_url.trim_end_matches('/')))
         .header("Metadata-Flavor", "Google")
         .send()
         .await
@@ -144,10 +158,45 @@ async fn fetch_metadata_value(
         return None;
     }
 
-    let body = match response.text().await {
+    let response_flavor = response
+        .headers()
+        .get("Metadata-Flavor")
+        .and_then(|value| value.to_str().ok());
+    if response_flavor != Some("Google") {
+        warn!("inventory: GCP metadata response missing Metadata-Flavor header for {label}");
+        return None;
+    }
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_METADATA_RESPONSE_BYTES as u64)
+    {
+        warn!("inventory: GCP metadata response too large for {label}");
+        return None;
+    }
+
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if body.len() + chunk.len() <= MAX_METADATA_RESPONSE_BYTES => {
+                body.extend_from_slice(&chunk);
+            }
+            Ok(Some(_)) => {
+                warn!("inventory: GCP metadata response too large for {label}");
+                return None;
+            }
+            Ok(None) => break,
+            Err(error) => {
+                warn!("inventory: failed to read GCP metadata {label}: {error}");
+                return None;
+            }
+        }
+    }
+
+    let body = match std::str::from_utf8(&body) {
         Ok(body) => body,
         Err(error) => {
-            warn!("inventory: failed to read GCP metadata {label}: {error}");
+            warn!("inventory: GCP metadata {label} was not UTF-8: {error}");
             return None;
         }
     };
@@ -156,9 +205,9 @@ async fn fetch_metadata_value(
     value
 }
 
-async fn fetch_region() -> Option<String> {
+async fn fetch_region(base_url: &str) -> Option<String> {
     // Response: projects/<project-number>/regions/<region-name>
-    fetch_metadata_value("instance/region", "region", |body| {
+    fetch_metadata_value(base_url, "instance/region", "region", |body| {
         body.split('/')
             .next_back()
             .filter(|value| !value.is_empty())
@@ -167,8 +216,8 @@ async fn fetch_region() -> Option<String> {
     .await
 }
 
-async fn fetch_project() -> Option<String> {
-    fetch_metadata_value("project/project-id", "project-id", |body| {
+async fn fetch_project(base_url: &str) -> Option<String> {
+    fetch_metadata_value(base_url, "project/project-id", "project-id", |body| {
         (!body.is_empty()).then(|| body.to_string())
     })
     .await
@@ -178,6 +227,7 @@ async fn fetch_project() -> Option<String> {
 mod tests {
     use super::*;
     use crate::test_env::FakeEnv;
+    use httpmock::prelude::*;
 
     #[test]
     fn reads_complete_gen1_identity() {
@@ -256,10 +306,102 @@ mod tests {
         assert_eq!(detect_runtime(&env), Some(("python", "3.12.7".into())));
     }
 
-    #[test]
-    fn parses_metadata_region() {
-        let body = "projects/123456/regions/us-central1";
-        let region = body.split('/').next_back().map(str::to_string);
-        assert_eq!(region.as_deref(), Some("us-central1"));
+    #[tokio::test]
+    async fn completes_identity_from_metadata_server() {
+        let server = MockServer::start_async().await;
+        let region = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/instance/region")
+                    .header("Metadata-Flavor", "Google");
+                then.status(200)
+                    .header("Metadata-Flavor", "Google")
+                    .body("projects/123/regions/us-central1\n");
+            })
+            .await;
+        let project = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/project/project-id")
+                    .header("Metadata-Flavor", "Google");
+                then.status(200)
+                    .header("Metadata-Flavor", "Google")
+                    .body("my-project\n");
+            })
+            .await;
+
+        let data = collect_from_with_metadata_base(
+            FakeEnv::new(&[("FUNCTION_NAME", "my-fn")]),
+            &server.base_url(),
+        )
+        .await
+        .expect("metadata should complete the identity");
+
+        assert_eq!(data.metadata["region"], "us-central1");
+        assert_eq!(data.metadata["gcp_project_id"], "my-project");
+        region.assert_async().await;
+        project.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn rejects_untrusted_or_oversized_metadata_responses() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.path("/missing-header");
+                then.status(200).body("my-project");
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.path("/oversized");
+                then.status(200)
+                    .header("Metadata-Flavor", "Google")
+                    .body("x".repeat(MAX_METADATA_RESPONSE_BYTES + 1));
+            })
+            .await;
+
+        assert!(
+            fetch_metadata_value(&server.base_url(), "missing-header", "test", |body| {
+                Some(body.to_string())
+            })
+            .await
+            .is_none()
+        );
+        assert!(
+            fetch_metadata_value(&server.base_url(), "oversized", "test", |body| {
+                Some(body.to_string())
+            })
+            .await
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_follow_metadata_redirects() {
+        let server = MockServer::start_async().await;
+        let target = server
+            .mock_async(|when, then| {
+                when.path("/target");
+                then.status(200)
+                    .header("Metadata-Flavor", "Google")
+                    .body("my-project");
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.path("/redirect");
+                then.status(307).header("Location", server.url("/target"));
+            })
+            .await;
+
+        assert!(
+            fetch_metadata_value(&server.base_url(), "redirect", "test", |body| {
+                Some(body.to_string())
+            })
+            .await
+            .is_none()
+        );
+        target.assert_calls_async(0).await;
     }
 }
