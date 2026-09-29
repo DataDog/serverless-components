@@ -1,6 +1,12 @@
 name: Release Datadog Serverless Compat
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Serverless Compat release version"
+        required: true
+        type: string
 
 permissions: {}
 
@@ -12,7 +18,8 @@ jobs:
         runner: [ubuntu-24.04, windows-2022]
     uses: ./.github/workflows/build-datadog-serverless-compat.yml
     with:
-      runner: ${{matrix.runner}}
+      runner: ${{ matrix.runner }}
+      version: ${{ inputs.version }}
   release:
     runs-on: ubuntu-24.04
     needs: build
