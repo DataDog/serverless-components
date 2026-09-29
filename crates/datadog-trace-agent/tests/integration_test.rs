@@ -8,7 +8,9 @@ use common::helpers::{
     create_test_trace_payload, create_trace_with_span_kind_children_payload, send_tcp_request,
 };
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
-use datadog_mock_intake::{MockIntake, PipelineStatsPayload};
+use datadog_mock_intake::{
+    MockIntake, PipelineStatsBucket, PipelineStatsPayload, PipelineStatsPoint,
+};
 use datadog_trace_agent::{
     config::{Config, Tags, test_helpers::create_tcp_test_config},
     mini_agent::MiniAgent,
@@ -601,8 +603,8 @@ async fn test_mini_agent_tcp_proxies_dsm_requests() {
         tracer_version: "1.0".to_string(),
         version: "2.0".to_string(),
         tags: Vec::new(),
-        stats: vec![datadog_mock_intake::PipelineStatsBucket {
-            stats: vec![datadog_mock_intake::PipelineStatsPoint {
+        stats: vec![PipelineStatsBucket {
+            stats: vec![PipelineStatsPoint {
                 hash: 7,
                 parent_hash: 0,
                 edge_tags: vec!["direction:out".to_string(), "type:kafka".to_string()],
