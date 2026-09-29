@@ -657,6 +657,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-serverless-compat-inventory"
+version = "0.1.0"
+dependencies = [
+ "libdd-common",
+ "libdd-trace-utils",
+ "serde_json",
+]
+
+[[package]]
 name = "datadog-trace-agent"
 version = "0.1.0"
 dependencies = [
