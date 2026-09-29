@@ -714,12 +714,16 @@ fn handle_pipeline_stats(
     };
 
     if state.options.request_summaries {
+        let payload_count = handled
+            .decoded
+            .as_ref()
+            .map_or(0, |p| p.stats.iter().map(|b| b.stats.len()).sum());
         log_summary(
             handled.request_id,
             "/api/v0.1/pipeline_stats",
             headers,
             handled.status,
-            handled.decoded.as_ref().map_or(0, |_| 1),
+            payload_count,
             None,
         );
     }
