@@ -201,6 +201,7 @@ pub struct MockIntake {
     state: std::sync::Arc<SharedState>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
+    connections: std::sync::Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl MockIntake {
@@ -243,7 +244,10 @@ impl MockIntake {
         });
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let connections: std::sync::Arc<Mutex<Vec<JoinHandle<()>>>> =
+            std::sync::Arc::default();
         let task_state = std::sync::Arc::clone(&state);
+        let task_connections = std::sync::Arc::clone(&connections);
         let task = tokio::spawn(async move {
             let state = task_state;
             loop {
@@ -259,7 +263,7 @@ impl MockIntake {
 
                         let io = TokioIo::new(stream);
                         let state = std::sync::Arc::clone(&state);
-                        tokio::spawn(async move {
+                        let handle = tokio::spawn(async move {
                             let service = service_fn(move |req: Request<Incoming>| {
                                 let state = std::sync::Arc::clone(&state);
                                 async move { handle_request(state, req).await }
@@ -268,6 +272,10 @@ impl MockIntake {
                                 .serve_connection(io, service)
                                 .await;
                         });
+                        if let Ok(mut conns) = task_connections.lock() {
+                            conns.retain(|h| !h.is_finished());
+                            conns.push(handle);
+                        }
                     }
                     _ = &mut shutdown_rx => {
                         break;
@@ -281,6 +289,7 @@ impl MockIntake {
             state,
             shutdown_tx: Some(shutdown_tx),
             task: Some(task),
+            connections,
         })
     }
 
@@ -368,6 +377,13 @@ impl Drop for MockIntake {
         }
         if let Some(task) = self.task.take() {
             task.abort();
+        }
+        // Abort any accepted-but-still-running connection tasks so a
+        // keep-alive client cannot keep sending requests after Drop.
+        if let Ok(mut conns) = self.connections.lock() {
+            for handle in conns.drain(..) {
+                handle.abort();
+            }
         }
     }
 }
@@ -1246,6 +1262,89 @@ mod tests {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
         assert!(bound, "listener port was not released after Drop");
+    }
+
+    #[tokio::test]
+    async fn drop_aborts_keep_alive_connections() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let intake = start_default().await;
+        let state = std::sync::Arc::clone(&intake.state);
+        let addr = intake
+            .base_url()
+            .trim_start_matches("http://")
+            .to_string();
+
+        // Raw TCP so the connection stays open (keep-alive) across Drop.
+        let mut stream = tokio::net::TcpStream::connect(&addr)
+            .await
+            .expect("test: connect to mock intake failed");
+        let body = b"not-msgpack";
+        let request = format!(
+            "POST /api/v0.2/stats HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/msgpack\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("test: write request head failed");
+        stream
+            .write_all(body.as_slice())
+            .await
+            .expect("test: write request body failed");
+
+        // The response has an empty body, so it ends at the header
+        // terminator; read until we have seen it. Do not read to EOF: the
+        // server keeps the connection open for keep-alive reuse.
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = stream
+                .read(&mut chunk)
+                .await
+                .expect("test: read response failed");
+            assert!(n > 0, "test: connection closed before response complete");
+            buf.extend_from_slice(&chunk[..n]);
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        assert!(
+            buf.starts_with(b"HTTP/1.1"),
+            "test: expected an HTTP response, got {buf:?}"
+        );
+        let captured_before = state
+            .captured
+            .lock()
+            .expect("test: requests mutex poisoned")
+            .requests
+            .len();
+        assert_eq!(captured_before, 1, "test: first request should be captured");
+
+        drop(intake);
+
+        // Reuse the still-open keep-alive connection. The connection task
+        // was aborted on Drop, so this request must not be captured.
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("test: write second request failed");
+        stream
+            .write_all(body.as_slice())
+            .await
+            .expect("test: write second body failed");
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        let captured_after = state
+            .captured
+            .lock()
+            .expect("test: requests mutex poisoned")
+            .requests
+            .len();
+        assert_eq!(
+            captured_after, 1,
+            "request sent after Drop must not be captured"
+        );
     }
 
     #[tokio::test]
