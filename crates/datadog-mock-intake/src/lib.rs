@@ -142,9 +142,9 @@ pub enum MockIntakeError {
 /// A raw request captured by the intake: method, path, headers in arrival
 /// order, and the original wire body (pre-decompression). Recorded for every
 /// completed POST attempt to a supported endpoint, including attempts that
-/// were rejected by failure injection or failed to decode. Header values
-/// that are not valid UTF-8 are converted lossily (invalid bytes become
-/// U+FFFD) rather than dropped.
+/// were rejected by failure injection, failed to decode, or used an
+/// unsupported `Content-Encoding`. Header values that are not valid UTF-8 are
+/// converted lossily (invalid bytes become U+FFFD) rather than dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapturedRequest {
     pub method: String,
@@ -338,9 +338,9 @@ impl MockIntake {
     }
 
     /// Raw requests captured for `path`, in arrival order. Includes attempts
-    /// that were rejected by failure injection or failed to decode; excludes
-    /// requests rejected at the transport level (unknown path, unsupported
-    /// method, or oversized body).
+    /// that were rejected by failure injection, failed to decode, or used an
+    /// unsupported `Content-Encoding`; excludes requests rejected at the
+    /// transport level (unknown path, unsupported method, or oversized body).
     #[must_use]
     pub fn requests_for_path(&self, path: &str) -> Vec<CapturedRequest> {
         self.state
@@ -521,38 +521,53 @@ fn handle_stats(
     body: &Bytes,
 ) -> (StatusCode, Option<Accepted>) {
     let request_id = next_request_id(state);
-    let attempt = state.stats_attempts.fetch_add(1, Ordering::SeqCst) + 1;
-    let inject_failure = attempt <= state.options.fail_stats_first_n as u64;
-
     let handled: HandledRequest<pb::StatsPayload> = match decompress(headers, body) {
-        Ok(d) => match rmp_serde::from_slice::<pb::StatsPayload>(&d) {
-            Ok(payload) => {
-                let status = if inject_failure {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                } else {
-                    StatusCode::ACCEPTED
-                };
-                HandledRequest {
-                    request_id,
-                    status,
-                    decoded: Some(payload),
-                }
-            }
-            Err(err) => {
-                eprintln!("mock_intake: failed to decode StatsPayload msgpack: {err}");
-                HandledRequest {
-                    request_id,
-                    status: failure_status(inject_failure),
-                    decoded: None,
-                }
-            }
-        },
-        Err(e) => {
+        // An unsupported Content-Encoding is a client error (415). Like the
+        // transport-level rejections (404/405/413), it does not consume the
+        // failure-injection budget: the budget counts attempts that reach
+        // payload decoding.
+        Err(e @ DecompressError::UnsupportedEncoding(_)) => {
             eprintln!("{e}");
             HandledRequest {
                 request_id,
-                status: failure_status(inject_failure),
+                status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 decoded: None,
+            }
+        }
+        result => {
+            let attempt = state.stats_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            let inject_failure = attempt <= state.options.fail_stats_first_n as u64;
+            match result {
+                Ok(d) => match rmp_serde::from_slice::<pb::StatsPayload>(&d) {
+                    Ok(payload) => {
+                        let status = if inject_failure {
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        } else {
+                            StatusCode::ACCEPTED
+                        };
+                        HandledRequest {
+                            request_id,
+                            status,
+                            decoded: Some(payload),
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("mock_intake: failed to decode StatsPayload msgpack: {err}");
+                        HandledRequest {
+                            request_id,
+                            status: failure_status(inject_failure),
+                            decoded: None,
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{e}");
+                    HandledRequest {
+                        request_id,
+                        status: failure_status(inject_failure),
+                        decoded: None,
+                    }
+                }
             }
         }
     };
@@ -617,7 +632,7 @@ fn handle_traces(
             eprintln!("{e}");
             HandledRequest {
                 request_id,
-                status: StatusCode::BAD_REQUEST,
+                status: decompress_failure_status(&e, false),
                 decoded: None,
             }
         }
@@ -686,7 +701,7 @@ fn handle_pipeline_stats(
             eprintln!("{e}");
             HandledRequest {
                 request_id,
-                status: StatusCode::BAD_REQUEST,
+                status: decompress_failure_status(&e, false),
                 decoded: None,
             }
         }
@@ -736,6 +751,19 @@ fn failure_status(inject_failure: bool) -> StatusCode {
 
 fn next_request_id(state: &SharedState) -> u64 {
     state.request_counter.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Status for a request whose body could not be decompressed. An unsupported
+/// `Content-Encoding` is a client error (`415 Unsupported Media Type`, the
+/// same status the real intake stack uses for unsupported media types)
+/// regardless of stats failure injection; an actual decompression failure
+/// keeps the endpoint's historical status (`400`, or `500` inside the stats
+/// injection window).
+fn decompress_failure_status(err: &DecompressError, inject_failure: bool) -> StatusCode {
+    match err {
+        DecompressError::UnsupportedEncoding(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        DecompressError::Decode(_) => failure_status(inject_failure),
+    }
 }
 
 fn content_encoding(headers: &hyper::HeaderMap) -> String {
@@ -1066,10 +1094,34 @@ fn stats_hits_by_key(payload: &pb::StatsPayload) -> BTreeMap<StatsGroupKey, u64>
 // Body decoding
 // ---------------------------------------------------------------------------
 
+/// An error from decoding a request body's `Content-Encoding`.
+#[derive(Debug)]
+enum DecompressError {
+    /// The `Content-Encoding` header names an encoding the intake does not
+    /// support. Rejected with `415`, matching the intake's treatment of
+    /// unsupported media types, so a test cannot silently pass against the
+    /// mock while the real intake would reject the payload.
+    UnsupportedEncoding(String),
+    /// The body could not be decompressed with its declared encoding.
+    Decode(String),
+}
+
+impl std::fmt::Display for DecompressError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedEncoding(encoding) => {
+                write!(f, "mock_intake: unsupported Content-Encoding '{encoding}'")
+            }
+            Self::Decode(message) => write!(f, "{message}"),
+        }
+    }
+}
+
 /// Decompress a request body based on its `Content-Encoding` header.
-/// Supports `gzip` and `zstd`. An unknown or absent encoding is treated as
-/// identity: the body is returned unchanged.
-fn decompress(headers: &hyper::HeaderMap, body: &Bytes) -> Result<Vec<u8>, String> {
+/// Supports `gzip` and `zstd`; an absent or `identity` encoding returns the
+/// body unchanged. Any other encoding is rejected as unsupported rather than
+/// silently decoded as identity.
+fn decompress(headers: &hyper::HeaderMap, body: &Bytes) -> Result<Vec<u8>, DecompressError> {
     let encoding = headers
         .get("content-encoding")
         .and_then(|v| v.to_str().ok())
@@ -1077,25 +1129,22 @@ fn decompress(headers: &hyper::HeaderMap, body: &Bytes) -> Result<Vec<u8>, Strin
         .to_ascii_lowercase();
 
     match encoding.as_str() {
+        "" | "identity" => Ok(body.to_vec()),
         "gzip" => {
             let decoder = flate2::read::GzDecoder::new(body.as_ref());
-            read_capped(decoder, MAX_DECOMPRESSED_SIZE)
-                .map_err(|e| format!("mock_intake: gzip decode failed: {e}"))
+            read_capped(decoder, MAX_DECOMPRESSED_SIZE).map_err(|e| {
+                DecompressError::Decode(format!("mock_intake: gzip decode failed: {e}"))
+            })
         }
         "zstd" => {
-            let decoder = zstd::stream::read::Decoder::new(body.as_ref())
-                .map_err(|e| format!("mock_intake: zstd decoder init failed: {e}"))?;
-            read_capped(decoder, MAX_DECOMPRESSED_SIZE)
-                .map_err(|e| format!("mock_intake: zstd decode failed: {e}"))
+            let decoder = zstd::stream::read::Decoder::new(body.as_ref()).map_err(|e| {
+                DecompressError::Decode(format!("mock_intake: zstd decoder init failed: {e}"))
+            })?;
+            read_capped(decoder, MAX_DECOMPRESSED_SIZE).map_err(|e| {
+                DecompressError::Decode(format!("mock_intake: zstd decode failed: {e}"))
+            })
         }
-        _ => {
-            if !encoding.is_empty() {
-                eprintln!(
-                    "mock_intake: unrecognized Content-Encoding '{encoding}', treating as identity"
-                );
-            }
-            Ok(body.to_vec())
-        }
+        other => Err(DecompressError::UnsupportedEncoding(other.to_string())),
     }
 }
 
@@ -1195,6 +1244,14 @@ mod tests {
             env: env.to_string(),
             version: "smoke".to_string(),
             ..pb::ClientStatsPayload::default()
+        }
+    }
+
+    fn trace_payload() -> pb::AgentPayload {
+        pb::AgentPayload {
+            env: "local".to_string(),
+            tracer_payloads: vec![pb::TracerPayload::default()],
+            ..pb::AgentPayload::default()
         }
     }
 
@@ -1387,6 +1444,112 @@ mod tests {
         assert_eq!(
             captured_after, 1,
             "request sent after Drop must not be captured"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_content_encoding_returns_415_and_is_not_typed_captured() {
+        let intake = start_default().await;
+        let body = rmp_serde::to_vec_named(&stats_payload(
+            client_payload("local"),
+            1,
+            vec![grouped_stats("svc", "GET /a", 1, |_| {})],
+        ))
+        .expect("test: msgpack encode failed");
+
+        // An unknown Content-Encoding is rejected like the real intake rejects
+        // unsupported media types, not silently decoded as identity.
+        assert_eq!(
+            post(
+                &intake.base_url(),
+                "/api/v0.2/stats",
+                Some("deflate"),
+                body.clone()
+            )
+            .await,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        assert_eq!(
+            post(
+                &intake.base_url(),
+                "/api/v0.2/traces",
+                Some("br"),
+                trace_payload().encode_to_vec()
+            )
+            .await,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        // Not typed-captured: the payload was never accepted.
+        assert!(intake.stats_payloads().is_empty());
+        assert!(intake.trace_payloads().is_empty());
+        // But raw-captured as a completed POST attempt.
+        assert_eq!(intake.requests_for_path("/api/v0.2/stats").len(), 1);
+        assert_eq!(intake.requests_for_path("/api/v0.2/traces").len(), 1);
+
+        // The explicit identity encoding is still accepted.
+        assert_eq!(
+            post(
+                &intake.base_url(),
+                "/api/v0.2/stats",
+                Some("identity"),
+                body
+            )
+            .await,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(intake.stats_payloads().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn corrupted_compressed_bodies_return_400() {
+        let intake = start_default().await;
+        // A gzip-declared body that is not valid gzip is a decode failure
+        // (400), distinct from an unsupported encoding (415).
+        assert_eq!(
+            post(
+                &intake.base_url(),
+                "/api/v0.2/stats",
+                Some("gzip"),
+                b"not-gzip".to_vec()
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_content_encoding_does_not_consume_stats_rejection_budget() {
+        let intake = MockIntake::start_with_options(MockIntakeOptions {
+            fail_stats_first_n: 1,
+            ..MockIntakeOptions::default()
+        })
+        .await
+        .expect("test: start failed");
+
+        let body = rmp_serde::to_vec_named(&stats_payload(
+            client_payload("local"),
+            1,
+            vec![grouped_stats("svc", "GET /a", 1, |_| {})],
+        ))
+        .expect("test: msgpack encode failed");
+
+        assert_eq!(
+            post(
+                &intake.base_url(),
+                "/api/v0.2/stats",
+                Some("deflate"),
+                body.clone()
+            )
+            .await,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        // The 415 attempt is a client error, not an injected rejection: the
+        // next valid request is rejected as attempt 1 of 1, proving the
+        // unsupported-encoding attempt did not consume the budget.
+        assert_eq!(
+            post(&intake.base_url(), "/api/v0.2/stats", None, body).await,
+            StatusCode::INTERNAL_SERVER_ERROR
         );
     }
 
