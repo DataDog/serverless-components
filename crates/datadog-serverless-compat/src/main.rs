@@ -165,22 +165,19 @@ pub async fn main() {
 
     // Inventory runs independently from traces and metrics so failures cannot
     // block mini-agent startup or request handling.
-    if let Some(api_key) = dd_api_key.clone() {
-        let inventory_site = dd_site.clone();
-        let inventory_proxy = https_proxy.clone();
-        let inventory_env = env_type.clone();
-        tokio::spawn(async move {
-            run_inventory_reporter(
-                &api_key,
-                &inventory_site,
-                inventory_proxy.as_deref(),
-                inventory_env,
-            )
-            .await;
-        });
-    } else {
-        warn!("DD_API_KEY not set, skipping inventory reporter");
-    }
+    let inventory_api_key = dd_api_key.clone();
+    let inventory_site = dd_site.clone();
+    let inventory_proxy = https_proxy.clone();
+    let inventory_env = env_type.clone();
+    tokio::spawn(async move {
+        run_inventory_reporter(
+            inventory_api_key.as_deref(),
+            &inventory_site,
+            inventory_proxy.as_deref(),
+            inventory_env,
+        )
+        .await;
+    });
 
     let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
 
