@@ -334,7 +334,7 @@ impl MockIntake {
         self.state
             .captured
             .lock()
-            .expect("mock_intake: requests mutex poisoned")
+            .expect("mock_intake: captured mutex poisoned")
             .requests
             .iter()
             .filter(|req| req.path == path)
@@ -348,7 +348,7 @@ impl MockIntake {
         self.state
             .captured
             .lock()
-            .expect("mock_intake: pipeline_stats mutex poisoned")
+            .expect("mock_intake: captured mutex poisoned")
             .pipeline_stats
             .clone()
     }
@@ -360,7 +360,7 @@ impl MockIntake {
         self.state
             .captured
             .lock()
-            .expect("mock_intake: stats mutex poisoned")
+            .expect("mock_intake: captured mutex poisoned")
             .stats
             .clone()
     }
@@ -371,7 +371,7 @@ impl MockIntake {
         self.state
             .captured
             .lock()
-            .expect("mock_intake: traces mutex poisoned")
+            .expect("mock_intake: captured mutex poisoned")
             .traces
             .clone()
     }
@@ -473,7 +473,7 @@ async fn handle_request(
         let mut guard = state
             .captured
             .lock()
-            .expect("mock_intake: requests mutex poisoned");
+            .expect("mock_intake: captured mutex poisoned");
         guard.requests.push(captured);
         match accepted {
             Some(Accepted::Stats(payload)) => guard.stats.push(payload),
@@ -1351,7 +1351,7 @@ mod tests {
         let captured_before = state
             .captured
             .lock()
-            .expect("test: requests mutex poisoned")
+            .expect("test: captured mutex poisoned")
             .requests
             .len();
         assert_eq!(captured_before, 1, "test: first request should be captured");
@@ -1373,7 +1373,7 @@ mod tests {
         let captured_after = state
             .captured
             .lock()
-            .expect("test: requests mutex poisoned")
+            .expect("test: captured mutex poisoned")
             .requests
             .len();
         assert_eq!(
