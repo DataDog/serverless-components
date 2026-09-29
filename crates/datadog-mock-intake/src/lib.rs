@@ -153,6 +153,15 @@ pub struct CapturedRequest {
     pub body: Vec<u8>,
 }
 
+/// A completed request held back until every earlier request has been
+/// flushed to the visible capture vectors, so readers only ever observe a
+/// contiguous, arrival-ordered prefix of captures.
+#[derive(Debug)]
+struct PendingCapture {
+    request: CapturedRequest,
+    accepted: Option<Accepted>,
+}
+
 /// Captured, decoded APM payloads for a single test run.
 #[derive(Debug, Default)]
 struct Captured {
@@ -160,6 +169,43 @@ struct Captured {
     stats: Vec<pb::StatsPayload>,
     traces: Vec<pb::AgentPayload>,
     pipeline_stats: Vec<PipelineStatsPayload>,
+    /// Requests that finished handling out of arrival order and are waiting
+    /// for earlier requests before they can be exposed to readers.
+    pending: BTreeMap<u64, PendingCapture>,
+    /// The request id the next flush expects, so the visible vectors stay in
+    /// arrival order even when concurrent requests complete out of order.
+    next_flush: u64,
+}
+
+impl Captured {
+    fn new() -> Self {
+        // Request ids start at 1 (`next_request_id` adds 1 after the fetch),
+        // so the first flush expects id 1.
+        Self {
+            next_flush: 1,
+            ..Default::default()
+        }
+    }
+
+    /// Record a completed request. Out-of-order completions are buffered
+    /// until all earlier requests arrive, then a contiguous prefix is
+    /// appended to the visible vectors in one pass so readers never observe
+    /// a raw capture whose typed capture is missing, a gap, or a later
+    /// request before an earlier one.
+    fn record(&mut self, request_id: u64, request: CapturedRequest, accepted: Option<Accepted>) {
+        self.pending
+            .insert(request_id, PendingCapture { request, accepted });
+        while let Some(pending) = self.pending.remove(&self.next_flush) {
+            self.requests.push(pending.request);
+            match pending.accepted {
+                Some(Accepted::Stats(payload)) => self.stats.push(payload),
+                Some(Accepted::Traces(payload)) => self.traces.push(payload),
+                Some(Accepted::PipelineStats(payload)) => self.pipeline_stats.push(payload),
+                None => {}
+            }
+            self.next_flush += 1;
+        }
+    }
 }
 
 /// Shared server state. The request handler writes to the mutex; callers read
@@ -246,7 +292,7 @@ impl MockIntake {
         let base_url = format!("http://{addr}");
 
         let state = std::sync::Arc::new(SharedState {
-            captured: Mutex::new(Captured::default()),
+            captured: Mutex::new(Captured::new()),
             options,
             request_counter: AtomicU64::new(0),
             stats_attempts: AtomicU64::new(0),
@@ -488,26 +534,21 @@ async fn handle_request(
         }
     };
 
-    // Record the raw request and its typed payload in one critical section so
-    // readers never observe a raw capture whose typed capture is still missing.
-    {
-        let mut guard = state
-            .captured
-            .lock()
-            .expect("mock_intake: captured mutex poisoned");
-        guard.requests.push(captured);
-        match accepted {
-            Some(Accepted::Stats(payload)) => guard.stats.push(payload),
-            Some(Accepted::Traces(payload)) => guard.traces.push(payload),
-            Some(Accepted::PipelineStats(payload)) => guard.pipeline_stats.push(payload),
-            None => {}
-        }
-    }
+    // Record the raw request and its typed payload in one critical section.
+    // Out-of-order completions are buffered so readers only ever observe a
+    // contiguous, arrival-ordered prefix: no raw capture without its typed
+    // payload, no gaps, and no later request before an earlier one.
+    state
+        .captured
+        .lock()
+        .expect("mock_intake: captured mutex poisoned")
+        .record(request_id, captured, accepted);
     Ok(response(status))
 }
 
 /// A decoded payload the intake accepted and should expose through its typed
 /// query methods.
+#[derive(Debug)]
 enum Accepted {
     Stats(pb::StatsPayload),
     Traces(pb::AgentPayload),
@@ -2501,5 +2542,49 @@ mod tests {
         .await
         .expect("test: start failed");
         assert_eq!(intake.base_url(), format!("http://127.0.0.1:{port}"));
+    }
+
+    fn captured_request(body: &[u8]) -> CapturedRequest {
+        CapturedRequest {
+            method: "POST".to_string(),
+            path: "/api/v0.2/stats".to_string(),
+            headers: Vec::new(),
+            body: body.to_vec(),
+        }
+    }
+
+    #[test]
+    fn record_flushes_captures_in_arrival_order() {
+        let mut captured = Captured::new();
+
+        // Request 2 completes before request 1: nothing becomes visible yet,
+        // because the visible vectors must stay in arrival order.
+        captured.record(2, captured_request(b"two"), None);
+        assert!(captured.requests.is_empty());
+
+        // A later request completing early is also held back.
+        captured.record(4, captured_request(b"four"), None);
+        assert!(captured.requests.is_empty());
+
+        // Request 1 completes: the contiguous prefix (1, 2) flushes in
+        // arrival order; request 4 stays buffered.
+        captured.record(1, captured_request(b"one"), None);
+        let bodies: Vec<_> = captured.requests.iter().map(|r| r.body.clone()).collect();
+        assert_eq!(bodies, vec![b"one".to_vec(), b"two".to_vec()]);
+
+        // Request 3 completes: the remaining prefix (2, 3, 4) flushes in
+        // arrival order, including the out-of-order request 4.
+        captured.record(3, captured_request(b"three"), None);
+        let bodies: Vec<_> = captured.requests.iter().map(|r| r.body.clone()).collect();
+        assert_eq!(
+            bodies,
+            vec![
+                b"one".to_vec(),
+                b"two".to_vec(),
+                b"three".to_vec(),
+                b"four".to_vec()
+            ]
+        );
+        assert!(captured.pending.is_empty());
     }
 }
