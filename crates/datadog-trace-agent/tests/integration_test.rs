@@ -197,11 +197,11 @@ pub async fn verify_stats_request(mock_intake: &MockIntake) {
 
 /// Helper to verify stats request was not sent to mock intake
 pub fn verify_no_stats_request(mock_intake: &MockIntake) {
-    let stats_payloads = mock_intake.stats_payloads();
+    let stats_requests = mock_intake.requests_for_path("/api/v0.2/stats");
     assert!(
-        stats_payloads.is_empty(),
+        stats_requests.is_empty(),
         "Expected no stats request to mock intake, received {} request(s)",
-        stats_payloads.len()
+        stats_requests.len()
     );
 }
 
