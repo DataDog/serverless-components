@@ -256,8 +256,13 @@ impl MockIntake {
                         let (stream, _) = match result {
                             Ok(conn) => conn,
                             Err(e) => {
+                                // Accept errors (e.g. EMFILE, ECONNABORTED) are
+                                // usually transient; keep serving instead of
+                                // silently stopping the intake. Back off briefly
+                                // so a persistent error does not spin the loop.
                                 eprintln!("mock_intake: accept error: {e}");
-                                break;
+                                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                continue;
                             }
                         };
 
