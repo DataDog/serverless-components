@@ -243,8 +243,7 @@ impl MockIntake {
         });
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
-        let connections: std::sync::Arc<Mutex<Vec<JoinHandle<()>>>> =
-            std::sync::Arc::default();
+        let connections: std::sync::Arc<Mutex<Vec<JoinHandle<()>>>> = std::sync::Arc::default();
         let task_state = std::sync::Arc::clone(&state);
         let task_connections = std::sync::Arc::clone(&connections);
         let task = tokio::spawn(async move {
@@ -581,13 +580,11 @@ fn handle_traces(
     let request_id = next_request_id(state);
     let handled: HandledRequest<pb::AgentPayload> = match decompress(headers, body) {
         Ok(d) => match pb::AgentPayload::decode(d.as_slice()) {
-            Ok(payload) => {
-                HandledRequest {
-                    request_id,
-                    status: StatusCode::ACCEPTED,
-                    decoded: Some(payload),
-                }
-            }
+            Ok(payload) => HandledRequest {
+                request_id,
+                status: StatusCode::ACCEPTED,
+                decoded: Some(payload),
+            },
             Err(err) => {
                 eprintln!("mock_intake: failed to decode AgentPayload protobuf: {err}");
                 HandledRequest {
@@ -652,13 +649,11 @@ fn handle_pipeline_stats(
     let request_id = next_request_id(state);
     let handled: HandledRequest<PipelineStatsPayload> = match decompress(headers, body) {
         Ok(d) => match rmp_serde::from_slice::<PipelineStatsPayload>(&d) {
-            Ok(payload) => {
-                HandledRequest {
-                    request_id,
-                    status: StatusCode::ACCEPTED,
-                    decoded: Some(payload),
-                }
-            }
+            Ok(payload) => HandledRequest {
+                request_id,
+                status: StatusCode::ACCEPTED,
+                decoded: Some(payload),
+            },
             Err(err) => {
                 eprintln!("mock_intake: failed to decode pipeline stats msgpack: {err}");
                 HandledRequest {
@@ -1302,10 +1297,7 @@ mod tests {
 
         let intake = start_default().await;
         let state = std::sync::Arc::clone(&intake.state);
-        let addr = intake
-            .base_url()
-            .trim_start_matches("http://")
-            .to_string();
+        let addr = intake.base_url().trim_start_matches("http://").to_string();
 
         // Raw TCP so the connection stays open (keep-alive) across Drop.
         let mut stream = tokio::net::TcpStream::connect(&addr)
@@ -1656,10 +1648,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let intake = start_default().await;
-        let addr = intake
-            .base_url()
-            .trim_start_matches("http://")
-            .to_string();
+        let addr = intake.base_url().trim_start_matches("http://").to_string();
 
         // Raw TCP so the header value can carry a non-UTF-8 (obs-text) byte.
         let mut stream = tokio::net::TcpStream::connect(&addr)
