@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod azure;
+mod gcp;
 
 use libdd_trace_utils::trace_utils::EnvironmentType;
 use serde_json::{Map, Value};
+
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
 pub(crate) struct PlatformData {
     pub workload_type: &'static str,
@@ -16,8 +21,7 @@ pub(crate) struct PlatformData {
 pub(crate) async fn collect(env_type: &EnvironmentType) -> Option<PlatformData> {
     match env_type {
         EnvironmentType::AzureFunction => azure::collect(),
-        EnvironmentType::CloudFunction
-        | EnvironmentType::LambdaFunction
-        | EnvironmentType::AzureSpringApp => None,
+        EnvironmentType::CloudFunction => gcp::collect().await,
+        EnvironmentType::LambdaFunction | EnvironmentType::AzureSpringApp => None,
     }
 }
