@@ -442,19 +442,36 @@ async fn handle_request(
             .collect(),
         body: body.to_vec(),
     };
-    state
-        .captured
-        .lock()
-        .expect("mock_intake: requests mutex poisoned")
-        .requests
-        .push(captured);
-
-    let status = match endpoint {
+    let (status, accepted) = match endpoint {
         Endpoint::Stats => handle_stats(&state, &headers, &body),
         Endpoint::Traces => handle_traces(&state, &headers, &body),
         Endpoint::PipelineStats => handle_pipeline_stats(&state, &headers, &body),
     };
+
+    // Record the raw request and its typed payload in one critical section so
+    // readers never observe a raw capture whose typed capture is still missing.
+    {
+        let mut guard = state
+            .captured
+            .lock()
+            .expect("mock_intake: requests mutex poisoned");
+        guard.requests.push(captured);
+        match accepted {
+            Some(Accepted::Stats(payload)) => guard.stats.push(payload),
+            Some(Accepted::Traces(payload)) => guard.traces.push(payload),
+            Some(Accepted::PipelineStats(payload)) => guard.pipeline_stats.push(payload),
+            None => {}
+        }
+    }
     Ok(response(status))
+}
+
+/// A decoded payload the intake accepted and should expose through its typed
+/// query methods.
+enum Accepted {
+    Stats(pb::StatsPayload),
+    Traces(pb::AgentPayload),
+    PipelineStats(PipelineStatsPayload),
 }
 
 /// Result of handling one intake request, before summary and dump emission.
@@ -468,7 +485,7 @@ fn handle_stats(
     state: &std::sync::Arc<SharedState>,
     headers: &hyper::HeaderMap,
     body: &Bytes,
-) -> StatusCode {
+) -> (StatusCode, Option<Accepted>) {
     let request_id = next_request_id(state);
     let attempt = state.stats_attempts.fetch_add(1, Ordering::SeqCst) + 1;
     let inject_failure = attempt <= state.options.fail_stats_first_n as u64;
@@ -479,12 +496,6 @@ fn handle_stats(
                 let status = if inject_failure {
                     StatusCode::INTERNAL_SERVER_ERROR
                 } else {
-                    state
-                        .captured
-                        .lock()
-                        .expect("mock_intake: stats mutex poisoned")
-                        .stats
-                        .push(payload.clone());
                     StatusCode::ACCEPTED
                 };
                 HandledRequest {
@@ -539,24 +550,22 @@ fn handle_stats(
         );
     }
 
-    handled.status
+    let accepted = (handled.status == StatusCode::ACCEPTED)
+        .then_some(handled.decoded)
+        .flatten()
+        .map(Accepted::Stats);
+    (handled.status, accepted)
 }
 
 fn handle_traces(
     state: &std::sync::Arc<SharedState>,
     headers: &hyper::HeaderMap,
     body: &Bytes,
-) -> StatusCode {
+) -> (StatusCode, Option<Accepted>) {
     let request_id = next_request_id(state);
     let handled: HandledRequest<pb::AgentPayload> = match decompress(headers, body) {
         Ok(d) => match pb::AgentPayload::decode(d.as_slice()) {
             Ok(payload) => {
-                state
-                    .captured
-                    .lock()
-                    .expect("mock_intake: traces mutex poisoned")
-                    .traces
-                    .push(payload.clone());
                 HandledRequest {
                     request_id,
                     status: StatusCode::ACCEPTED,
@@ -612,24 +621,22 @@ fn handle_traces(
         );
     }
 
-    handled.status
+    let accepted = (handled.status == StatusCode::ACCEPTED)
+        .then_some(handled.decoded)
+        .flatten()
+        .map(Accepted::Traces);
+    (handled.status, accepted)
 }
 
 fn handle_pipeline_stats(
     state: &std::sync::Arc<SharedState>,
     headers: &hyper::HeaderMap,
     body: &Bytes,
-) -> StatusCode {
+) -> (StatusCode, Option<Accepted>) {
     let request_id = next_request_id(state);
     let handled: HandledRequest<PipelineStatsPayload> = match decompress(headers, body) {
         Ok(d) => match rmp_serde::from_slice::<PipelineStatsPayload>(&d) {
             Ok(payload) => {
-                state
-                    .captured
-                    .lock()
-                    .expect("mock_intake: pipeline_stats mutex poisoned")
-                    .pipeline_stats
-                    .push(payload.clone());
                 HandledRequest {
                     request_id,
                     status: StatusCode::ACCEPTED,
@@ -679,7 +686,11 @@ fn handle_pipeline_stats(
         );
     }
 
-    handled.status
+    let accepted = (handled.status == StatusCode::ACCEPTED)
+        .then_some(handled.decoded)
+        .flatten()
+        .map(Accepted::PipelineStats);
+    (handled.status, accepted)
 }
 
 /// Status used for a stats request that failed to decode or was rejected by
