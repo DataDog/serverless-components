@@ -662,6 +662,7 @@ name = "datadog-serverless-compat-inventory"
 version = "0.1.0"
 dependencies = [
  "datadog-fips",
+ "httpmock",
  "libdd-common",
  "libdd-trace-utils",
  "reqwest",
