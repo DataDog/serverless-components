@@ -73,9 +73,7 @@ pub(super) fn collect() -> Option<PlatformData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    static ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+    use crate::platform::ENV_LOCK;
 
     unsafe fn clear_env() {
         for name in [

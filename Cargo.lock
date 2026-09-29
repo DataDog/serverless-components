@@ -660,9 +660,13 @@ dependencies = [
 name = "datadog-serverless-compat-inventory"
 version = "0.1.0"
 dependencies = [
+ "datadog-fips",
  "libdd-common",
  "libdd-trace-utils",
+ "reqwest",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
