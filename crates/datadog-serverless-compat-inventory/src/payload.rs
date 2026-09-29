@@ -38,23 +38,20 @@ fn build_with_env(
         .filter(|value| !value.is_empty())
         .or_else(|| {
             embedded_version
+                .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
 
-    let mut metadata = serde_json::json!({
-        "flavor": "serverless-compat",
-        "workload_type": platform.workload_type,
-        "report_reason": report_reason,
-        "resource_id": platform.resource_id,
-        "resource_name": platform.resource_name,
-        "serverless_compat_version": compat_version,
-    });
-
-    for (key, value) in &platform.metadata {
-        metadata[key] = value.clone();
-    }
+    // Required identity fields take precedence over platform-specific metadata.
+    let mut metadata = Value::Object(platform.metadata.clone());
+    metadata["flavor"] = Value::String("serverless-compat".into());
+    metadata["workload_type"] = Value::String(platform.workload_type.into());
+    metadata["report_reason"] = Value::String(report_reason.into());
+    metadata["resource_id"] = Value::String(platform.resource_id.clone());
+    metadata["resource_name"] = Value::String(platform.resource_name.clone());
+    metadata["serverless_compat_version"] = Value::String(compat_version);
 
     for (env_key, metadata_key) in [
         ("DD_ENV", "dd_env"),
@@ -90,6 +87,8 @@ mod tests {
     fn azure_platform() -> PlatformData {
         let mut metadata = Map::new();
         metadata.insert("region".into(), Value::String("eastus".into()));
+        metadata.insert("flavor".into(), Value::String("incorrect".into()));
+        metadata.insert("resource_id".into(), Value::String("incorrect".into()));
         PlatformData {
             workload_type: "azure_function",
             resource_id: "/subscriptions/sub/resourcegroups/rg/providers/microsoft.web/sites/app"
@@ -114,6 +113,10 @@ mod tests {
         assert_eq!(payload["uuid"], "process-id");
         assert!(payload["timestamp"].as_i64().unwrap() > 0);
         assert_eq!(payload["agent_metadata"]["flavor"], "serverless-compat");
+        assert_eq!(
+            payload["agent_metadata"]["resource_id"],
+            "/subscriptions/sub/resourcegroups/rg/providers/microsoft.web/sites/app"
+        );
         assert_eq!(payload["agent_metadata"]["workload_type"], "azure_function");
         assert_eq!(payload["agent_metadata"]["report_reason"], "startup");
         assert_eq!(payload["agent_metadata"]["region"], "eastus");

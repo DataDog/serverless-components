@@ -96,15 +96,29 @@ mod tests {
     }
 
     #[test]
-    fn missing_name_skips_inventory() {
-        assert!(
-            collect_from(FakeEnv::new(&[
+    fn missing_required_identity_skips_inventory() {
+        let incomplete_environments = [
+            FakeEnv::new(&[
                 ("FUNCTIONS_WORKER_RUNTIME", "python"),
                 ("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace"),
                 ("WEBSITE_RESOURCE_GROUP", "my-rg"),
-            ]))
-            .is_none()
-        );
+            ]),
+            FakeEnv::new(&[
+                ("FUNCTIONS_WORKER_RUNTIME", "python"),
+                ("WEBSITE_RESOURCE_GROUP", "my-rg"),
+                ("WEBSITE_SITE_NAME", "my-func-app"),
+            ]),
+            FakeEnv::new(&[
+                ("FUNCTIONS_WORKER_RUNTIME", "python"),
+                ("WEBSITE_OWNER_NAME", "abc123+flex-host"),
+                ("WEBSITE_SITE_NAME", "my-flex-func"),
+                ("WEBSITE_SKU", "FlexConsumption"),
+            ]),
+        ];
+
+        for environment in incomplete_environments {
+            assert!(collect_from(environment).is_none());
+        }
     }
 
     #[test]
