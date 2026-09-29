@@ -10,20 +10,42 @@ pub(crate) fn build(
     process_id: &str,
     report_reason: &str,
     platform: &PlatformData,
+    dd_site: &str,
 ) -> Result<Vec<u8>, serde_json::Error> {
     build_with_env(
         process_id,
         report_reason,
         platform,
+        dd_site,
         &ProcessEnv,
         option_env!("DD_SERVERLESS_COMPAT_VERSION"),
     )
+}
+
+pub(crate) fn serverless_compat_version() -> String {
+    serverless_compat_version_with_env(&ProcessEnv, option_env!("DD_SERVERLESS_COMPAT_VERSION"))
+}
+
+fn serverless_compat_version_with_env(
+    env: &impl QueryEnv,
+    embedded_version: Option<&str>,
+) -> String {
+    env.get_var("DD_SERVERLESS_COMPAT_VERSION")
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            embedded_version
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
 fn build_with_env(
     process_id: &str,
     report_reason: &str,
     platform: &PlatformData,
+    dd_site: &str,
     env: &impl QueryEnv,
     embedded_version: Option<&str>,
 ) -> Result<Vec<u8>, serde_json::Error> {
@@ -33,16 +55,7 @@ fn build_with_env(
         .map(|duration| duration.as_nanos() as i64)
         .unwrap_or(0);
 
-    let compat_version = env
-        .get_var("DD_SERVERLESS_COMPAT_VERSION")
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            embedded_version
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let compat_version = serverless_compat_version_with_env(env, embedded_version);
 
     // Required identity fields take precedence over platform-specific metadata.
     let mut metadata = Value::Object(platform.metadata.clone());
@@ -52,12 +65,12 @@ fn build_with_env(
     metadata["resource_id"] = Value::String(platform.resource_id.clone());
     metadata["resource_name"] = Value::String(platform.resource_name.clone());
     metadata["serverless_compat_version"] = Value::String(compat_version);
+    metadata["dd_site"] = Value::String(dd_site.to_string());
 
     for (env_key, metadata_key) in [
         ("DD_ENV", "dd_env"),
         ("DD_SERVICE", "dd_service"),
         ("DD_VERSION", "dd_version"),
-        ("DD_SITE", "dd_site"),
         ("DD_SERVERLESS_COMPAT_RUNTIME", "runtime"),
         (
             "DD_SERVERLESS_COMPAT_RUNTIME_VERSION",
@@ -104,7 +117,8 @@ mod tests {
             "process-id",
             "startup",
             &azure_platform(),
-            &FakeEnv::default(),
+            "datadoghq.com",
+            &FakeEnv::new(&[("DD_SITE", "ignored.example")]),
             Some("1.2.3"),
         )
         .unwrap();
@@ -120,6 +134,7 @@ mod tests {
         assert_eq!(payload["agent_metadata"]["workload_type"], "azure_function");
         assert_eq!(payload["agent_metadata"]["report_reason"], "startup");
         assert_eq!(payload["agent_metadata"]["region"], "eastus");
+        assert_eq!(payload["agent_metadata"]["dd_site"], "datadoghq.com");
         assert_eq!(
             payload["agent_metadata"]["serverless_compat_version"],
             "1.2.3"
@@ -133,8 +148,15 @@ mod tests {
             ("DD_SERVERLESS_COMPAT_RUNTIME", "python-custom"),
             ("DD_SERVERLESS_COMPAT_RUNTIME_VERSION", "3.13.1"),
         ]);
-        let body =
-            build_with_env("pid", "startup", &azure_platform(), &env, Some("1.2.3")).unwrap();
+        let body = build_with_env(
+            "pid",
+            "startup",
+            &azure_platform(),
+            "datadoghq.com",
+            &env,
+            Some("1.2.3"),
+        )
+        .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["agent_metadata"]["runtime"], "python-custom");
@@ -158,7 +180,15 @@ mod tests {
             ("DD_SERVERLESS_COMPAT_RUNTIME", ""),
             ("DD_SERVERLESS_COMPAT_RUNTIME_VERSION", ""),
         ]);
-        let body = build_with_env("pid", "startup", &platform, &env, Some("1.2.3")).unwrap();
+        let body = build_with_env(
+            "pid",
+            "startup",
+            &platform,
+            "datadoghq.com",
+            &env,
+            Some("1.2.3"),
+        )
+        .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["agent_metadata"]["runtime"], "dotnet");
@@ -171,8 +201,15 @@ mod tests {
     #[test]
     fn runtime_compat_version_overrides_embedded_version() {
         let env = FakeEnv::new(&[("DD_SERVERLESS_COMPAT_VERSION", "2.4.6")]);
-        let body =
-            build_with_env("pid", "startup", &azure_platform(), &env, Some("1.2.3")).unwrap();
+        let body = build_with_env(
+            "pid",
+            "startup",
+            &azure_platform(),
+            "datadoghq.com",
+            &env,
+            Some("1.2.3"),
+        )
+        .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(
