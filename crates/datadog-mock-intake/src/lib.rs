@@ -464,14 +464,20 @@ async fn handle_request(
             .collect(),
         body: body.to_vec(),
     };
+    // Request identity is assigned at arrival time (before the blocking
+    // handler runs) so summaries and dumps stay in arrival order even when
+    // requests complete out of order.
+    let request_id = next_request_id(&state);
     // Decompression (up to `MAX_DECOMPRESSED_SIZE`) and optional JSON dumps
     // are blocking work; run them off the async worker so a large payload
     // cannot stall a single-threaded test runtime.
     let handler_state = std::sync::Arc::clone(&state);
     let handled = tokio::task::spawn_blocking(move || match endpoint {
-        Endpoint::Stats => handle_stats(&handler_state, &headers, &body),
-        Endpoint::Traces => handle_traces(&handler_state, &headers, &body),
-        Endpoint::PipelineStats => handle_pipeline_stats(&handler_state, &headers, &body),
+        Endpoint::Stats => handle_stats(&handler_state, request_id, &headers, &body),
+        Endpoint::Traces => handle_traces(&handler_state, request_id, &headers, &body),
+        Endpoint::PipelineStats => {
+            handle_pipeline_stats(&handler_state, request_id, &headers, &body)
+        }
     })
     .await;
     let (status, accepted) = match handled {
@@ -517,10 +523,10 @@ struct HandledRequest<T> {
 
 fn handle_stats(
     state: &std::sync::Arc<SharedState>,
+    request_id: u64,
     headers: &hyper::HeaderMap,
     body: &Bytes,
 ) -> (StatusCode, Option<Accepted>) {
-    let request_id = next_request_id(state);
     let handled: HandledRequest<pb::StatsPayload> = match decompress(headers, body) {
         // An unsupported Content-Encoding is a client error (415). Like the
         // transport-level rejections (404/405/413), it does not consume the
@@ -608,10 +614,10 @@ fn handle_stats(
 
 fn handle_traces(
     state: &std::sync::Arc<SharedState>,
+    request_id: u64,
     headers: &hyper::HeaderMap,
     body: &Bytes,
 ) -> (StatusCode, Option<Accepted>) {
-    let request_id = next_request_id(state);
     let handled: HandledRequest<pb::AgentPayload> = match decompress(headers, body) {
         Ok(d) => match pb::AgentPayload::decode(d.as_slice()) {
             Ok(payload) => HandledRequest {
@@ -677,10 +683,10 @@ fn handle_traces(
 
 fn handle_pipeline_stats(
     state: &std::sync::Arc<SharedState>,
+    request_id: u64,
     headers: &hyper::HeaderMap,
     body: &Bytes,
 ) -> (StatusCode, Option<Accepted>) {
-    let request_id = next_request_id(state);
     let handled: HandledRequest<PipelineStatsPayload> = match decompress(headers, body) {
         Ok(d) => match rmp_serde::from_slice::<PipelineStatsPayload>(&d) {
             Ok(payload) => HandledRequest {
