@@ -14,5 +14,6 @@ libdd-common = { workspace = true }
 libdd-trace-utils = { workspace = true }
 reqwest = { version = "0.12", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }
 tracing = "0.1"
+uuid = { version = "1", default-features = false, features = ["v4"] }
