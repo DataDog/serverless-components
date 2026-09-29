@@ -39,12 +39,13 @@ pub async fn build_inventory_report(
     env_type: &EnvironmentType,
     process_id: &str,
     report_reason: &str,
+    dd_site: &str,
 ) -> Result<Option<InventoryReport>, serde_json::Error> {
     let Some(platform) = platform::collect(env_type).await else {
         return Ok(None);
     };
 
-    let body = payload::build(process_id, report_reason, &platform)?;
+    let body = payload::build(process_id, report_reason, &platform, dd_site)?;
     Ok(Some(InventoryReport {
         body,
         resource_id: platform.resource_id,
