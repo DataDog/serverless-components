@@ -233,12 +233,19 @@ pub async fn verify_dsm_request(
         "Expected DSM payload body to be forwarded unchanged"
     );
 
-    let decoded = &mock_intake.pipeline_stats_payloads()[0];
-    let edge_tags: Vec<&str> = decoded.stats[0].stats[0]
-        .edge_tags
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let payloads = mock_intake.pipeline_stats_payloads();
+    let decoded = payloads
+        .first()
+        .expect("intake must have decoded at least one DSM payload");
+    let bucket = decoded
+        .stats
+        .first()
+        .expect("decoded DSM payload must have at least one bucket");
+    let point = bucket
+        .stats
+        .first()
+        .expect("decoded DSM bucket must have at least one point");
+    let edge_tags: Vec<&str> = point.edge_tags.iter().map(String::as_str).collect();
     assert_eq!(
         edge_tags, expected_edge_tags,
         "Expected decoded DSM payload to carry the fixture edge tags"
@@ -1094,7 +1101,9 @@ async fn test_peer_tags_in_flushed_stats() {
         "Expected at least one stats request"
     );
 
-    let payload = &stats_payloads[0];
+    let payload = stats_payloads
+        .first()
+        .expect("at least one decoded stats payload");
     let all_peer_tags: Vec<&str> = payload
         .stats
         .iter()
