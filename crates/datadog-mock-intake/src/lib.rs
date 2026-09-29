@@ -1126,7 +1126,6 @@ impl std::fmt::Display for DecompressError {
         }
     }
 }
-
 /// Decompress a request body based on its `Content-Encoding` header.
 /// Supports `gzip` and `zstd`; an absent or `identity` encoding returns the
 /// body unchanged. Any other encoding is rejected as unsupported rather than
@@ -1561,6 +1560,54 @@ mod tests {
             post(&intake.base_url(), "/api/v0.2/stats", None, body).await,
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[test]
+    fn agent_payload_json_covers_all_proto_fields() {
+        // Exhaustive struct literal: adding a field to `pb::AgentPayload`
+        // breaks this test's compilation, which forces `agent_payload_to_json`
+        // to be updated in the same change instead of silently dropping the
+        // new field from JSON dumps.
+        let payload = pb::AgentPayload {
+            host_name: "host-1".to_string(),
+            env: "prod".to_string(),
+            tracer_payloads: vec![pb::TracerPayload::default()],
+            tags: [("key".to_string(), "value".to_string())]
+                .into_iter()
+                .collect(),
+            agent_version: "1.2.3".to_string(),
+            target_tps: 10.0,
+            error_tps: 20.0,
+            rare_sampler_enabled: true,
+            idx_tracer_payloads: vec![pb::idx::TracerPayload::default()],
+        };
+
+        let json = agent_payload_to_json(&payload)
+            .as_object()
+            .expect("test: JSON dumps must be objects")
+            .clone();
+
+        let expected: &[(&str, serde_json::Value)] = &[
+            ("host_name", "host-1".into()),
+            ("env", "prod".into()),
+            (
+                "tracer_payloads",
+                serde_json::json!([pb::TracerPayload::default()]),
+            ),
+            ("tags", serde_json::json!({"key": "value"})),
+            ("agent_version", "1.2.3".into()),
+            ("target_tps", 10.0.into()),
+            ("error_tps", 20.0.into()),
+            ("rare_sampler_enabled", true.into()),
+            (
+                "idx_tracer_payloads",
+                serde_json::json!([pb::idx::TracerPayload::default()]),
+            ),
+        ];
+        assert_eq!(json.len(), expected.len(), "JSON dump field set changed");
+        for (key, value) in expected {
+            assert_eq!(json.get(*key), Some(value), "unexpected value for {key}");
+        }
     }
 
     #[tokio::test]
