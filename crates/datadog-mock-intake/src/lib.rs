@@ -200,7 +200,17 @@ pub struct MockIntake {
     state: std::sync::Arc<SharedState>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
-    connections: std::sync::Arc<Mutex<Vec<JoinHandle<()>>>>,
+    connections: std::sync::Arc<Mutex<ConnectionRegistry>>,
+}
+
+/// Tracks live connection tasks plus whether shutdown has begun. Keeping the
+/// flag in the same mutex as the handles makes registration and shutdown
+/// mutually exclusive: a connection spawned during `Drop` is aborted at
+/// registration time instead of being parked in a registry nobody drains.
+#[derive(Debug, Default)]
+struct ConnectionRegistry {
+    shutting_down: bool,
+    handles: Vec<JoinHandle<()>>,
 }
 
 impl MockIntake {
@@ -243,7 +253,7 @@ impl MockIntake {
         });
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
-        let connections: std::sync::Arc<Mutex<Vec<JoinHandle<()>>>> = std::sync::Arc::default();
+        let connections: std::sync::Arc<Mutex<ConnectionRegistry>> = std::sync::Arc::default();
         let task_state = std::sync::Arc::clone(&state);
         let task_connections = std::sync::Arc::clone(&connections);
         let task = tokio::spawn(async move {
@@ -276,8 +286,14 @@ impl MockIntake {
                                 .await;
                         });
                         if let Ok(mut conns) = task_connections.lock() {
-                            conns.retain(|h| !h.is_finished());
-                            conns.push(handle);
+                            if conns.shutting_down {
+                                // Drop already ran; abort this connection now
+                                // so it cannot keep serving after shutdown.
+                                handle.abort();
+                            } else {
+                                conns.handles.retain(|h| !h.is_finished());
+                                conns.handles.push(handle);
+                            }
                         }
                     }
                     _ = &mut shutdown_rx => {
@@ -382,9 +398,12 @@ impl Drop for MockIntake {
             task.abort();
         }
         // Abort any accepted-but-still-running connection tasks so a
-        // keep-alive client cannot keep sending requests after Drop.
+        // keep-alive client cannot keep sending requests after Drop. The
+        // flag is set in the same lock as the drain, so a connection whose
+        // registration races with Drop is aborted at registration time.
         if let Ok(mut conns) = self.connections.lock() {
-            for handle in conns.drain(..) {
+            conns.shutting_down = true;
+            for handle in conns.handles.drain(..) {
                 handle.abort();
             }
         }
