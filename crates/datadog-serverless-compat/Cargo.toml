@@ -13,6 +13,7 @@ windows-enhanced-metrics = ["datadog-metrics-collector/windows-enhanced-metrics"
 [dependencies]
 datadog-logs-agent = { path = "../datadog-logs-agent" }
 datadog-metrics-collector = { path = "../datadog-metrics-collector" }
+datadog-serverless-compat-inventory = { path = "../datadog-serverless-compat-inventory" }
 datadog-trace-agent = { path = "../datadog-trace-agent" }
 libdd-trace-utils = { workspace = true, features = ["https"] }
 datadog-fips = { path = "../datadog-fips", default-features = false }

@@ -3,6 +3,9 @@
 
 mod payload;
 mod platform;
+mod reporter;
+
+pub use reporter::run_inventory_reporter;
 
 use libdd_common::azure_app_services::QueryEnv;
 use libdd_trace_utils::trace_utils::EnvironmentType;

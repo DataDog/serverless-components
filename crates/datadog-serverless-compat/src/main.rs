@@ -28,6 +28,8 @@ use datadog_metrics_collector::azure_cpu::CpuMetricsCollector;
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
+use datadog_serverless_compat_inventory::run_inventory_reporter;
+
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_logs_agent::{
     AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
@@ -163,6 +165,25 @@ pub async fn main() {
         && port.parse::<u16>().is_err()
     {
         warn!("DD_DOGSTATSD_PORT={port:?} is not a valid port, so it is ignored");
+    }
+
+    // Inventory runs independently from traces and metrics so failures cannot
+    // block mini-agent startup or request handling.
+    if let Some(api_key) = dd_api_key.clone() {
+        let inventory_site = dd_site.clone();
+        let inventory_proxy = https_proxy.clone();
+        let inventory_env = env_type.clone();
+        tokio::spawn(async move {
+            run_inventory_reporter(
+                &api_key,
+                &inventory_site,
+                inventory_proxy.as_deref(),
+                inventory_env,
+            )
+            .await;
+        });
+    } else {
+        warn!("DD_API_KEY not set, skipping inventory reporter");
     }
 
     let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
