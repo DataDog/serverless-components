@@ -442,10 +442,22 @@ async fn handle_request(
             .collect(),
         body: body.to_vec(),
     };
-    let (status, accepted) = match endpoint {
-        Endpoint::Stats => handle_stats(&state, &headers, &body),
-        Endpoint::Traces => handle_traces(&state, &headers, &body),
-        Endpoint::PipelineStats => handle_pipeline_stats(&state, &headers, &body),
+    // Decompression (up to `MAX_DECOMPRESSED_SIZE`) and optional JSON dumps
+    // are blocking work; run them off the async worker so a large payload
+    // cannot stall a single-threaded test runtime.
+    let handler_state = std::sync::Arc::clone(&state);
+    let handled = tokio::task::spawn_blocking(move || match endpoint {
+        Endpoint::Stats => handle_stats(&handler_state, &headers, &body),
+        Endpoint::Traces => handle_traces(&handler_state, &headers, &body),
+        Endpoint::PipelineStats => handle_pipeline_stats(&handler_state, &headers, &body),
+    })
+    .await;
+    let (status, accepted) = match handled {
+        Ok(result) => result,
+        Err(err) => {
+            eprintln!("mock_intake: request handler failed: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, None)
+        }
     };
 
     // Record the raw request and its typed payload in one critical section so
