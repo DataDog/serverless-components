@@ -1,9 +1,9 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::platform::PlatformData;
+use crate::{ProcessEnv, platform::PlatformData};
+use libdd_common::azure_app_services::QueryEnv;
 use serde_json::Value;
-use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn build(
@@ -11,15 +11,36 @@ pub(crate) fn build(
     report_reason: &str,
     platform: &PlatformData,
 ) -> Result<Vec<u8>, serde_json::Error> {
+    build_with_env(
+        process_id,
+        report_reason,
+        platform,
+        &ProcessEnv,
+        option_env!("DD_SERVERLESS_COMPAT_VERSION"),
+    )
+}
+
+fn build_with_env(
+    process_id: &str,
+    report_reason: &str,
+    platform: &PlatformData,
+    env: &impl QueryEnv,
+    embedded_version: Option<&str>,
+) -> Result<Vec<u8>, serde_json::Error> {
     // EPRW expects nanoseconds, matching time.Now().UnixNano().
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos() as i64)
         .unwrap_or(0);
 
-    let compat_version = env::var("DD_SERVERLESS_COMPAT_VERSION")
-        .ok()
+    let compat_version = env
+        .get_var("DD_SERVERLESS_COMPAT_VERSION")
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            embedded_version
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
 
     let mut metadata = serde_json::json!({
@@ -46,9 +67,7 @@ pub(crate) fn build(
             "serverless_compat_runtime_version",
         ),
     ] {
-        if let Ok(value) = env::var(env_key)
-            && !value.is_empty()
-        {
+        if let Some(value) = env.get_var(env_key).filter(|value| !value.is_empty()) {
             metadata[metadata_key] = Value::String(value);
         }
     }
@@ -65,6 +84,7 @@ pub(crate) fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_env::FakeEnv;
     use serde_json::{Map, Value};
 
     fn azure_platform() -> PlatformData {
@@ -81,7 +101,14 @@ mod tests {
 
     #[test]
     fn builds_azure_payload_shape() {
-        let body = build("process-id", "startup", &azure_platform()).unwrap();
+        let body = build_with_env(
+            "process-id",
+            "startup",
+            &azure_platform(),
+            &FakeEnv::default(),
+            Some("1.2.3"),
+        )
+        .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["uuid"], "process-id");
@@ -90,6 +117,64 @@ mod tests {
         assert_eq!(payload["agent_metadata"]["workload_type"], "azure_function");
         assert_eq!(payload["agent_metadata"]["report_reason"], "startup");
         assert_eq!(payload["agent_metadata"]["region"], "eastus");
+        assert_eq!(
+            payload["agent_metadata"]["serverless_compat_version"],
+            "1.2.3"
+        );
         assert!(payload.get("hostname").is_none());
+    }
+
+    #[test]
+    fn runtime_handoff_overrides_platform_metadata() {
+        let env = FakeEnv::new(&[
+            ("DD_SERVERLESS_COMPAT_RUNTIME", "python-custom"),
+            ("DD_SERVERLESS_COMPAT_RUNTIME_VERSION", "3.13.1"),
+        ]);
+        let body =
+            build_with_env("pid", "startup", &azure_platform(), &env, Some("1.2.3")).unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["agent_metadata"]["runtime"], "python-custom");
+        assert_eq!(
+            payload["agent_metadata"]["serverless_compat_runtime_version"],
+            "3.13.1"
+        );
+    }
+
+    #[test]
+    fn empty_runtime_handoff_preserves_platform_metadata() {
+        let mut platform = azure_platform();
+        platform
+            .metadata
+            .insert("runtime".into(), Value::String("dotnet".into()));
+        platform.metadata.insert(
+            "serverless_compat_runtime_version".into(),
+            Value::String("8.0".into()),
+        );
+        let env = FakeEnv::new(&[
+            ("DD_SERVERLESS_COMPAT_RUNTIME", ""),
+            ("DD_SERVERLESS_COMPAT_RUNTIME_VERSION", ""),
+        ]);
+        let body = build_with_env("pid", "startup", &platform, &env, Some("1.2.3")).unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["agent_metadata"]["runtime"], "dotnet");
+        assert_eq!(
+            payload["agent_metadata"]["serverless_compat_runtime_version"],
+            "8.0"
+        );
+    }
+
+    #[test]
+    fn runtime_compat_version_overrides_embedded_version() {
+        let env = FakeEnv::new(&[("DD_SERVERLESS_COMPAT_VERSION", "2.4.6")]);
+        let body =
+            build_with_env("pid", "startup", &azure_platform(), &env, Some("1.2.3")).unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            payload["agent_metadata"]["serverless_compat_version"],
+            "2.4.6"
+        );
     }
 }
