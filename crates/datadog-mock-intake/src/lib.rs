@@ -145,7 +145,9 @@ pub enum MockIntakeError {
 /// A raw request captured by the intake: method, path, headers in arrival
 /// order, and the original wire body (pre-decompression). Recorded for every
 /// completed POST attempt to a supported endpoint, including attempts that
-/// were rejected by failure injection or failed to decode.
+/// were rejected by failure injection or failed to decode. Header values
+/// that are not valid UTF-8 are converted lossily (invalid bytes become
+/// U+FFFD) rather than dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapturedRequest {
     pub method: String,
@@ -438,7 +440,12 @@ async fn handle_request(
         path: path.clone(),
         headers: headers
             .iter()
-            .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_string(),
+                    String::from_utf8_lossy(v.as_bytes()).into_owned(),
+                )
+            })
             .collect(),
         body: body.to_vec(),
     };
@@ -1645,6 +1652,53 @@ mod tests {
             .await,
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[tokio::test]
+    async fn non_utf8_header_values_are_captured_lossily() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let intake = start_default().await;
+        let addr = intake
+            .base_url()
+            .trim_start_matches("http://")
+            .to_string();
+
+        // Raw TCP so the header value can carry a non-UTF-8 (obs-text) byte.
+        let mut stream = tokio::net::TcpStream::connect(&addr)
+            .await
+            .expect("test: connect to mock intake failed");
+        let body = b"not-msgpack";
+        let mut request = format!(
+            "POST /api/v0.2/stats HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: {}\r\nx-test: a",
+            body.len()
+        )
+        .into_bytes();
+        request.push(0xFF);
+        request.extend_from_slice(b"b\r\n\r\n");
+        request.extend_from_slice(body);
+        stream
+            .write_all(&request)
+            .await
+            .expect("test: write request failed");
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("test: read response failed");
+        assert!(
+            response.starts_with(b"HTTP/1.1 400"),
+            "test: expected a 400 for the undecodable body, got {response:?}"
+        );
+
+        let requests = intake.requests_for_path("/api/v0.2/stats");
+        assert_eq!(requests.len(), 1);
+        let value = requests[0]
+            .headers
+            .iter()
+            .find(|(k, _)| k == "x-test")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(value, Some("a\u{FFFD}b"));
     }
 
     #[tokio::test]
