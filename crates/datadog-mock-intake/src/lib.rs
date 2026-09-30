@@ -327,9 +327,15 @@ impl MockIntake {
                                 let state = std::sync::Arc::clone(&state);
                                 async move { handle_request(state, req).await }
                             });
-                            let _ = hyper::server::conn::http1::Builder::new()
+                            // Log connection failures (malformed HTTP, resets,
+                            // messages cut off mid-request) so a test timeout is
+                            // not mistaken for a payload that was never sent.
+                            if let Err(e) = hyper::server::conn::http1::Builder::new()
                                 .serve_connection(io, service)
-                                .await;
+                                .await
+                            {
+                                eprintln!("mock_intake: connection error: {e}");
+                            }
                         });
                         if let Ok(mut conns) = task_connections.lock() {
                             if conns.shutting_down {
