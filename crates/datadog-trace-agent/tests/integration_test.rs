@@ -1007,11 +1007,12 @@ async fn test_internal_span_kind_does_not_produce_stats() {
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
 
+    wait_for_capture(
+        || !mock_intake.stats_payloads().is_empty(),
+        "a stats request from the root span",
+    )
+    .await;
     let stats_payloads = mock_intake.stats_payloads();
-    assert!(
-        !stats_payloads.is_empty(),
-        "Expected a stats request from the root span"
-    );
 
     let all_groups: Vec<_> = stats_payloads
         .iter()
@@ -1095,11 +1096,12 @@ async fn test_peer_tags_in_flushed_stats() {
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
 
+    wait_for_capture(
+        || !mock_intake.stats_payloads().is_empty(),
+        "a stats request at /api/v0.2/stats",
+    )
+    .await;
     let stats_payloads = mock_intake.stats_payloads();
-    assert!(
-        !stats_payloads.is_empty(),
-        "Expected at least one stats request"
-    );
 
     let payload = stats_payloads
         .first()
