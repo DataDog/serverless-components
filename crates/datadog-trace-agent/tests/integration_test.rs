@@ -207,6 +207,14 @@ pub fn verify_no_stats_request(mock_intake: &MockIntake) {
     );
 }
 
+/// Check whether any captured stats payload carries stats from the given service.
+fn has_stats_from_service(mock_intake: &MockIntake, service: &str) -> bool {
+    mock_intake
+        .stats_payloads()
+        .iter()
+        .any(|payload| payload.stats.iter().any(|csp| csp.service == service))
+}
+
 /// Helper to verify a DSM request sent to the mock intake. The forwarded body
 /// must arrive byte-for-byte unchanged AND be decodable by the intake: the
 /// decoded capture proves the proxy forwards a payload the real intake accepts.
@@ -876,12 +884,7 @@ async fn test_tracer_and_agent_stats_enabled_uses_agent_stats_no_duplicates() {
     verify_stats_request(&mock_intake).await;
 
     // The tracer computed stats should never reach the backend. Only the agent computed stats should reach the backend.
-    let has_marker = mock_intake.stats_payloads().iter().any(|payload| {
-        payload
-            .stats
-            .iter()
-            .any(|csp| csp.service == "tracer-marker-stats")
-    });
+    let has_marker = has_stats_from_service(&mock_intake, "tracer-marker-stats");
     assert!(
         !has_marker,
         "Expected tracer computed stats to be dropped, not forwarded to the backend"
@@ -939,12 +942,7 @@ async fn test_tracer_stats_enabled_agent_stats_disabled_forwards_tracer_stats() 
     assert_eq!(stats_response.status(), StatusCode::ACCEPTED);
 
     verify_stats_request(&mock_intake).await;
-    let has_marker = mock_intake.stats_payloads().iter().any(|payload| {
-        payload
-            .stats
-            .iter()
-            .any(|csp| csp.service == "tracer-marker-stats")
-    });
+    let has_marker = has_stats_from_service(&mock_intake, "tracer-marker-stats");
     assert!(
         has_marker,
         "Expected tracer computed stats to be forwarded to the backend"
