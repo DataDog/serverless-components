@@ -117,16 +117,17 @@ pub fn create_mini_agent_with_real_flushers(
 
 /// Helper to verify trace request sent to the mock intake
 pub async fn verify_trace_request(mock_intake: &MockIntake) {
+    // Wait on the raw capture, not the decoded one, so a payload the intake
+    // rejects fails fast with an accurate message instead of timing out.
     wait_for_capture(
-        || !mock_intake.trace_payloads().is_empty(),
+        || !mock_intake.requests_for_path("/api/v0.2/traces").is_empty(),
         "a trace request at /api/v0.2/traces",
     )
     .await;
     let trace_reqs = mock_intake.requests_for_path("/api/v0.2/traces");
-
     assert!(
-        !trace_reqs.is_empty(),
-        "Expected at least one trace request to mock intake"
+        !mock_intake.trace_payloads().is_empty(),
+        "Trace request reached the mock intake but was not accepted; see mock_intake stderr"
     );
 
     let trace_req = &trace_reqs[0];
@@ -158,16 +159,17 @@ pub async fn verify_trace_request(mock_intake: &MockIntake) {
 
 /// Helper to verify stats request sent to the mock intake
 pub async fn verify_stats_request(mock_intake: &MockIntake) {
+    // Wait on the raw capture, not the decoded one, so a payload the intake
+    // rejects fails fast with an accurate message instead of timing out.
     wait_for_capture(
-        || !mock_intake.stats_payloads().is_empty(),
+        || !mock_intake.requests_for_path("/api/v0.2/stats").is_empty(),
         "a stats request at /api/v0.2/stats",
     )
     .await;
     let stats_reqs = mock_intake.requests_for_path("/api/v0.2/stats");
-
     assert!(
-        !stats_reqs.is_empty(),
-        "Expected at least one stats request to mock intake"
+        !mock_intake.stats_payloads().is_empty(),
+        "Stats request reached the mock intake but was not accepted; see mock_intake stderr"
     );
 
     let stats_req = &stats_reqs[0];
@@ -224,17 +226,18 @@ pub async fn verify_dsm_request(
     expected_edge_tags: &[&str],
     expected_additional_tags: &[&str],
 ) {
+    // Wait on the raw capture, not the decoded one, so a payload the intake
+    // rejects fails fast with an accurate message instead of timing out.
     wait_for_capture(
-        || !mock_intake.pipeline_stats_payloads().is_empty(),
+        || {
+            !mock_intake
+                .requests_for_path("/api/v0.1/pipeline_stats")
+                .is_empty()
+        },
         "a DSM request at /api/v0.1/pipeline_stats",
     )
     .await;
     let dsm_reqs = mock_intake.requests_for_path("/api/v0.1/pipeline_stats");
-
-    assert!(
-        !dsm_reqs.is_empty(),
-        "Expected at least one DSM request to mock intake"
-    );
 
     let dsm_req = &dsm_reqs[0];
     assert_eq!(dsm_req.method, "POST", "Expected POST method");
@@ -246,7 +249,7 @@ pub async fn verify_dsm_request(
     let payloads = mock_intake.pipeline_stats_payloads();
     let decoded = payloads
         .first()
-        .expect("intake must have decoded at least one DSM payload");
+        .expect("DSM request reached the mock intake but was not accepted; see mock_intake stderr");
     let bucket = decoded
         .stats
         .first()
