@@ -517,32 +517,46 @@ async fn handle_request(
     // Decompression (up to `MAX_DECOMPRESSED_SIZE`) and optional JSON dumps
     // are blocking work; run them off the async worker so a large payload
     // cannot stall a single-threaded test runtime.
+    //
+    // The capture is recorded inside the blocking task rather than after
+    // awaiting it: Hyper drops this future if the client disconnects, but a
+    // blocking task always runs to completion. Recording here guarantees every
+    // allocated request id is recorded, so a canceled request cannot leave a
+    // gap that holds back all later captures.
     let handler_state = std::sync::Arc::clone(&state);
-    let handled = tokio::task::spawn_blocking(move || match endpoint {
-        Endpoint::Stats => handle_stats(&handler_state, request_id, &headers, &body),
-        Endpoint::Traces => handle_traces(&handler_state, request_id, &headers, &body),
-        Endpoint::PipelineStats => {
-            handle_pipeline_stats(&handler_state, request_id, &headers, &body)
-        }
+    let handled = tokio::task::spawn_blocking(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match endpoint {
+            Endpoint::Stats => handle_stats(&handler_state, request_id, &headers, &body),
+            Endpoint::Traces => handle_traces(&handler_state, request_id, &headers, &body),
+            Endpoint::PipelineStats => {
+                handle_pipeline_stats(&handler_state, request_id, &headers, &body)
+            }
+        }));
+        let (status, accepted) = match result {
+            Ok(result) => result,
+            Err(_) => {
+                eprintln!("mock_intake: request handler panicked for request {request_id}");
+                (StatusCode::INTERNAL_SERVER_ERROR, None)
+            }
+        };
+
+        // Record the raw request and its typed payload in one critical
+        // section. Out-of-order completions are buffered so readers only ever
+        // observe a contiguous, arrival-ordered prefix: no raw capture without
+        // its typed payload, no gaps, and no later request before an earlier
+        // one.
+        handler_state
+            .captured
+            .lock()
+            .expect("mock_intake: captured mutex poisoned")
+            .record(request_id, captured, accepted);
+        status
     })
     .await;
-    let (status, accepted) = match handled {
-        Ok(result) => result,
-        Err(err) => {
-            eprintln!("mock_intake: request handler failed: {err}");
-            (StatusCode::INTERNAL_SERVER_ERROR, None)
-        }
-    };
-
-    // Record the raw request and its typed payload in one critical section.
-    // Out-of-order completions are buffered so readers only ever observe a
-    // contiguous, arrival-ordered prefix: no raw capture without its typed
-    // payload, no gaps, and no later request before an earlier one.
-    state
-        .captured
-        .lock()
-        .expect("mock_intake: captured mutex poisoned")
-        .record(request_id, captured, accepted);
+    let status = handled.unwrap_or_else(|err| {
+        eprintln!("mock_intake: request handler failed: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    });
     Ok(response(status))
 }
 
