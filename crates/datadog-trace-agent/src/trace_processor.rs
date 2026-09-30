@@ -182,7 +182,6 @@ impl ServerlessTraceProcessor {
     /// span; the backend keeps such chunks without any priority promotion.
     /// Chunks are never removed or reordered: unrescued chunks stay in the
     /// payload and the backend discards them.
-    ///
     fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
         let mut sampler = self.lock_sampler();
         // Skip all view construction when the sampler is disabled by config
@@ -242,7 +241,7 @@ impl ServerlessTraceProcessor {
             // The sampler keys its per-signature rate limits on the env the
             // tracer reported for this payload, falling back to the agent's
             // configured env, consistent with how stats are flushed.
-            let env: &str = resolve_payload_env(&tracer_payload.env, &config.env);
+            let env = resolve_payload_env(&tracer_payload.env, &config.env);
             for chunk in tracer_payload.chunks.iter_mut() {
                 sample_and_stamp(sampler, chunk, env, now_unix_secs);
             }
@@ -1144,6 +1143,19 @@ mod tests {
         Arc::new(std::sync::Mutex::new(ErrorsSampler::new(*config)))
     }
 
+    /// Builds the standard rescue test fixture: a config with the given
+    /// sampler settings and a processor whose shared sampler uses them.
+    fn rescue_setup(
+        sampler_config: ErrorSamplerConfig,
+    ) -> (Config, trace_processor::ServerlessTraceProcessor) {
+        let config = rescue_config(sampler_config);
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            None,
+            sampler_for(&config.error_sampler),
+        );
+        (config, processor)
+    }
+
     fn run_rescue(
         processor: &trace_processor::ServerlessTraceProcessor,
         config: &Config,
@@ -1189,13 +1201,34 @@ mod tests {
         }
     }
 
+    fn rescued_count(chunks: &[pb::TraceChunk]) -> usize {
+        chunks
+            .iter()
+            .filter(|c| errors_sr(root(c)).is_some())
+            .count()
+    }
+
+    /// Builds a `/v0.4/traces` request carrying a single root span with an
+    /// error and an automatic-drop priority: eligible for rescue.
+    fn errored_p0_request() -> http_common::HttpRequest {
+        let start = get_current_timestamp_nanos();
+        let mut json_span = create_test_json_span(11, 222, 333, start, true);
+        json_span["error"] = serde_json::json!(1);
+        json_span["metrics"]["_sampling_priority_v1"] = serde_json::json!(0.0);
+        let bytes = rmp_serde::to_vec(&vec![vec![json_span]]).unwrap();
+        Request::builder()
+            .header("datadog-meta-tracer-version", "4.0.0")
+            .header("datadog-meta-lang", "nodejs")
+            .header("datadog-meta-lang-version", "v19.7.0")
+            .header("datadog-meta-lang-interpreter", "v8")
+            .header("content-length", "100")
+            .body(http_common::Body::from(bytes))
+            .unwrap()
+    }
+
     #[test]
     fn test_rescue_stamps_errored_p0_root_and_keeps_priority() {
-        let config = rescue_config(always_keep_sampler_config());
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         let chunks = run_rescue(
             &processor,
@@ -1211,11 +1244,7 @@ mod tests {
 
     #[test]
     fn test_rescue_stamps_actual_root_when_error_is_on_child() {
-        let config = rescue_config(always_keep_sampler_config());
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         // Healthy root first, errored child second: only the root may be stamped.
         let spans = vec![
@@ -1235,11 +1264,7 @@ mod tests {
 
     #[test]
     fn test_rescue_uses_resolved_root_not_first_span() {
-        let config = rescue_config(always_keep_sampler_config());
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         // Root (parent_id 0) appears last; the first span is a child.
         let spans = vec![
@@ -1267,18 +1292,15 @@ mod tests {
         // it would not be stamped with 1.0. Correct behavior: only errored
         // chunks reach the sampler, so the errored chunk is the first count and
         // is kept at rate 1.0.
-        let config = rescue_config(rate_limited_sampler_config(1.0));
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(rate_limited_sampler_config(1.0));
 
-        let mut chunks = Vec::new();
-        for i in 0..9_u64 {
-            chunks.push(errored_root_chunk(0xa000 + i, 0));
-            // Strip the error flag: healthy P0 chunk with a distinct signature.
-            chunks.last_mut().unwrap().spans[0].error = 0;
-        }
+        // Healthy P0 chunks with distinct trace IDs, then one errored chunk.
+        let mut chunks: Vec<pb::TraceChunk> = (0..9_u64)
+            .map(|i| {
+                let trace_id = 0xa000 + i;
+                test_chunk(vec![test_span(trace_id, trace_id + 1, 0, 0)], 0)
+            })
+            .collect();
         chunks.push(errored_root_chunk(0xb000, 0));
 
         let chunks = run_rescue(&processor, &config, chunks, RESCUE_NOW);
@@ -1295,11 +1317,7 @@ mod tests {
 
     #[test]
     fn test_http_500_metadata_alone_is_not_an_error() {
-        let config = rescue_config(always_keep_sampler_config());
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         let mut span = test_span(0xc0de, 0xc0de + 1, 0, 0);
         span.meta
@@ -1320,11 +1338,7 @@ mod tests {
 
     #[test]
     fn test_non_automatic_drop_priorities_are_never_rescued() {
-        let config = rescue_config(always_keep_sampler_config());
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         // -1 (explicit user drop), other negatives, positive priorities, and
         // the no-priority sentinel (i8::MIN) are all out of scope.
@@ -1333,8 +1347,8 @@ mod tests {
             &processor,
             &config,
             priorities
-                .iter()
-                .map(|p| errored_root_chunk(0x1000_u64 + (*p).unsigned_abs() as u64, *p))
+                .into_iter()
+                .map(|p| errored_root_chunk(0x1000 + u64::from(p.unsigned_abs()), p))
                 .collect(),
             RESCUE_NOW,
         );
@@ -1351,11 +1365,7 @@ mod tests {
 
     #[test]
     fn test_empty_chunk_does_not_panic_and_stays_unchanged() {
-        let config = rescue_config(always_keep_sampler_config());
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         // An empty chunk cannot be scored: root resolution fails and it must be
         // left unchanged without panicking. For non-empty chunks,
@@ -1389,30 +1399,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_rescue_is_noop_when_agent_stats_disabled() {
-        let config = rescue_config(always_keep_sampler_config());
         let config = Config {
             agent_stats_computation_enabled: false,
-            ..config
+            ..rescue_config(always_keep_sampler_config())
         };
         let (tx, mut rx): (
             Sender<trace_utils::SendData>,
-            tokio::sync::mpsc::Receiver<trace_utils::SendData>,
+            Receiver<trace_utils::SendData>,
         ) = mpsc::channel(1);
-
-        let start = get_current_timestamp_nanos();
-        let mut json_span = create_test_json_span(11, 222, 333, start, true);
-        // Root span with an error and an automatic-drop priority: eligible.
-        json_span["error"] = serde_json::json!(1);
-        json_span["metrics"]["_sampling_priority_v1"] = serde_json::json!(0.0);
-        let bytes = rmp_serde::to_vec(&vec![vec![json_span]]).unwrap();
-        let request = Request::builder()
-            .header("datadog-meta-tracer-version", "4.0.0")
-            .header("datadog-meta-lang", "nodejs")
-            .header("datadog-meta-lang-version", "v19.7.0")
-            .header("datadog-meta-lang-interpreter", "v8")
-            .header("content-length", "100")
-            .body(http_common::Body::from(bytes))
-            .unwrap();
+        let request = errored_p0_request();
 
         let trace_processor = trace_processor::ServerlessTraceProcessor::new(
             None,
@@ -1448,16 +1443,11 @@ mod tests {
     fn test_disabled_tps_disables_rescue_in_both_modes() {
         for mode in [ErrorSamplerMode::RateLimited, ErrorSamplerMode::AlwaysKeep] {
             for tps in [0.0_f64, -3.0] {
-                let sampler_config = ErrorSamplerConfig {
+                let (config, processor) = rescue_setup(ErrorSamplerConfig {
                     mode,
                     target_tps: tps,
                     extra_sample_rate: 1.0,
-                };
-                let config = rescue_config(sampler_config);
-                let processor = trace_processor::ServerlessTraceProcessor::new(
-                    None,
-                    sampler_for(&config.error_sampler),
-                );
+                });
 
                 let chunks = run_rescue(
                     &processor,
@@ -1478,11 +1468,7 @@ mod tests {
 
     #[test]
     fn test_always_keep_rescues_every_eligible_chunk() {
-        let config = rescue_config(always_keep_sampler_config());
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         let chunks = run_rescue(
             &processor,
@@ -1503,11 +1489,7 @@ mod tests {
     #[test]
     fn test_rate_limited_under_sustained_load_keeps_and_rejects() {
         let sampler_config = rate_limited_sampler_config(10.0);
-        let config = rescue_config(sampler_config);
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(sampler_config);
 
         // 100 chunks with the same signature in one 5-second bucket: the
         // default rate is 10 / (100 / 5) = 0.5, so a deterministic mix of keeps
@@ -1518,10 +1500,7 @@ mod tests {
         let input: Vec<pb::TraceChunk> = ids.iter().map(|id| errored_root_chunk(*id, 0)).collect();
         let chunks = run_rescue(&processor, &config, input, RESCUE_NOW);
 
-        let keeps = chunks
-            .iter()
-            .filter(|c| errors_sr(root(c)).is_some())
-            .count();
+        let keeps = rescued_count(&chunks);
         let drops = chunks.len() - keeps;
         assert!(keeps > 0, "expected some keeps, got none");
         assert!(drops > 0, "expected some drops, got none");
@@ -1548,21 +1527,13 @@ mod tests {
 
     #[test]
     fn test_rate_limited_bucket_transitions_and_steady_state() {
-        let sampler_config = rate_limited_sampler_config(10.0);
-        let config = rescue_config(sampler_config);
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(rate_limited_sampler_config(10.0));
 
         // First bucket: 100 distinct signatures push the default rate to 0.5.
         let ids: Vec<u64> = (0..100_u64).map(|i| 0x22_0000 + i).collect();
-        let first: Vec<pb::TraceChunk> = ids.iter().map(|id| errored_root_chunk(*id, 0)).collect();
-        let first_chunks = run_rescue(&processor, &config, first, RESCUE_NOW);
-        let first_keeps = first_chunks
-            .iter()
-            .filter(|c| errors_sr(root(c)).is_some())
-            .count();
+        let make_chunks = || ids.iter().map(|id| errored_root_chunk(*id, 0)).collect();
+        let first_chunks = run_rescue(&processor, &config, make_chunks(), RESCUE_NOW);
+        let first_keeps = rescued_count(&first_chunks);
         assert!(
             first_keeps > 0 && first_keeps < 100,
             "mixed decisions in the first bucket"
@@ -1571,13 +1542,9 @@ mod tests {
         // A full window later (the rolling window is 6 buckets of 5 seconds),
         // the same IDs in a fresh bucket still produce mixed decisions, and
         // every chunk is still forwarded.
-        let second: Vec<pb::TraceChunk> = ids.iter().map(|id| errored_root_chunk(*id, 0)).collect();
-        let second_chunks = run_rescue(&processor, &config, second, RESCUE_NOW + 40);
+        let second_chunks = run_rescue(&processor, &config, make_chunks(), RESCUE_NOW + 40);
         assert_eq!(second_chunks.len(), 100);
-        let second_keeps = second_chunks
-            .iter()
-            .filter(|c| errors_sr(root(c)).is_some())
-            .count();
+        let second_keeps = rescued_count(&second_chunks);
         assert!(
             second_keeps > 0 && second_keeps < 100,
             "mixed decisions after window rotation"
@@ -1587,11 +1554,7 @@ mod tests {
     #[test]
     fn test_processor_clones_share_one_budget() {
         let sampler_config = rate_limited_sampler_config(1.0);
-        let config = rescue_config(sampler_config);
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(sampler_config);
         let processor_clone = processor.clone();
 
         // Ten errored chunks with the same signature but distinct IDs: five
@@ -1648,10 +1611,7 @@ mod tests {
 
     #[test]
     fn test_sampler_timestamp_clamp_never_moves_backwards() {
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&rate_limited_sampler_config(1.0)),
-        );
+        let (_config, processor) = rescue_setup(rate_limited_sampler_config(1.0));
         // A clone shares the clamp floor with the original.
         let clone = processor.clone();
 
@@ -1665,7 +1625,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rescue_uses_payload_env_with_config_fallback() {
+    fn test_resolve_payload_env_prefers_payload_env() {
         assert_eq!(
             super::resolve_payload_env("tracer-env", "agent-env"),
             "tracer-env",
@@ -1685,11 +1645,7 @@ mod tests {
 
     #[test]
     fn test_rescue_preserves_chunk_metadata_and_span_order() {
-        let config = rescue_config(always_keep_sampler_config());
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         let mut root_span = test_span(0x501d, 0x502, 0, 0);
         root_span
@@ -1761,11 +1717,7 @@ mod tests {
         // backend resolves such chunks to the `probabilistic` ingestion reason
         // before checking `_dd.errors_sr`, so it may still drop them; SCL does
         // not work around that limitation.
-        let config = rescue_config(always_keep_sampler_config());
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         let mut chunk = errored_root_chunk(0x600d, 0);
         chunk.tags.insert("_dd.p.dm".to_string(), "-9".to_string());
@@ -1787,12 +1739,7 @@ mod tests {
         // The raw `_sample_rate` wire value is passed to the shared sampler,
         // which sanitizes it. A value outside (0, 1] falls back to 1.0, so a
         // bogus rate does not change the stamped rescue rate.
-        let sampler_config = rate_limited_sampler_config(10.0);
-        let config = rescue_config(sampler_config);
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let (config, processor) = rescue_setup(rate_limited_sampler_config(10.0));
 
         let mut chunk = errored_root_chunk(0x77_00, 0);
         chunk.spans[0]
@@ -1815,24 +1762,10 @@ mod tests {
             sampler_for(&config.error_sampler),
         );
 
-        let start = get_current_timestamp_nanos();
-        let mut json_span = create_test_json_span(11, 222, 333, start, true);
-        json_span["error"] = serde_json::json!(1);
-        json_span["metrics"]["_sampling_priority_v1"] = serde_json::json!(0.0);
-        let bytes = rmp_serde::to_vec(&vec![vec![json_span]]).unwrap();
-        let request = Request::builder()
-            .header("datadog-meta-tracer-version", "4.0.0")
-            .header("datadog-meta-lang", "nodejs")
-            .header("datadog-meta-lang-version", "v19.7.0")
-            .header("datadog-meta-lang-interpreter", "v8")
-            .header("content-length", "100")
-            .body(http_common::Body::from(bytes))
-            .unwrap();
-
         let res = processor
             .process_traces(
                 Arc::new(config),
-                request,
+                errored_p0_request(),
                 mpsc::channel(1).0,
                 Arc::new(create_test_metadata()),
             )
@@ -1841,11 +1774,10 @@ mod tests {
 
         // The concentrator must receive the chunk exactly as the tracer sent
         // it: before rescue stamping, with no `_dd.errors_sr` anywhere.
-        let (chunk, _metadata) = match stats_rx.try_recv() {
-            Ok(crate::stats_concentrator_service::ConcentratorCommand::AddChunk(
-                chunk,
-                metadata,
-            )) => (*chunk, metadata),
+        let chunk = match stats_rx.try_recv() {
+            Ok(crate::stats_concentrator_service::ConcentratorCommand::AddChunk(chunk, _)) => {
+                *chunk
+            }
             Ok(_) => panic!("expected an AddChunk command"),
             Err(err) => panic!("expected an AddChunk command, got {err}"),
         };

@@ -63,6 +63,7 @@ fn parse_error_sampler_config() -> ErrorSamplerConfig {
 
     config
 }
+
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 const DSM_PIPELINE_STATS_ROUTE: &str = "/api/v0.1/pipeline_stats";
 
@@ -988,10 +989,9 @@ mod tests {
                 ],
                 || {
                     let config = config::Config::new().unwrap();
-                    assert!(
-                        matches!(config.error_sampler.mode, m if std::mem::discriminant(&m) == std::mem::discriminant(&expected)),
-                        "mode {raw:?} should parse to {expected:?}, got {:?}",
-                        config.error_sampler.mode
+                    assert_eq!(
+                        config.error_sampler.mode, expected,
+                        "mode {raw:?} should parse to {expected:?}"
                     );
                 },
             );
