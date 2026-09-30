@@ -1250,33 +1250,25 @@ async fn test_mini_agent_dual_transport_with_real_flushers() {
             .expect("Failed to send /v0.4/traces request over named pipe");
     assert_eq!(pipe_response.status(), StatusCode::OK);
 
-    wait_for_capture(
-        || !mock_intake.trace_payloads().is_empty(),
-        "a trace request at /api/v0.2/traces",
-    )
-    .await;
-
     // Both payloads must reach the same backend through the shared flusher
     // pipeline. The flusher may batch them into one POST or two; either is
-    // fine, what matters is that both service-name needles show up.
-    let trace_reqs = mock_intake.requests_for_path("/api/v0.2/traces");
-    assert!(
-        !trace_reqs.is_empty(),
-        "no trace POST reached backend; expected traces from both transports"
-    );
-    let mut all_bytes = Vec::new();
-    for req in &trace_reqs {
-        assert_eq!(req.method, "POST");
-        all_bytes.extend_from_slice(&req.body);
-    }
-    assert!(
-        all_bytes.windows(12).any(|w| w == b"dual-tcp-svc"),
-        "TCP-side trace did not reach backend"
-    );
-    assert!(
-        all_bytes.windows(13).any(|w| w == b"dual-pipe-svc"),
-        "pipe-side trace did not reach backend"
-    );
+    // fine, what matters is that spans from both services show up in the
+    // decoded trace payloads.
+    let has_service = |service: &str| {
+        mock_intake.trace_payloads().iter().any(|payload| {
+            payload
+                .tracer_payloads
+                .iter()
+                .flat_map(|tp| tp.chunks.iter())
+                .flat_map(|chunk| chunk.spans.iter())
+                .any(|span| span.service == service)
+        })
+    };
+    wait_for_capture(
+        || has_service("dual-tcp-svc") && has_service("dual-pipe-svc"),
+        "traces from both the TCP and pipe transports at /api/v0.2/traces",
+    )
+    .await;
 
     // Trigger graceful shutdown. The watch fan-out must reach BOTH accept
     // loops; each drains its in-flight handlers; the supervisor then
