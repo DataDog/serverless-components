@@ -1290,8 +1290,10 @@ fn create_error_rescue_test_payload() -> Vec<u8> {
 #[tokio::test]
 #[serial]
 async fn test_error_rescue_outbound_payload_and_stats() {
-    use libdd_trace_protobuf::pb::AgentPayload;
+    use datadog_agent_trace_sampler::{ErrorSamplerConfig, ErrorSamplerMode};
+    use libdd_trace_protobuf::pb::{AgentPayload, TraceChunk};
     use prost::Message as _;
+    use std::collections::HashMap;
 
     let mock_server: MockServer = MockServer::start().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1300,8 +1302,8 @@ async fn test_error_rescue_outbound_payload_and_stats() {
     configure_mock_endpoints(&mut config, &mock_server.url());
     config.agent_stats_computation_enabled = true;
     // Deterministic rescue settings: every eligible chunk is kept at 1.0.
-    config.error_sampler = datadog_agent_trace_sampler::ErrorSamplerConfig {
-        mode: datadog_agent_trace_sampler::ErrorSamplerMode::AlwaysKeep,
+    config.error_sampler = ErrorSamplerConfig {
+        mode: ErrorSamplerMode::AlwaysKeep,
         target_tps: 1.0,
         extra_sample_rate: 1.0,
     };
@@ -1349,10 +1351,7 @@ async fn test_error_rescue_outbound_payload_and_stats() {
     // Decode the actual outbound protobuf payload(s) and locate each submitted
     // chunk by its root span name.
     let trace_reqs = mock_server.get_requests_for_path("/api/v0.2/traces");
-    let mut chunks_by_root_name: std::collections::HashMap<
-        String,
-        libdd_trace_protobuf::pb::TraceChunk,
-    > = std::collections::HashMap::new();
+    let mut chunks_by_root_name: HashMap<String, TraceChunk> = HashMap::new();
     for req in &trace_reqs {
         let agent_payload = AgentPayload::decode(&req.body[..])
             .expect("Failed to decode outbound AgentPayload protobuf");
@@ -1444,14 +1443,17 @@ async fn test_error_rescue_outbound_payload_and_stats() {
         .collect();
 
     for name in names {
-        let group = all_groups.iter().find(|g| g.name == name);
+        let group = all_groups
+            .iter()
+            .find(|g| g.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected span {name} to contribute to agent-computed stats, got: {:?}",
+                    all_groups.iter().map(|g| &g.name).collect::<Vec<_>>()
+                )
+            });
         assert!(
-            group.is_some(),
-            "expected span {name} to contribute to agent-computed stats, got: {:?}",
-            all_groups.iter().map(|g| &g.name).collect::<Vec<_>>()
-        );
-        assert!(
-            group.unwrap().hits > 0,
+            group.hits > 0,
             "expected span {name} to have a positive hit count in stats"
         );
     }
