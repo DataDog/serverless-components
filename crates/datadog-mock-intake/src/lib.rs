@@ -170,8 +170,11 @@ struct Captured {
     traces: Vec<pb::AgentPayload>,
     pipeline_stats: Vec<PipelineStatsPayload>,
     /// Requests that finished handling out of arrival order and are waiting
-    /// for earlier requests before they can be exposed to readers.
-    pending: BTreeMap<u64, PendingCapture>,
+    /// for earlier requests before they can be exposed to readers. `None`
+    /// marks a request id that finished without a capture (e.g. an oversized
+    /// body or a client that disconnected mid-request), so later captures are
+    /// not held back waiting for it.
+    pending: BTreeMap<u64, Option<PendingCapture>>,
     /// The request id the next flush expects, so the visible vectors stay in
     /// arrival order even when concurrent requests complete out of order.
     next_flush: u64,
@@ -193,18 +196,75 @@ impl Captured {
     /// a raw capture whose typed capture is missing, a gap, or a later
     /// request before an earlier one.
     fn record(&mut self, request_id: u64, request: CapturedRequest, accepted: Option<Accepted>) {
-        self.pending
-            .insert(request_id, PendingCapture { request, accepted });
-        while let Some(pending) = self.pending.remove(&self.next_flush) {
-            self.requests.push(pending.request);
-            match pending.accepted {
-                Some(Accepted::Stats(payload)) => self.stats.push(payload),
-                Some(Accepted::Traces(payload)) => self.traces.push(payload),
-                Some(Accepted::PipelineStats(payload)) => self.pipeline_stats.push(payload),
-                None => {}
+        self.complete(request_id, Some(PendingCapture { request, accepted }));
+    }
+
+    /// Mark a request id as finished without a capture, so the flush does not
+    /// wait for it forever.
+    fn skip(&mut self, request_id: u64) {
+        self.complete(request_id, None);
+    }
+
+    fn complete(&mut self, request_id: u64, capture: Option<PendingCapture>) {
+        self.pending.insert(request_id, capture);
+        while let Some(entry) = self.pending.remove(&self.next_flush) {
+            if let Some(pending) = entry {
+                self.requests.push(pending.request);
+                match pending.accepted {
+                    Some(Accepted::Stats(payload)) => self.stats.push(payload),
+                    Some(Accepted::Traces(payload)) => self.traces.push(payload),
+                    Some(Accepted::PipelineStats(payload)) => self.pipeline_stats.push(payload),
+                    None => {}
+                }
             }
             self.next_flush += 1;
         }
+    }
+}
+
+/// An allocated request id that must be completed exactly once. Every id
+/// handed out by `next_request_id` has to reach `Captured` (recorded or
+/// skipped), otherwise the arrival-ordered flush waits for it forever and all
+/// later captures stay hidden. Dropping an unrecorded slot skips its id, which
+/// covers early returns, handler panics, and Hyper canceling the request
+/// future when a client disconnects mid-request.
+struct RequestSlot {
+    state: std::sync::Arc<SharedState>,
+    request_id: u64,
+    completed: bool,
+}
+
+impl RequestSlot {
+    fn allocate(state: &std::sync::Arc<SharedState>) -> Self {
+        Self {
+            state: std::sync::Arc::clone(state),
+            request_id: next_request_id(state),
+            completed: false,
+        }
+    }
+
+    fn record(mut self, request: CapturedRequest, accepted: Option<Accepted>) {
+        self.completed = true;
+        self.state
+            .captured
+            .lock()
+            .expect("mock_intake: captured mutex poisoned")
+            .record(self.request_id, request, accepted);
+    }
+}
+
+impl Drop for RequestSlot {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        // Tolerate a poisoned mutex: panicking in Drop during an unwind would
+        // abort the process, and skipping the id is still correct.
+        self.state
+            .captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .skip(self.request_id);
     }
 }
 
@@ -487,6 +547,15 @@ async fn handle_request(
         return Ok(resp);
     }
 
+    // Request identity is assigned when the request head arrives, before the
+    // body is read, so captures, summaries, and dumps follow arrival order
+    // even when concurrent requests upload at different speeds or complete
+    // out of order. The slot skips its id if the request ends without a
+    // capture (oversized or unreadable body, or the client disconnecting and
+    // Hyper dropping this future), so it cannot hold back later captures.
+    let slot = RequestSlot::allocate(&state);
+    let request_id = slot.request_id;
+
     let headers = req.headers().clone();
     let body = match Limited::new(req.into_body(), MAX_BODY_SIZE).collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -516,19 +585,14 @@ async fn handle_request(
             .collect(),
         body: body.to_vec(),
     };
-    // Request identity is assigned at arrival time (before the blocking
-    // handler runs) so summaries and dumps stay in arrival order even when
-    // requests complete out of order.
-    let request_id = next_request_id(&state);
     // Decompression (up to `MAX_DECOMPRESSED_SIZE`) and optional JSON dumps
     // are blocking work; run them off the async worker so a large payload
     // cannot stall a single-threaded test runtime.
     //
-    // The capture is recorded inside the blocking task rather than after
-    // awaiting it: Hyper drops this future if the client disconnects, but a
-    // blocking task always runs to completion. Recording here guarantees every
-    // allocated request id is recorded, so a canceled request cannot leave a
-    // gap that holds back all later captures.
+    // The slot moves into the blocking task and the capture is recorded there
+    // rather than after awaiting it: Hyper drops this future if the client
+    // disconnects, but a blocking task always runs to completion, so a
+    // request that was fully read is still captured.
     let handler_state = std::sync::Arc::clone(&state);
     let handled = tokio::task::spawn_blocking(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match endpoint {
@@ -551,11 +615,7 @@ async fn handle_request(
         // observe a contiguous, arrival-ordered prefix: no raw capture without
         // its typed payload, no gaps, and no later request before an earlier
         // one.
-        handler_state
-            .captured
-            .lock()
-            .expect("mock_intake: captured mutex poisoned")
-            .record(request_id, captured, accepted);
+        slot.record(captured, accepted);
         status
     })
     .await;
@@ -2077,6 +2137,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn requests_ending_without_capture_do_not_hold_back_later_captures() {
+        use tokio::io::AsyncWriteExt;
+
+        let intake = start_default().await;
+        let base_url = intake.base_url();
+        let addr = base_url.trim_start_matches("http://").to_string();
+
+        // An oversized body is rejected after its request id is allocated, so
+        // the id must be skipped rather than left as a gap.
+        assert_eq!(
+            post(
+                &base_url,
+                "/api/v0.2/stats",
+                None,
+                vec![0u8; MAX_BODY_SIZE + 1]
+            )
+            .await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+
+        // A client that disconnects mid-body also ends its request without a
+        // capture.
+        {
+            let mut stream = tokio::net::TcpStream::connect(&addr)
+                .await
+                .expect("test: connect to mock intake failed");
+            let head = format!(
+                "POST /api/v0.2/stats HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/msgpack\r\nContent-Length: 1000\r\n\r\n"
+            );
+            stream
+                .write_all(head.as_bytes())
+                .await
+                .expect("test: write request head failed");
+            stream
+                .write_all(b"partial")
+                .await
+                .expect("test: write partial body failed");
+        }
+
+        let body = rmp_serde::to_vec_named(&stats_payload(
+            client_payload("local"),
+            1,
+            vec![grouped_stats("svc", "GET /a", 1, |_| {})],
+        ))
+        .expect("test: msgpack encode failed");
+        assert_eq!(
+            post(&base_url, "/api/v0.2/stats", None, body).await,
+            StatusCode::ACCEPTED
+        );
+
+        // The server notices the disconnect asynchronously, so poll until the
+        // valid request becomes visible.
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        while intake.requests_for_path("/api/v0.2/stats").is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "valid request was held back by a request that ended without a capture"
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(intake.requests_for_path("/api/v0.2/stats").len(), 1);
+        assert_eq!(intake.stats_payloads().len(), 1);
+    }
+
+    #[tokio::test]
     async fn body_at_exact_size_limit_is_accepted() {
         let intake = start_default().await;
         let body = stats_payload_wire_of_size(MAX_BODY_SIZE);
@@ -2615,6 +2740,32 @@ mod tests {
                 b"three".to_vec(),
                 b"four".to_vec()
             ]
+        );
+        assert!(captured.pending.is_empty());
+    }
+
+    #[test]
+    fn skip_releases_later_captures() {
+        let mut captured = Captured::new();
+
+        // Request 2 is held back until request 1 completes.
+        captured.record(2, captured_request(b"two"), None);
+        assert!(captured.requests.is_empty());
+
+        // Request 1 ends without a capture: skipping it flushes request 2.
+        captured.skip(1);
+        let bodies: Vec<_> = captured.requests.iter().map(|r| r.body.clone()).collect();
+        assert_eq!(bodies, vec![b"two".to_vec()]);
+
+        // A skip that arrives out of order is buffered like a capture.
+        captured.skip(4);
+        captured.record(5, captured_request(b"five"), None);
+        assert_eq!(captured.requests.len(), 1);
+        captured.record(3, captured_request(b"three"), None);
+        let bodies: Vec<_> = captured.requests.iter().map(|r| r.body.clone()).collect();
+        assert_eq!(
+            bodies,
+            vec![b"two".to_vec(), b"three".to_vec(), b"five".to_vec()]
         );
         assert!(captured.pending.is_empty());
     }
