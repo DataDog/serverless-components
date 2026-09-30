@@ -813,11 +813,14 @@ fn decompress_failure_status(err: &DecompressError) -> StatusCode {
     }
 }
 
+/// The request's `Content-Encoding`, or `identity` when absent. A value that
+/// is not valid UTF-8 is converted lossily rather than treated as absent, so
+/// it is rejected as unsupported instead of silently decoded as identity.
 fn content_encoding(headers: &hyper::HeaderMap) -> String {
-    headers
-        .get("content-encoding")
-        .and_then(|v| v.to_str().ok())
-        .map_or_else(|| "identity".to_string(), ToString::to_string)
+    headers.get("content-encoding").map_or_else(
+        || "identity".to_string(),
+        |v| String::from_utf8_lossy(v.as_bytes()).into_owned(),
+    )
 }
 
 /// Emit one summary line per handled request. Payload contents stay out of
@@ -1550,6 +1553,51 @@ mod tests {
             StatusCode::ACCEPTED
         );
         assert_eq!(intake.stats_payloads().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn non_utf8_content_encoding_returns_415_and_is_not_typed_captured() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let intake = start_default().await;
+        let addr = intake.base_url().trim_start_matches("http://").to_string();
+        // A valid identity body: if the non-UTF-8 encoding were treated as
+        // absent, this would be accepted.
+        let body = rmp_serde::to_vec_named(&stats_payload(
+            client_payload("local"),
+            1,
+            vec![grouped_stats("svc", "GET /a", 1, |_| {})],
+        ))
+        .expect("test: msgpack encode failed");
+
+        // Raw TCP so the header value can carry a non-UTF-8 (obs-text) byte.
+        let mut stream = tokio::net::TcpStream::connect(&addr)
+            .await
+            .expect("test: connect to mock intake failed");
+        let mut request = format!(
+            "POST /api/v0.2/stats HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: {}\r\nContent-Encoding: gz",
+            body.len()
+        )
+        .into_bytes();
+        request.push(0xFF);
+        request.extend_from_slice(b"ip\r\n\r\n");
+        request.extend_from_slice(&body);
+        stream
+            .write_all(&request)
+            .await
+            .expect("test: write request failed");
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("test: read response failed");
+        assert!(
+            response.starts_with(b"HTTP/1.1 415"),
+            "test: expected a 415 for the non-UTF-8 encoding, got {response:?}"
+        );
+
+        assert!(intake.stats_payloads().is_empty());
+        assert_eq!(intake.requests_for_path("/api/v0.2/stats").len(), 1);
     }
 
     #[tokio::test]
