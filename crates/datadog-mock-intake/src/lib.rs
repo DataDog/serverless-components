@@ -637,7 +637,6 @@ enum Accepted {
 
 /// Result of handling one intake request, before summary and dump emission.
 struct HandledRequest<T> {
-    request_id: u64,
     status: StatusCode,
     decoded: Option<T>,
 }
@@ -656,7 +655,6 @@ fn handle_stats(
         Err(e @ DecompressError::UnsupportedEncoding(_)) => {
             eprintln!("{e}");
             HandledRequest {
-                request_id,
                 status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 decoded: None,
             }
@@ -673,7 +671,6 @@ fn handle_stats(
                             StatusCode::ACCEPTED
                         };
                         HandledRequest {
-                            request_id,
                             status,
                             decoded: Some(payload),
                         }
@@ -681,7 +678,6 @@ fn handle_stats(
                     Err(err) => {
                         eprintln!("mock_intake: failed to decode StatsPayload msgpack: {err}");
                         HandledRequest {
-                            request_id,
                             status: failure_status(inject_failure),
                             decoded: None,
                         }
@@ -690,7 +686,6 @@ fn handle_stats(
                 Err(e) => {
                     eprintln!("{e}");
                     HandledRequest {
-                        request_id,
                         status: failure_status(inject_failure),
                         decoded: None,
                     }
@@ -704,7 +699,7 @@ fn handle_stats(
     if state.options.request_summaries {
         let groups = handled.decoded.as_ref().map(stats_hits_by_key);
         log_summary(
-            handled.request_id,
+            request_id,
             "/api/v0.2/stats",
             headers,
             handled.status,
@@ -718,7 +713,7 @@ fn handle_stats(
     {
         dump_request(
             state,
-            handled.request_id,
+            request_id,
             "/api/v0.2/stats",
             headers,
             handled.status,
@@ -726,9 +721,9 @@ fn handle_stats(
         );
     }
 
-    let accepted = (handled.status == StatusCode::ACCEPTED)
-        .then_some(handled.decoded)
-        .flatten()
+    let accepted = handled
+        .decoded
+        .filter(|_| handled.status == StatusCode::ACCEPTED)
         .map(Accepted::Stats);
     (handled.status, accepted)
 }
@@ -742,14 +737,12 @@ fn handle_traces(
     let handled: HandledRequest<pb::AgentPayload> = match decompress(headers, body) {
         Ok(d) => match pb::AgentPayload::decode(d.as_slice()) {
             Ok(payload) => HandledRequest {
-                request_id,
                 status: StatusCode::ACCEPTED,
                 decoded: Some(payload),
             },
             Err(err) => {
                 eprintln!("mock_intake: failed to decode AgentPayload protobuf: {err}");
                 HandledRequest {
-                    request_id,
                     status: StatusCode::BAD_REQUEST,
                     decoded: None,
                 }
@@ -758,8 +751,7 @@ fn handle_traces(
         Err(e) => {
             eprintln!("{e}");
             HandledRequest {
-                request_id,
-                status: decompress_failure_status(&e, false),
+                status: decompress_failure_status(&e),
                 decoded: None,
             }
         }
@@ -773,7 +765,7 @@ fn handle_traces(
 
     if state.options.request_summaries {
         log_summary(
-            handled.request_id,
+            request_id,
             "/api/v0.2/traces",
             headers,
             handled.status,
@@ -787,7 +779,7 @@ fn handle_traces(
     {
         dump_request(
             state,
-            handled.request_id,
+            request_id,
             "/api/v0.2/traces",
             headers,
             handled.status,
@@ -795,9 +787,9 @@ fn handle_traces(
         );
     }
 
-    let accepted = (handled.status == StatusCode::ACCEPTED)
-        .then_some(handled.decoded)
-        .flatten()
+    let accepted = handled
+        .decoded
+        .filter(|_| handled.status == StatusCode::ACCEPTED)
         .map(Accepted::Traces);
     (handled.status, accepted)
 }
@@ -811,14 +803,12 @@ fn handle_pipeline_stats(
     let handled: HandledRequest<PipelineStatsPayload> = match decompress(headers, body) {
         Ok(d) => match rmp_serde::from_slice::<PipelineStatsPayload>(&d) {
             Ok(payload) => HandledRequest {
-                request_id,
                 status: StatusCode::ACCEPTED,
                 decoded: Some(payload),
             },
             Err(err) => {
                 eprintln!("mock_intake: failed to decode pipeline stats msgpack: {err}");
                 HandledRequest {
-                    request_id,
                     status: StatusCode::BAD_REQUEST,
                     decoded: None,
                 }
@@ -827,8 +817,7 @@ fn handle_pipeline_stats(
         Err(e) => {
             eprintln!("{e}");
             HandledRequest {
-                request_id,
-                status: decompress_failure_status(&e, false),
+                status: decompress_failure_status(&e),
                 decoded: None,
             }
         }
@@ -840,7 +829,7 @@ fn handle_pipeline_stats(
             .as_ref()
             .map_or(0, |p| p.stats.iter().map(|b| b.stats.len()).sum());
         log_summary(
-            handled.request_id,
+            request_id,
             "/api/v0.1/pipeline_stats",
             headers,
             handled.status,
@@ -854,7 +843,7 @@ fn handle_pipeline_stats(
     {
         dump_request(
             state,
-            handled.request_id,
+            request_id,
             "/api/v0.1/pipeline_stats",
             headers,
             handled.status,
@@ -862,9 +851,9 @@ fn handle_pipeline_stats(
         );
     }
 
-    let accepted = (handled.status == StatusCode::ACCEPTED)
-        .then_some(handled.decoded)
-        .flatten()
+    let accepted = handled
+        .decoded
+        .filter(|_| handled.status == StatusCode::ACCEPTED)
         .map(Accepted::PipelineStats);
     (handled.status, accepted)
 }
@@ -884,16 +873,16 @@ fn next_request_id(state: &SharedState) -> u64 {
     state.request_counter.fetch_add(1, Ordering::SeqCst) + 1
 }
 
-/// Status for a request whose body could not be decompressed. An unsupported
-/// `Content-Encoding` is a client error (`415 Unsupported Media Type`, the
-/// same status the real intake stack uses for unsupported media types)
-/// regardless of stats failure injection; an actual decompression failure
-/// keeps the endpoint's historical status (`400`, or `500` inside the stats
-/// injection window).
-fn decompress_failure_status(err: &DecompressError, inject_failure: bool) -> StatusCode {
+/// Status for a traces or pipeline-stats request whose body could not be
+/// decompressed. An unsupported `Content-Encoding` is a client error (`415
+/// Unsupported Media Type`, the same status the real intake stack uses for
+/// unsupported media types); an actual decompression failure keeps the
+/// endpoint's historical `400 Bad Request` status. (Stats handles failure
+/// injection separately in `handle_stats`.)
+fn decompress_failure_status(err: &DecompressError) -> StatusCode {
     match err {
         DecompressError::UnsupportedEncoding(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        DecompressError::Decode(_) => failure_status(inject_failure),
+        DecompressError::Decode(_) => StatusCode::BAD_REQUEST,
     }
 }
 
