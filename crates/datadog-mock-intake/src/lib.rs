@@ -153,118 +153,48 @@ pub struct CapturedRequest {
     pub body: Vec<u8>,
 }
 
-/// A completed request held back until every earlier request has been
-/// flushed to the visible capture vectors, so readers only ever observe a
-/// contiguous, arrival-ordered prefix of captures.
-#[derive(Debug)]
-struct PendingCapture {
-    request: CapturedRequest,
-    accepted: Option<Accepted>,
-}
-
-/// Captured, decoded APM payloads for a single test run.
+/// Captured, decoded APM payloads for a single test run. Each entry is
+/// tagged with its request id and kept sorted by it, so readers see captures
+/// in arrival order (when the request head arrived) even when concurrent
+/// requests finish handling out of order.
 #[derive(Debug, Default)]
 struct Captured {
-    requests: Vec<CapturedRequest>,
-    stats: Vec<pb::StatsPayload>,
-    traces: Vec<pb::AgentPayload>,
-    pipeline_stats: Vec<PipelineStatsPayload>,
-    /// Requests that finished handling out of arrival order and are waiting
-    /// for earlier requests before they can be exposed to readers. `None`
-    /// marks a request id that finished without a capture (e.g. an oversized
-    /// body or a client that disconnected mid-request), so later captures are
-    /// not held back waiting for it.
-    pending: BTreeMap<u64, Option<PendingCapture>>,
-    /// The request id the next flush expects, so the visible vectors stay in
-    /// arrival order even when concurrent requests complete out of order.
-    next_flush: u64,
+    requests: Vec<(u64, CapturedRequest)>,
+    stats: Vec<(u64, pb::StatsPayload)>,
+    traces: Vec<(u64, pb::AgentPayload)>,
+    pipeline_stats: Vec<(u64, PipelineStatsPayload)>,
 }
 
 impl Captured {
-    fn new() -> Self {
-        Self {
-            next_flush: 1,
-            ..Default::default()
-        }
-    }
-
-    /// Record a completed request. Out-of-order completions are buffered
-    /// until all earlier requests arrive, then a contiguous prefix is
-    /// appended to the visible vectors in one pass so readers never observe
-    /// a raw capture whose typed capture is missing, a gap, or a later
-    /// request before an earlier one.
+    /// Record a completed request and make it visible immediately. The raw
+    /// capture and its typed payload are inserted in one call (under the
+    /// caller's lock), so readers never observe one without the other. A
+    /// request is never held back waiting for earlier requests: once the
+    /// intake has responded, its capture is visible, and a stalled or
+    /// abandoned request cannot hide later ones.
     fn record(&mut self, request_id: u64, request: CapturedRequest, accepted: Option<Accepted>) {
-        self.complete(request_id, Some(PendingCapture { request, accepted }));
-    }
-
-    /// Mark a request id as finished without a capture, so the flush does not
-    /// wait for it forever.
-    fn skip(&mut self, request_id: u64) {
-        self.complete(request_id, None);
-    }
-
-    fn complete(&mut self, request_id: u64, capture: Option<PendingCapture>) {
-        self.pending.insert(request_id, capture);
-        while let Some(entry) = self.pending.remove(&self.next_flush) {
-            if let Some(pending) = entry {
-                self.requests.push(pending.request);
-                match pending.accepted {
-                    Some(Accepted::Stats(payload)) => self.stats.push(payload),
-                    Some(Accepted::Traces(payload)) => self.traces.push(payload),
-                    Some(Accepted::PipelineStats(payload)) => self.pipeline_stats.push(payload),
-                    None => {}
-                }
+        insert_sorted(&mut self.requests, request_id, request);
+        match accepted {
+            Some(Accepted::Stats(payload)) => insert_sorted(&mut self.stats, request_id, payload),
+            Some(Accepted::Traces(payload)) => insert_sorted(&mut self.traces, request_id, payload),
+            Some(Accepted::PipelineStats(payload)) => {
+                insert_sorted(&mut self.pipeline_stats, request_id, payload);
             }
-            self.next_flush += 1;
+            None => {}
         }
     }
 }
 
-/// An allocated request id that must be completed exactly once. Every id
-/// handed out by the request counter has to reach `Captured` (recorded or
-/// skipped), otherwise the arrival-ordered flush waits for it forever and all
-/// later captures stay hidden. Dropping an unrecorded slot skips its id, which
-/// covers early returns, handler panics, and Hyper canceling the request
-/// future when a client disconnects mid-request.
-struct RequestSlot {
-    state: Arc<SharedState>,
-    request_id: u64,
-    completed: bool,
+/// Insert `item` keeping `entries` sorted by request id. Captures usually
+/// complete in order, so this is normally an append.
+fn insert_sorted<T>(entries: &mut Vec<(u64, T)>, request_id: u64, item: T) {
+    let index = entries.partition_point(|(id, _)| *id < request_id);
+    entries.insert(index, (request_id, item));
 }
 
-impl RequestSlot {
-    fn allocate(state: &Arc<SharedState>) -> Self {
-        Self {
-            state: Arc::clone(state),
-            // Ids start at 1 so the first flush expects id 1.
-            request_id: state.request_counter.fetch_add(1, Ordering::SeqCst) + 1,
-            completed: false,
-        }
-    }
-
-    fn record(mut self, request: CapturedRequest, accepted: Option<Accepted>) {
-        self.completed = true;
-        self.state
-            .captured
-            .lock()
-            .expect("mock_intake: captured mutex poisoned")
-            .record(self.request_id, request, accepted);
-    }
-}
-
-impl Drop for RequestSlot {
-    fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
-        // Tolerate a poisoned mutex: panicking in Drop during an unwind would
-        // abort the process, and skipping the id is still correct.
-        self.state
-            .captured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .skip(self.request_id);
-    }
+/// Clone the items of an id-tagged capture vector, in request-id order.
+fn items<T: Clone>(entries: &[(u64, T)]) -> Vec<T> {
+    entries.iter().map(|(_, item)| item.clone()).collect()
 }
 
 /// Shared server state. The request handler writes to the mutex; callers read
@@ -273,8 +203,8 @@ impl Drop for RequestSlot {
 struct SharedState {
     captured: Mutex<Captured>,
     options: MockIntakeOptions,
-    /// Monotonic request identity for summaries and dumps. Ids start at 1
-    /// (`Captured::new` initializes `next_flush` to match).
+    /// Monotonic request identity for summaries, dumps, and capture order.
+    /// Ids start at 1.
     request_counter: AtomicU64,
     /// Stats request attempts, used for `fail_stats_first_n` injection.
     stats_attempts: AtomicU64,
@@ -352,7 +282,7 @@ impl MockIntake {
         let base_url = format!("http://{addr}");
 
         let state = Arc::new(SharedState {
-            captured: Mutex::new(Captured::new()),
+            captured: Mutex::new(Captured::default()),
             options,
             request_counter: AtomicU64::new(0),
             stats_attempts: AtomicU64::new(0),
@@ -461,43 +391,49 @@ impl MockIntake {
             .expect("mock_intake: captured mutex poisoned")
             .requests
             .iter()
-            .filter(|req| req.path == path)
-            .cloned()
+            .filter(|(_, req)| req.path == path)
+            .map(|(_, req)| req.clone())
             .collect()
     }
 
     /// All DSM pipeline-stats payloads captured so far, in arrival order.
     #[must_use]
     pub fn pipeline_stats_payloads(&self) -> Vec<PipelineStatsPayload> {
-        self.state
-            .captured
-            .lock()
-            .expect("mock_intake: captured mutex poisoned")
-            .pipeline_stats
-            .clone()
+        items(
+            &self
+                .state
+                .captured
+                .lock()
+                .expect("mock_intake: captured mutex poisoned")
+                .pipeline_stats,
+        )
     }
 
     /// All `StatsPayload`s captured so far, in arrival order. Rejected stats
     /// attempts (failure injection) are excluded.
     #[must_use]
     pub fn stats_payloads(&self) -> Vec<pb::StatsPayload> {
-        self.state
-            .captured
-            .lock()
-            .expect("mock_intake: captured mutex poisoned")
-            .stats
-            .clone()
+        items(
+            &self
+                .state
+                .captured
+                .lock()
+                .expect("mock_intake: captured mutex poisoned")
+                .stats,
+        )
     }
 
     /// All `AgentPayload`s captured so far, in arrival order.
     #[must_use]
     pub fn trace_payloads(&self) -> Vec<pb::AgentPayload> {
-        self.state
-            .captured
-            .lock()
-            .expect("mock_intake: captured mutex poisoned")
-            .traces
-            .clone()
+        items(
+            &self
+                .state
+                .captured
+                .lock()
+                .expect("mock_intake: captured mutex poisoned")
+                .traces,
+        )
     }
 }
 
@@ -550,11 +486,9 @@ async fn handle_request(
     // Request identity is assigned when the request head arrives, before the
     // body is read, so captures, summaries, and dumps follow arrival order
     // even when concurrent requests upload at different speeds or complete
-    // out of order. The slot skips its id if the request ends without a
-    // capture (oversized or unreadable body, or the client disconnecting and
-    // Hyper dropping this future), so it cannot hold back later captures.
-    let slot = RequestSlot::allocate(&state);
-    let request_id = slot.request_id;
+    // out of order. An id whose request ends without a capture (oversized or
+    // unreadable body, or a client disconnecting) is simply never recorded.
+    let request_id = state.request_counter.fetch_add(1, Ordering::SeqCst) + 1;
 
     let headers = req.headers().clone();
     let body = match Limited::new(req.into_body(), MAX_BODY_SIZE).collect().await {
@@ -589,12 +523,10 @@ async fn handle_request(
     // are blocking work; run them off the async worker so a large payload
     // cannot stall a single-threaded test runtime.
     //
-    // The slot moves into the blocking task and the capture is recorded there
-    // rather than after awaiting it: Hyper drops this future if the client
-    // disconnects, but a blocking task always runs to completion, so a
-    // request that was fully read is still captured.
-    // `state` is moved into the blocking task; the slot holds its own Arc
-    // clone, so the handler still shares the same SharedState.
+    // The capture is recorded inside the blocking task rather than after
+    // awaiting it: Hyper drops this future if the client disconnects, but a
+    // blocking task always runs to completion, so a request that was fully
+    // read is still captured.
     let handled = tokio::task::spawn_blocking(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match endpoint {
             Endpoint::Stats => handle_stats(&state, request_id, &headers, &body),
@@ -610,11 +542,13 @@ async fn handle_request(
         };
 
         // Record the raw request and its typed payload in one critical
-        // section. Out-of-order completions are buffered so readers only ever
-        // observe a contiguous, arrival-ordered prefix: no raw capture without
-        // its typed payload, no gaps, and no later request before an earlier
-        // one.
-        slot.record(captured, accepted);
+        // section, before the response is sent, so a client that has seen
+        // the response always finds its capture.
+        state
+            .captured
+            .lock()
+            .expect("mock_intake: captured mutex poisoned")
+            .record(request_id, captured, accepted);
         status
     })
     .await;
@@ -2133,24 +2067,26 @@ mod tests {
             StatusCode::PAYLOAD_TOO_LARGE
         );
 
-        // A client that disconnects mid-body also ends its request without a
-        // capture.
-        {
-            let mut stream = tokio::net::TcpStream::connect(&addr)
-                .await
-                .expect("test: connect to mock intake failed");
-            let head = format!(
-                "POST /api/v0.2/stats HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/msgpack\r\nContent-Length: 1000\r\n\r\n"
-            );
-            stream
-                .write_all(head.as_bytes())
-                .await
-                .expect("test: write request head failed");
-            stream
-                .write_all(b"partial")
-                .await
-                .expect("test: write partial body failed");
-        }
+        // A client that stalls mid-body keeps its request in flight: the
+        // connection stays open, so the request never completes. It must not
+        // hide the captures of later requests.
+        let mut stalled = tokio::net::TcpStream::connect(&addr)
+            .await
+            .expect("test: connect to mock intake failed");
+        let head = format!(
+            "POST /api/v0.2/stats HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/msgpack\r\nContent-Length: 1000\r\n\r\n"
+        );
+        stalled
+            .write_all(head.as_bytes())
+            .await
+            .expect("test: write request head failed");
+        stalled
+            .write_all(b"partial")
+            .await
+            .expect("test: write partial body failed");
+        // Give the server time to read the head and assign the stalled
+        // request an id ahead of the valid request below.
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         let body = rmp_serde::to_vec_named(&stats_payload(
             client_payload("local"),
@@ -2163,18 +2099,15 @@ mod tests {
             StatusCode::ACCEPTED
         );
 
-        // The server notices the disconnect asynchronously, so poll until the
-        // valid request becomes visible.
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        while intake.requests_for_path("/api/v0.2/stats").is_empty() {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "valid request was held back by a request that ended without a capture"
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        }
-        assert_eq!(intake.requests_for_path("/api/v0.2/stats").len(), 1);
+        // Once the client has seen the response, the capture is visible
+        // without polling, even though the stalled request is still open.
+        assert_eq!(
+            intake.requests_for_path("/api/v0.2/stats").len(),
+            1,
+            "valid request was held back by an incomplete earlier request"
+        );
         assert_eq!(intake.stats_payloads().len(), 1);
+        drop(stalled);
     }
 
     #[tokio::test]
@@ -2686,63 +2619,30 @@ mod tests {
     }
 
     #[test]
-    fn record_flushes_captures_in_arrival_order() {
-        let mut captured = Captured::new();
+    fn record_is_visible_immediately_in_arrival_order() {
+        let mut captured = Captured::default();
+        let bodies = |captured: &Captured| -> Vec<Vec<u8>> {
+            captured
+                .requests
+                .iter()
+                .map(|(_, r)| r.body.clone())
+                .collect()
+        };
 
-        // Request 2 completes before request 1: nothing becomes visible yet,
-        // because the visible vectors must stay in arrival order.
+        // Request 2 completes before request 1: it is visible right away.
         captured.record(2, captured_request(b"two"), None);
-        assert!(captured.requests.is_empty());
+        assert_eq!(bodies(&captured), vec![b"two".to_vec()]);
 
-        // A later request completing early is also held back.
+        // Request 4 completes early too; request 3 never completes (e.g. a
+        // stalled or disconnected client) and must not hide anything.
         captured.record(4, captured_request(b"four"), None);
-        assert!(captured.requests.is_empty());
+        assert_eq!(bodies(&captured), vec![b"two".to_vec(), b"four".to_vec()]);
 
-        // Request 1 completes: the contiguous prefix (1, 2) flushes in
-        // arrival order; request 4 stays buffered.
+        // Request 1 completes last but is ordered by arrival (request id).
         captured.record(1, captured_request(b"one"), None);
-        let bodies: Vec<_> = captured.requests.iter().map(|r| r.body.clone()).collect();
-        assert_eq!(bodies, vec![b"one".to_vec(), b"two".to_vec()]);
-
-        // Request 3 completes: the remaining prefix (2, 3, 4) flushes in
-        // arrival order, including the out-of-order request 4.
-        captured.record(3, captured_request(b"three"), None);
-        let bodies: Vec<_> = captured.requests.iter().map(|r| r.body.clone()).collect();
         assert_eq!(
-            bodies,
-            vec![
-                b"one".to_vec(),
-                b"two".to_vec(),
-                b"three".to_vec(),
-                b"four".to_vec()
-            ]
+            bodies(&captured),
+            vec![b"one".to_vec(), b"two".to_vec(), b"four".to_vec()]
         );
-        assert!(captured.pending.is_empty());
-    }
-
-    #[test]
-    fn skip_releases_later_captures() {
-        let mut captured = Captured::new();
-
-        // Request 2 is held back until request 1 completes.
-        captured.record(2, captured_request(b"two"), None);
-        assert!(captured.requests.is_empty());
-
-        // Request 1 ends without a capture: skipping it flushes request 2.
-        captured.skip(1);
-        let bodies: Vec<_> = captured.requests.iter().map(|r| r.body.clone()).collect();
-        assert_eq!(bodies, vec![b"two".to_vec()]);
-
-        // A skip that arrives out of order is buffered like a capture.
-        captured.skip(4);
-        captured.record(5, captured_request(b"five"), None);
-        assert_eq!(captured.requests.len(), 1);
-        captured.record(3, captured_request(b"three"), None);
-        let bodies: Vec<_> = captured.requests.iter().map(|r| r.body.clone()).collect();
-        assert_eq!(
-            bodies,
-            vec![b"two".to_vec(), b"three".to_vec(), b"five".to_vec()]
-        );
-        assert!(captured.pending.is_empty());
     }
 }
