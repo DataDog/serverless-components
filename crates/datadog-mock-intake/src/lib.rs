@@ -37,8 +37,8 @@ use std::fmt::Write as _;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -182,8 +182,6 @@ struct Captured {
 
 impl Captured {
     fn new() -> Self {
-        // Request ids start at 1 (`next_request_id` adds 1 after the fetch),
-        // so the first flush expects id 1.
         Self {
             next_flush: 1,
             ..Default::default()
@@ -223,22 +221,23 @@ impl Captured {
 }
 
 /// An allocated request id that must be completed exactly once. Every id
-/// handed out by `next_request_id` has to reach `Captured` (recorded or
+/// handed out by the request counter has to reach `Captured` (recorded or
 /// skipped), otherwise the arrival-ordered flush waits for it forever and all
 /// later captures stay hidden. Dropping an unrecorded slot skips its id, which
 /// covers early returns, handler panics, and Hyper canceling the request
 /// future when a client disconnects mid-request.
 struct RequestSlot {
-    state: std::sync::Arc<SharedState>,
+    state: Arc<SharedState>,
     request_id: u64,
     completed: bool,
 }
 
 impl RequestSlot {
-    fn allocate(state: &std::sync::Arc<SharedState>) -> Self {
+    fn allocate(state: &Arc<SharedState>) -> Self {
         Self {
-            state: std::sync::Arc::clone(state),
-            request_id: next_request_id(state),
+            state: Arc::clone(state),
+            // Ids start at 1 so the first flush expects id 1.
+            request_id: state.request_counter.fetch_add(1, Ordering::SeqCst) + 1,
             completed: false,
         }
     }
@@ -274,7 +273,8 @@ impl Drop for RequestSlot {
 struct SharedState {
     captured: Mutex<Captured>,
     options: MockIntakeOptions,
-    /// Monotonic request identity for summaries and dumps.
+    /// Monotonic request identity for summaries and dumps. Ids start at 1
+    /// (`Captured::new` initializes `next_flush` to match).
     request_counter: AtomicU64,
     /// Stats request attempts, used for `fail_stats_first_n` injection.
     stats_attempts: AtomicU64,
@@ -303,10 +303,10 @@ impl Endpoint {
 #[derive(Debug)]
 pub struct MockIntake {
     base_url: String,
-    state: std::sync::Arc<SharedState>,
+    state: Arc<SharedState>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
-    connections: std::sync::Arc<Mutex<ConnectionRegistry>>,
+    connections: Arc<Mutex<ConnectionRegistry>>,
 }
 
 /// Tracks live connection tasks plus whether shutdown has begun. Keeping the
@@ -351,7 +351,7 @@ impl MockIntake {
             })?;
         let base_url = format!("http://{addr}");
 
-        let state = std::sync::Arc::new(SharedState {
+        let state = Arc::new(SharedState {
             captured: Mutex::new(Captured::new()),
             options,
             request_counter: AtomicU64::new(0),
@@ -359,9 +359,9 @@ impl MockIntake {
         });
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
-        let connections: std::sync::Arc<Mutex<ConnectionRegistry>> = std::sync::Arc::default();
-        let task_state = std::sync::Arc::clone(&state);
-        let task_connections = std::sync::Arc::clone(&connections);
+        let connections: Arc<Mutex<ConnectionRegistry>> = Arc::default();
+        let task_state = Arc::clone(&state);
+        let task_connections = Arc::clone(&connections);
         let task = tokio::spawn(async move {
             let state = task_state;
             loop {
@@ -381,10 +381,10 @@ impl MockIntake {
                         };
 
                         let io = TokioIo::new(stream);
-                        let state = std::sync::Arc::clone(&state);
+                        let state = Arc::clone(&state);
                         let handle = tokio::spawn(async move {
                             let service = service_fn(move |req: Request<Incoming>| {
-                                let state = std::sync::Arc::clone(&state);
+                                let state = Arc::clone(&state);
                                 async move { handle_request(state, req).await }
                             });
                             // Log connection failures (malformed HTTP, resets,
@@ -533,7 +533,7 @@ fn response(status: StatusCode) -> Response<Full<Bytes>> {
 /// Handle one incoming request: route it, enforce the body size limit, then
 /// capture and dispatch it to the endpoint-specific handler.
 async fn handle_request(
-    state: std::sync::Arc<SharedState>,
+    state: Arc<SharedState>,
     req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path().to_string();
@@ -593,14 +593,13 @@ async fn handle_request(
     // rather than after awaiting it: Hyper drops this future if the client
     // disconnects, but a blocking task always runs to completion, so a
     // request that was fully read is still captured.
-    let handler_state = std::sync::Arc::clone(&state);
+    // `state` is moved into the blocking task; the slot holds its own Arc
+    // clone, so the handler still shares the same SharedState.
     let handled = tokio::task::spawn_blocking(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match endpoint {
-            Endpoint::Stats => handle_stats(&handler_state, request_id, &headers, &body),
-            Endpoint::Traces => handle_traces(&handler_state, request_id, &headers, &body),
-            Endpoint::PipelineStats => {
-                handle_pipeline_stats(&handler_state, request_id, &headers, &body)
-            }
+            Endpoint::Stats => handle_stats(&state, request_id, &headers, &body),
+            Endpoint::Traces => handle_traces(&state, request_id, &headers, &body),
+            Endpoint::PipelineStats => handle_pipeline_stats(&state, request_id, &headers, &body),
         }));
         let (status, accepted) = match result {
             Ok(result) => result,
@@ -642,7 +641,7 @@ struct HandledRequest<T> {
 }
 
 fn handle_stats(
-    state: &std::sync::Arc<SharedState>,
+    state: &Arc<SharedState>,
     request_id: u64,
     headers: &hyper::HeaderMap,
     body: &Bytes,
@@ -694,9 +693,8 @@ fn handle_stats(
         }
     };
 
-    let payload_count = handled.decoded.as_ref().map_or(0, |p| p.stats.len());
-
     if state.options.request_summaries {
+        let payload_count = handled.decoded.as_ref().map_or(0, |p| p.stats.len());
         let groups = handled.decoded.as_ref().map(stats_hits_by_key);
         log_summary(
             request_id,
@@ -729,7 +727,7 @@ fn handle_stats(
 }
 
 fn handle_traces(
-    state: &std::sync::Arc<SharedState>,
+    state: &Arc<SharedState>,
     request_id: u64,
     headers: &hyper::HeaderMap,
     body: &Bytes,
@@ -757,13 +755,12 @@ fn handle_traces(
         }
     };
 
-    // Tracer payload count across the ordinary and indexed collections.
-    let payload_count = handled
-        .decoded
-        .as_ref()
-        .map_or(0, |p| p.tracer_payloads.len() + p.idx_tracer_payloads.len());
-
     if state.options.request_summaries {
+        // Tracer payload count across the ordinary and indexed collections.
+        let payload_count = handled
+            .decoded
+            .as_ref()
+            .map_or(0, |p| p.tracer_payloads.len() + p.idx_tracer_payloads.len());
         log_summary(
             request_id,
             "/api/v0.2/traces",
@@ -795,7 +792,7 @@ fn handle_traces(
 }
 
 fn handle_pipeline_stats(
-    state: &std::sync::Arc<SharedState>,
+    state: &Arc<SharedState>,
     request_id: u64,
     headers: &hyper::HeaderMap,
     body: &Bytes,
@@ -869,10 +866,6 @@ fn failure_status(inject_failure: bool) -> StatusCode {
     }
 }
 
-fn next_request_id(state: &SharedState) -> u64 {
-    state.request_counter.fetch_add(1, Ordering::SeqCst) + 1
-}
-
 /// Status for a traces or pipeline-stats request whose body could not be
 /// decompressed. An unsupported `Content-Encoding` is a client error (`415
 /// Unsupported Media Type`, the same status the real intake stack uses for
@@ -930,6 +923,8 @@ fn dump_request(
     status: StatusCode,
     payload: serde_json::Value,
 ) {
+    use std::io::Write as _;
+
     let Some(dump_dir) = &state.options.dump_dir else {
         return;
     };
@@ -971,7 +966,7 @@ fn dump_request(
             .open(&path)
         {
             Ok(mut file) => {
-                if let Err(e) = std::io::Write::write_all(&mut file, &json) {
+                if let Err(e) = file.write_all(&json) {
                     eprintln!("mock_intake: failed to write dump {}: {e}", path.display());
                 }
                 return;
@@ -1215,37 +1210,25 @@ fn stats_hits_by_key(payload: &pb::StatsPayload) -> BTreeMap<StatsGroupKey, u64>
 // ---------------------------------------------------------------------------
 
 /// An error from decoding a request body's `Content-Encoding`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum DecompressError {
     /// The `Content-Encoding` header names an encoding the intake does not
     /// support. Rejected with `415`, matching the intake's treatment of
     /// unsupported media types, so a test cannot silently pass against the
     /// mock while the real intake would reject the payload.
+    #[error("mock_intake: unsupported Content-Encoding '{0}'")]
     UnsupportedEncoding(String),
     /// The body could not be decompressed with its declared encoding.
+    #[error("{0}")]
     Decode(String),
 }
 
-impl std::fmt::Display for DecompressError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnsupportedEncoding(encoding) => {
-                write!(f, "mock_intake: unsupported Content-Encoding '{encoding}'")
-            }
-            Self::Decode(message) => write!(f, "{message}"),
-        }
-    }
-}
 /// Decompress a request body based on its `Content-Encoding` header.
 /// Supports `gzip` and `zstd`; an absent or `identity` encoding returns the
 /// body unchanged. Any other encoding is rejected as unsupported rather than
 /// silently decoded as identity.
 fn decompress(headers: &hyper::HeaderMap, body: &Bytes) -> Result<Vec<u8>, DecompressError> {
-    let encoding = headers
-        .get("content-encoding")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let encoding = content_encoding(headers).to_ascii_lowercase();
 
     match encoding.as_str() {
         "" | "identity" => Ok(body.to_vec()),
@@ -1310,8 +1293,12 @@ mod tests {
     }
 
     fn gzip(data: Vec<u8>) -> Vec<u8> {
+        use std::io::Write as _;
+
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        std::io::Write::write_all(&mut encoder, &data).expect("test: gzip compression failed");
+        encoder
+            .write_all(&data)
+            .expect("test: gzip compression failed");
         encoder.finish().expect("test: gzip compression failed")
     }
 
@@ -1491,7 +1478,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let intake = start_default().await;
-        let state = std::sync::Arc::clone(&intake.state);
+        let state = Arc::clone(&intake.state);
         let addr = intake.base_url().trim_start_matches("http://").to_string();
 
         // Raw TCP so the connection stays open (keep-alive) across Drop.
