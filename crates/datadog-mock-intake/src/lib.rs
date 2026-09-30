@@ -1494,15 +1494,26 @@ mod tests {
         drop(intake);
 
         // Reuse the still-open keep-alive connection. The connection task
-        // was aborted on Drop, so this request must not be captured.
-        stream
-            .write_all(request.as_bytes())
-            .await
-            .expect("test: write second request failed");
-        stream
-            .write_all(body.as_slice())
-            .await
-            .expect("test: write second body failed");
+        // was aborted on Drop, so this request must not be captured. The
+        // server may already have closed its side of the socket, in which
+        // case a write fails with a reset or broken pipe: that is also valid
+        // evidence of shutdown. Any other write error is a test failure.
+        let write_result = async {
+            stream.write_all(request.as_bytes()).await?;
+            stream.write_all(body.as_slice()).await
+        }
+        .await;
+        if let Err(e) = write_result {
+            assert!(
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                ),
+                "test: unexpected error writing after Drop: {e}"
+            );
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         let captured_after = state
