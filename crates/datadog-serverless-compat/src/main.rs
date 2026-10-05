@@ -28,7 +28,7 @@ use datadog_metrics_collector::azure_cpu::CpuMetricsCollector;
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
-use datadog_serverless_compat_inventory::run_inventory_reporter;
+use inventory::run_inventory_reporter;
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_logs_agent::{

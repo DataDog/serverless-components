@@ -1,4 +1,4 @@
-// Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
+// Copyright 2026-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{ProcessEnv, build_inventory_report, payload};
@@ -14,7 +14,6 @@ const MAX_ATTEMPTS: u32 = 3;
 
 struct Reporter {
     client: reqwest::Client,
-    intake_url: reqwest::Url,
     api_key: String,
     dd_site: String,
     user_agent: String,
@@ -41,14 +40,6 @@ pub async fn run_inventory_reporter(
         return;
     };
 
-    let intake_url = match build_intake_url(dd_site) {
-        Ok(url) => url,
-        Err(error) => {
-            warn!("inventory: invalid DD_SITE, skipping reporter: {error}");
-            return;
-        }
-    };
-
     let client = match build_client(https_proxy) {
         Ok(client) => client,
         Err(error) => {
@@ -59,12 +50,11 @@ pub async fn run_inventory_reporter(
 
     let reporter = Reporter {
         client,
-        intake_url,
         api_key: api_key.to_string(),
         dd_site: dd_site.to_string(),
         user_agent: format!(
             "datadog-serverless-compat/{}",
-            payload::serverless_compat_version()
+            payload::serverless_compat_version().unwrap_or_else(|| "unknown".to_string())
         ),
         env_type,
         // Reuse a stable UUID for every report emitted by this process.
@@ -95,6 +85,14 @@ fn is_supported(env_type: &EnvironmentType) -> bool {
 
 impl Reporter {
     async fn send_report(&self, report_reason: &str) {
+        let intake_url = match build_intake_url(&self.dd_site) {
+            Ok(url) => url,
+            Err(error) => {
+                warn!("inventory: invalid DD_SITE, skipping {report_reason} report: {error}");
+                return;
+            }
+        };
+
         let report = match build_inventory_report(
             &self.env_type,
             &self.process_id,
@@ -119,7 +117,7 @@ impl Reporter {
         for attempt in 0..MAX_ATTEMPTS {
             match do_send(
                 &self.client,
-                &self.intake_url,
+                &intake_url,
                 &self.api_key,
                 &self.user_agent,
                 report.body.clone(),
