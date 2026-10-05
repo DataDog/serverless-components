@@ -1,4 +1,4 @@
-// Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
+// Copyright 2026-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{ProcessEnv, platform::PlatformData};
@@ -41,8 +41,7 @@ fn build_with_env(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
-        })
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        });
 
     // Required identity fields take precedence over platform-specific metadata.
     let mut metadata = Value::Object(platform.metadata.clone());
@@ -51,7 +50,9 @@ fn build_with_env(
     metadata["report_reason"] = Value::String(report_reason.into());
     metadata["resource_id"] = Value::String(platform.resource_id.clone());
     metadata["resource_name"] = Value::String(platform.resource_name.clone());
-    metadata["serverless_compat_version"] = Value::String(compat_version);
+    if let Some(compat_version) = compat_version {
+        metadata["serverless_compat_version"] = Value::String(compat_version);
+    }
 
     for (env_key, metadata_key) in [
         ("DD_ENV", "dd_env"),
@@ -178,6 +179,25 @@ mod tests {
         assert_eq!(
             payload["agent_metadata"]["serverless_compat_version"],
             "2.4.6"
+        );
+    }
+
+    #[test]
+    fn omits_unknown_compat_version() {
+        let body = build_with_env(
+            "pid",
+            "startup",
+            &azure_platform(),
+            &FakeEnv::default(),
+            None,
+        )
+        .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert!(
+            payload["agent_metadata"]
+                .get("serverless_compat_version")
+                .is_none()
         );
     }
 }
