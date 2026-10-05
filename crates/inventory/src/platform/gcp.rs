@@ -1,9 +1,8 @@
-// Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
+// Copyright 2026-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
 use super::PlatformData;
 use crate::ProcessEnv;
-use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use libdd_common::azure_app_services::QueryEnv;
 use serde_json::{Map, Value};
 use std::time::Duration;
@@ -122,14 +121,15 @@ async fn fetch_metadata_value(
     label: &str,
     parse: impl FnOnce(&str) -> Option<String>,
 ) -> Option<String> {
-    let client = match create_reqwest_client_builder().and_then(|builder| {
-        builder
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(2))
-            .build()
-            .map_err(Into::into)
-    }) {
+    // This client is scoped to GCP's fixed, plain-HTTP metadata endpoint, so it
+    // neither needs nor should configure a TLS provider.
+    #[allow(clippy::disallowed_methods)]
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(2))
+        .build()
+    {
         Ok(client) => client,
         Err(error) => {
             warn!("inventory: failed to create GCP metadata client for {label}: {error}");
