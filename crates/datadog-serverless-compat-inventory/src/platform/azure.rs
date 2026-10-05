@@ -1,4 +1,4 @@
-// Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
+// Copyright 2026-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
 use super::PlatformData;
@@ -14,32 +14,37 @@ pub(super) fn collect() -> Option<PlatformData> {
     collect_from(ProcessEnv)
 }
 
-fn collect_from<E: QueryEnv + Clone>(env: E) -> Option<PlatformData> {
-    let azure = AzureMetadata::new_function(env.clone())?;
+fn collect_from<E: QueryEnv>(env: E) -> Option<PlatformData> {
+    // These values are inventory-specific enrichments that are not exposed by
+    // the published libdd-common 5.2 API used by this repository.
+    let region = env
+        .get_var("REGION_NAME")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let deployment_slot = env
+        .get_var("WEBSITE_SLOT_NAME")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("production"));
+
+    let azure = AzureMetadata::new_function(env)?;
     let resource_name = known_value(azure.get_site_name())?.to_string();
     let base_resource_id = known_value(azure.get_resource_id())?;
-
-    // Non-production deployment slots share WEBSITE_SITE_NAME with the parent
-    // app but have their own ARM path and therefore need a distinct inventory ID.
-    let slot = env
-        .get_var("WEBSITE_SLOT_NAME")
-        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("production"));
-    let resource_id = match slot {
+    let resource_id = match deployment_slot {
         Some(slot) => format!("{base_resource_id}/slots/{}", slot.to_lowercase()),
         None => base_resource_id.to_string(),
     };
 
     let mut metadata = Map::new();
-    if let Some(region) = env.get_var("REGION_NAME") {
+    if let Some(region) = region {
         metadata.insert("region".into(), Value::String(region));
     }
 
     for (field, value) in [
         ("azure_subscription_id", azure.get_subscription_id()),
         ("azure_resource_group", azure.get_resource_group()),
-        // Preserve Azure's documented values instead of inventing a second
-        // runtime taxonomy.
         ("runtime", azure.get_runtime()),
+        // This established downstream field name contains the application
+        // runtime version (for example Python 3.13), not the Compat package.
         (
             "serverless_compat_runtime_version",
             azure.get_runtime_version(),
