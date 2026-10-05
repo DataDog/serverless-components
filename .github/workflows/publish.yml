@@ -28,6 +28,7 @@ jobs:
     uses: ./.github/workflows/build-datadog-serverless-compat.yml
     with:
       runner: ${{ matrix.runner }}
+      version: ${{ inputs.version }}
 
   package:
     runs-on: ubuntu-24.04
@@ -65,11 +66,8 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/datadog-serverless-compat/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/datadog-serverless-compat/v}"
-          elif [[ -n "$INPUT_VERSION" ]]; then
-            VERSION="$INPUT_VERSION"
-          else
+          VERSION="$(./scripts/resolve-serverless-compat-version.sh "$INPUT_VERSION")"
+          if [[ -z "$VERSION" ]]; then
             echo "Error: version input is required when not running on a datadog-serverless-compat/v<x.y.z> tag"
             exit 1
           fi
