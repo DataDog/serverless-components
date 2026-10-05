@@ -678,15 +678,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "datadog-serverless-compat-inventory"
-version = "0.1.0"
-dependencies = [
- "libdd-common",
- "libdd-trace-utils",
- "serde_json",
-]
-
-[[package]]
 name = "datadog-serverless-logging"
 version = "0.1.0"
 dependencies = [
@@ -1587,6 +1578,15 @@ name = "inlinable_string"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8fae54786f62fb2918dcfae3d568594e50eb9b5c25bf04371af6fe7516452fb"
+
+[[package]]
+name = "inventory"
+version = "0.1.0"
+dependencies = [
+ "libdd-common",
+ "libdd-trace-utils",
+ "serde_json",
+]
 
 [[package]]
 name = "ipnet"
