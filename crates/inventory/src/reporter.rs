@@ -1,7 +1,7 @@
 // Copyright 2026-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{ProcessEnv, build_inventory_report, payload};
+use crate::{ProcessEnv, build_inventory_report, payload, platform};
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use libdd_common::azure_app_services::QueryEnv;
 use libdd_trace_utils::trace_utils::EnvironmentType;
@@ -16,8 +16,9 @@ struct Reporter {
     client: reqwest::Client,
     api_key: String,
     dd_site: String,
+    intake_url: reqwest::Url,
     user_agent: String,
-    env_type: EnvironmentType,
+    platform: platform::PlatformData,
     process_id: String,
 }
 
@@ -40,6 +41,19 @@ pub async fn run_inventory_reporter(
         return;
     };
 
+    let intake_url = match build_intake_url(dd_site) {
+        Ok(url) => url,
+        Err(error) => {
+            warn!("inventory: invalid DD_SITE, skipping reporter: {error}");
+            return;
+        }
+    };
+
+    let Some(platform) = platform::collect(&env_type).await else {
+        warn!("inventory: required cloud identity unavailable, skipping reporter");
+        return;
+    };
+
     let client = match build_client(https_proxy) {
         Ok(client) => client,
         Err(error) => {
@@ -52,11 +66,12 @@ pub async fn run_inventory_reporter(
         client,
         api_key: api_key.to_string(),
         dd_site: dd_site.to_string(),
+        intake_url,
         user_agent: format!(
             "datadog-serverless-compat/{}",
-            payload::serverless_compat_version().unwrap_or_else(|| "unknown".to_string())
+            payload::serverless_compat_binary_version().unwrap_or("unknown")
         ),
-        env_type,
+        platform,
         // Reuse a stable UUID for every report emitted by this process.
         process_id: uuid::Uuid::new_v4().to_string(),
     };
@@ -85,29 +100,13 @@ fn is_supported(env_type: &EnvironmentType) -> bool {
 
 impl Reporter {
     async fn send_report(&self, report_reason: &str) {
-        let intake_url = match build_intake_url(&self.dd_site) {
-            Ok(url) => url,
-            Err(error) => {
-                warn!("inventory: invalid DD_SITE, skipping {report_reason} report: {error}");
-                return;
-            }
-        };
-
         let report = match build_inventory_report(
-            &self.env_type,
+            &self.platform,
             &self.process_id,
             report_reason,
             &self.dd_site,
-        )
-        .await
-        {
-            Ok(Some(report)) => report,
-            Ok(None) => {
-                warn!(
-                    "inventory: required cloud identity unavailable, skipping {report_reason} report"
-                );
-                return;
-            }
+        ) {
+            Ok(report) => report,
             Err(error) => {
                 warn!("inventory: failed to serialize payload: {error}");
                 return;
@@ -117,7 +116,7 @@ impl Reporter {
         for attempt in 0..MAX_ATTEMPTS {
             match do_send(
                 &self.client,
-                &intake_url,
+                &self.intake_url,
                 &self.api_key,
                 &self.user_agent,
                 report.body.clone(),
