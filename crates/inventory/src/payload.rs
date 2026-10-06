@@ -22,22 +22,10 @@ pub(crate) fn build(
     )
 }
 
-pub(crate) fn serverless_compat_version() -> Option<String> {
-    serverless_compat_version_with_env(&ProcessEnv, option_env!("DD_SERVERLESS_COMPAT_VERSION"))
-}
-
-fn serverless_compat_version_with_env(
-    env: &impl QueryEnv,
-    embedded_version: Option<&str>,
-) -> Option<String> {
-    env.get_var("DD_SERVERLESS_COMPAT_VERSION")
+pub(crate) fn serverless_compat_binary_version() -> Option<&'static str> {
+    option_env!("DD_SERVERLESS_COMPAT_VERSION")
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .or_else(|| {
-            embedded_version
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
 }
 
 fn build_with_env(
