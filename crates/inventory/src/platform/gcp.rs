@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::PlatformData;
-use crate::ProcessEnv;
-use libdd_common::azure_app_services::QueryEnv;
+use crate::{ProcessEnv, QueryEnv};
 use serde_json::{Map, Value};
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -31,18 +30,22 @@ async fn collect_from_with_metadata_base<E: QueryEnv>(
 ) -> Option<PlatformData> {
     let mut identity = identity_from_env(&env)?;
 
-    match (&identity.region, &identity.project) {
-        (None, None) => {
-            let (region, project) = tokio::join!(
-                fetch_region(metadata_base_url),
-                fetch_project(metadata_base_url)
-            );
-            identity.region = region;
-            identity.project = project;
+    if identity.region.is_none() || identity.project.is_none() {
+        let client = build_metadata_client()?;
+
+        match (&identity.region, &identity.project) {
+            (None, None) => {
+                let (region, project) = tokio::join!(
+                    fetch_region(&client, metadata_base_url),
+                    fetch_project(&client, metadata_base_url)
+                );
+                identity.region = region;
+                identity.project = project;
+            }
+            (None, Some(_)) => identity.region = fetch_region(&client, metadata_base_url).await,
+            (Some(_), None) => identity.project = fetch_project(&client, metadata_base_url).await,
+            (Some(_), Some(_)) => {}
         }
-        (None, Some(_)) => identity.region = fetch_region(metadata_base_url).await,
-        (Some(_), None) => identity.project = fetch_project(metadata_base_url).await,
-        (Some(_), Some(_)) => {}
     }
 
     build_platform_data(identity, &env)
@@ -115,28 +118,31 @@ fn detect_runtime(env: &impl QueryEnv) -> Option<(&'static str, String)> {
     None
 }
 
-async fn fetch_metadata_value(
-    base_url: &str,
-    path: &str,
-    label: &str,
-    parse: impl FnOnce(&str) -> Option<String>,
-) -> Option<String> {
+fn build_metadata_client() -> Option<reqwest::Client> {
     // This client is scoped to GCP's fixed, plain-HTTP metadata endpoint, so it
     // neither needs nor should configure a TLS provider.
     #[allow(clippy::disallowed_methods)]
-    let client = match reqwest::Client::builder()
+    match reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(2))
         .build()
     {
-        Ok(client) => client,
+        Ok(client) => Some(client),
         Err(error) => {
-            warn!("inventory: failed to create GCP metadata client for {label}: {error}");
-            return None;
+            warn!("inventory: failed to create GCP metadata client: {error}");
+            None
         }
-    };
+    }
+}
 
+async fn fetch_metadata_value(
+    client: &reqwest::Client,
+    base_url: &str,
+    path: &str,
+    label: &str,
+    parse: impl FnOnce(&str) -> Option<String>,
+) -> Option<String> {
     let mut response = match client
         .get(format!("{}/{path}", base_url.trim_end_matches('/')))
         .header("Metadata-Flavor", "Google")
@@ -205,9 +211,9 @@ async fn fetch_metadata_value(
     value
 }
 
-async fn fetch_region(base_url: &str) -> Option<String> {
+async fn fetch_region(client: &reqwest::Client, base_url: &str) -> Option<String> {
     // Response: projects/<project-number>/regions/<region-name>
-    fetch_metadata_value(base_url, "instance/region", "region", |body| {
+    fetch_metadata_value(client, base_url, "instance/region", "region", |body| {
         body.split('/')
             .next_back()
             .filter(|value| !value.is_empty())
@@ -216,10 +222,14 @@ async fn fetch_region(base_url: &str) -> Option<String> {
     .await
 }
 
-async fn fetch_project(base_url: &str) -> Option<String> {
-    fetch_metadata_value(base_url, "project/project-id", "project-id", |body| {
-        (!body.is_empty()).then(|| body.to_string())
-    })
+async fn fetch_project(client: &reqwest::Client, base_url: &str) -> Option<String> {
+    fetch_metadata_value(
+        client,
+        base_url,
+        "project/project-id",
+        "project-id",
+        |body| (!body.is_empty()).then(|| body.to_string()),
+    )
     .await
 }
 
@@ -346,6 +356,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_untrusted_or_oversized_metadata_responses() {
         let server = MockServer::start_async().await;
+        let client = build_metadata_client().expect("metadata client should build");
         server
             .mock_async(|when, then| {
                 when.path("/missing-header");
@@ -362,14 +373,18 @@ mod tests {
             .await;
 
         assert!(
-            fetch_metadata_value(&server.base_url(), "missing-header", "test", |body| {
-                Some(body.to_string())
-            })
+            fetch_metadata_value(
+                &client,
+                &server.base_url(),
+                "missing-header",
+                "test",
+                |body| Some(body.to_string())
+            )
             .await
             .is_none()
         );
         assert!(
-            fetch_metadata_value(&server.base_url(), "oversized", "test", |body| {
+            fetch_metadata_value(&client, &server.base_url(), "oversized", "test", |body| {
                 Some(body.to_string())
             })
             .await
@@ -380,6 +395,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_follow_metadata_redirects() {
         let server = MockServer::start_async().await;
+        let client = build_metadata_client().expect("metadata client should build");
         let target = server
             .mock_async(|when, then| {
                 when.path("/target");
@@ -396,9 +412,13 @@ mod tests {
             .await;
 
         assert!(
-            fetch_metadata_value(&server.base_url(), "redirect", "test", |body| {
-                Some(body.to_string())
-            })
+            fetch_metadata_value(
+                &client,
+                &server.base_url(),
+                "redirect",
+                "test",
+                |body| Some(body.to_string())
+            )
             .await
             .is_none()
         );
