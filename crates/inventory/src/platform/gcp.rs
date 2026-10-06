@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::PlatformData;
-use crate::{ProcessEnv, QueryEnv};
+use crate::ProcessEnv;
+use libdd_common::azure_app_services::QueryEnv;
 use serde_json::{Map, Value};
 use std::time::Duration;
 use tracing::{debug, warn};

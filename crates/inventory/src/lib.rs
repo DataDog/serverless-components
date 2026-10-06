@@ -4,7 +4,7 @@
 mod payload;
 mod platform;
 
-pub(crate) use libdd_common::azure_app_services::QueryEnv;
+use libdd_common::azure_app_services::QueryEnv;
 use libdd_trace_utils::trace_utils::EnvironmentType;
 use std::env;
 
