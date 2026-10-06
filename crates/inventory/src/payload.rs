@@ -35,13 +35,10 @@ fn build_with_env(
 
     let compat_version = env
         .get_var("DD_SERVERLESS_COMPAT_VERSION")
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            embedded_version
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        });
+        .filter(|value| !value.is_empty());
+    let compat_binary_version = embedded_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     // Required identity fields take precedence over platform-specific metadata.
     let mut metadata = Value::Object(platform.metadata.clone());
@@ -53,17 +50,16 @@ fn build_with_env(
     if let Some(compat_version) = compat_version {
         metadata["serverless_compat_version"] = Value::String(compat_version);
     }
+    if let Some(compat_binary_version) = compat_binary_version {
+        metadata["serverless_compat_binary_version"] =
+            Value::String(compat_binary_version.to_string());
+    }
 
     for (env_key, metadata_key) in [
         ("DD_ENV", "dd_env"),
         ("DD_SERVICE", "dd_service"),
         ("DD_VERSION", "dd_version"),
         ("DD_SITE", "dd_site"),
-        ("DD_SERVERLESS_COMPAT_RUNTIME", "runtime"),
-        (
-            "DD_SERVERLESS_COMPAT_RUNTIME_VERSION",
-            "serverless_compat_runtime_version",
-        ),
     ] {
         if let Some(value) = env.get_var(env_key).filter(|value| !value.is_empty()) {
             metadata[metadata_key] = Value::String(value);
@@ -122,55 +118,19 @@ mod tests {
         assert_eq!(payload["agent_metadata"]["report_reason"], "startup");
         assert_eq!(payload["agent_metadata"]["region"], "eastus");
         assert_eq!(
-            payload["agent_metadata"]["serverless_compat_version"],
+            payload["agent_metadata"]["serverless_compat_binary_version"],
             "1.2.3"
+        );
+        assert!(
+            payload["agent_metadata"]
+                .get("serverless_compat_version")
+                .is_none()
         );
         assert!(payload.get("hostname").is_none());
     }
 
     #[test]
-    fn runtime_handoff_overrides_platform_metadata() {
-        let env = FakeEnv::new(&[
-            ("DD_SERVERLESS_COMPAT_RUNTIME", "python-custom"),
-            ("DD_SERVERLESS_COMPAT_RUNTIME_VERSION", "3.13.1"),
-        ]);
-        let body =
-            build_with_env("pid", "startup", &azure_platform(), &env, Some("1.2.3")).unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["agent_metadata"]["runtime"], "python-custom");
-        assert_eq!(
-            payload["agent_metadata"]["serverless_compat_runtime_version"],
-            "3.13.1"
-        );
-    }
-
-    #[test]
-    fn empty_runtime_handoff_preserves_platform_metadata() {
-        let mut platform = azure_platform();
-        platform
-            .metadata
-            .insert("runtime".into(), Value::String("dotnet".into()));
-        platform.metadata.insert(
-            "serverless_compat_runtime_version".into(),
-            Value::String("8.0".into()),
-        );
-        let env = FakeEnv::new(&[
-            ("DD_SERVERLESS_COMPAT_RUNTIME", ""),
-            ("DD_SERVERLESS_COMPAT_RUNTIME_VERSION", ""),
-        ]);
-        let body = build_with_env("pid", "startup", &platform, &env, Some("1.2.3")).unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["agent_metadata"]["runtime"], "dotnet");
-        assert_eq!(
-            payload["agent_metadata"]["serverless_compat_runtime_version"],
-            "8.0"
-        );
-    }
-
-    #[test]
-    fn runtime_compat_version_overrides_embedded_version() {
+    fn reports_runtime_and_binary_versions_separately() {
         let env = FakeEnv::new(&[("DD_SERVERLESS_COMPAT_VERSION", "2.4.6")]);
         let body =
             build_with_env("pid", "startup", &azure_platform(), &env, Some("1.2.3")).unwrap();
@@ -179,6 +139,10 @@ mod tests {
         assert_eq!(
             payload["agent_metadata"]["serverless_compat_version"],
             "2.4.6"
+        );
+        assert_eq!(
+            payload["agent_metadata"]["serverless_compat_binary_version"],
+            "1.2.3"
         );
     }
 
@@ -197,6 +161,11 @@ mod tests {
         assert!(
             payload["agent_metadata"]
                 .get("serverless_compat_version")
+                .is_none()
+        );
+        assert!(
+            payload["agent_metadata"]
+                .get("serverless_compat_binary_version")
                 .is_none()
         );
     }
