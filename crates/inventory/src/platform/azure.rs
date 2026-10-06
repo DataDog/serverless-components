@@ -10,6 +10,12 @@ fn known_value(value: &str) -> Option<&str> {
     (value != UNKNOWN_VALUE && !value.is_empty()).then_some(value)
 }
 
+fn runtime_version(value: &str) -> Option<&str> {
+    known_value(value)
+        .map(|value| value.trim_start_matches('~'))
+        .filter(|value| !value.is_empty())
+}
+
 pub(super) fn collect() -> Option<PlatformData> {
     collect_from(ProcessEnv)
 }
@@ -43,16 +49,18 @@ fn collect_from<E: QueryEnv>(env: E) -> Option<PlatformData> {
         ("azure_subscription_id", azure.get_subscription_id()),
         ("azure_resource_group", azure.get_resource_group()),
         ("runtime", azure.get_runtime()),
-        // This established downstream field name contains the application
-        // runtime version (for example Python 3.13), not the Compat package.
-        (
-            "serverless_compat_runtime_version",
-            azure.get_runtime_version(),
-        ),
     ] {
         if let Some(value) = known_value(value) {
             metadata.insert(field.into(), Value::String(value.to_string()));
         }
+    }
+    // Azure may prefix runtime versions with `~` to express a version range.
+    // Inventory stores the canonical version value without that marker.
+    if let Some(value) = runtime_version(azure.get_runtime_version()) {
+        metadata.insert(
+            "serverless_compat_runtime_version".into(),
+            Value::String(value.to_string()),
+        );
     }
 
     Some(PlatformData {
@@ -156,7 +164,7 @@ mod tests {
     fn enriches_platform_fields() {
         let data = collect_from(FakeEnv::new(&[
             ("FUNCTIONS_WORKER_RUNTIME", "dotnet-isolated"),
-            ("FUNCTIONS_WORKER_RUNTIME_VERSION", "8.0"),
+            ("FUNCTIONS_WORKER_RUNTIME_VERSION", "~8.0"),
             ("REGION_NAME", "East US 2"),
             ("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace"),
             ("WEBSITE_RESOURCE_GROUP", "my-rg"),
@@ -168,5 +176,22 @@ mod tests {
         assert_eq!(data.metadata["region"], "East US 2");
         assert_eq!(data.metadata["azure_subscription_id"], "abc123");
         assert_eq!(data.metadata["azure_resource_group"], "my-rg");
+    }
+
+    #[test]
+    fn omits_unknown_runtime_version() {
+        let data = collect_from(FakeEnv::new(&[
+            ("FUNCTIONS_WORKER_RUNTIME", "dotnet"),
+            ("FUNCTIONS_WORKER_RUNTIME_VERSION", "unknown"),
+            ("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace"),
+            ("WEBSITE_RESOURCE_GROUP", "my-rg"),
+            ("WEBSITE_SITE_NAME", "my-func-app"),
+        ]))
+        .expect("Azure metadata should be available");
+        assert!(
+            data.metadata
+                .get("serverless_compat_runtime_version")
+                .is_none()
+        );
     }
 }
