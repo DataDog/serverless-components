@@ -72,6 +72,12 @@ impl<'de> Deserialize<'de> for LogLevel {
         if let Value::String(s) = value {
             match LogLevel::from_str(&s) {
                 Ok(level) => Ok(level),
+                // A `RUST_LOG`-style directive list, such as `info,cold_start_duration=debug`.
+                // Its level is the last entry with no target, or info if it has none.
+                Err(_) if s.contains(['=', ',']) => Ok(s
+                    .rsplit(',')
+                    .find_map(|entry| LogLevel::from_str(entry.trim()).ok())
+                    .unwrap_or(LogLevel::Info)),
                 Err(e) => {
                     error!("{}", e);
                     Ok(LogLevel::Warn)
@@ -81,5 +87,36 @@ impl<'de> Deserialize<'de> for LogLevel {
             error!("Expected a string for log level, got {:?}", value);
             Ok(LogLevel::Warn)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LogLevel;
+    use serde_json::json;
+
+    fn parse(value: &str) -> LogLevel {
+        serde_json::from_value(json!(value)).expect("log level always deserializes")
+    }
+
+    #[test]
+    fn parses_plain_level() {
+        assert_eq!(parse("DEBUG"), LogLevel::Debug);
+    }
+
+    #[test]
+    fn takes_level_from_directives() {
+        assert_eq!(parse("debug,cold_start_duration=off"), LogLevel::Debug);
+        assert_eq!(parse("cold_start_duration=debug, warn"), LogLevel::Warn);
+    }
+
+    #[test]
+    fn defaults_directives_without_level_to_info() {
+        assert_eq!(parse("cold_start_duration=debug"), LogLevel::Info);
+    }
+
+    #[test]
+    fn falls_back_to_warn_for_invalid_level() {
+        assert_eq!(parse("verbose"), LogLevel::Warn);
     }
 }
