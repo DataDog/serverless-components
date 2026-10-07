@@ -73,11 +73,12 @@ impl<'de> Deserialize<'de> for LogLevel {
             match LogLevel::from_str(&s) {
                 Ok(level) => Ok(level),
                 // A `RUST_LOG`-style directive list, such as `info,cold_start_duration=debug`.
-                // Its level is the last entry with no target, or info if it has none.
+                // Its level is the last entry with no target, or warn if it has none, the same as
+                // for an invalid value.
                 Err(_) if s.contains(['=', ',']) => Ok(s
                     .rsplit(',')
                     .find_map(|entry| LogLevel::from_str(entry.trim()).ok())
-                    .unwrap_or(LogLevel::Info)),
+                    .unwrap_or(LogLevel::Warn)),
                 Err(e) => {
                     error!("{}", e);
                     Ok(LogLevel::Warn)
@@ -111,8 +112,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_directives_without_level_to_info() {
-        assert_eq!(parse("cold_start_duration=debug"), LogLevel::Info);
+    fn defaults_directives_without_level_to_warn() {
+        assert_eq!(parse("cold_start_duration=debug"), LogLevel::Warn);
     }
 
     #[test]
