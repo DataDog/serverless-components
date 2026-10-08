@@ -64,12 +64,8 @@ fn build_platform_data(identity: Identity, env: &impl QueryEnv) -> Option<Platfo
     metadata.insert("region".into(), Value::String(region));
     metadata.insert("gcp_project_id".into(), Value::String(project));
 
-    if let Some((runtime, version)) = detect_runtime(env) {
-        metadata.insert("runtime".into(), Value::String(runtime.into()));
-        metadata.insert(
-            "serverless_compat_runtime_version".into(),
-            Value::String(version),
-        );
+    if let Some(runtime) = detect_runtime(env) {
+        metadata.insert("runtime".into(), Value::String(runtime));
     }
 
     Some(PlatformData {
@@ -105,7 +101,7 @@ fn first_env(env: &impl QueryEnv, names: &[&str]) -> Option<String> {
         .find_map(|name| env.get_var(name).filter(|value| !value.is_empty()))
 }
 
-fn detect_runtime(env: &impl QueryEnv) -> Option<(&'static str, String)> {
+fn detect_runtime(env: &impl QueryEnv) -> Option<String> {
     for (runtime, variable) in [
         ("node", "NODE_VERSION"),
         ("python", "PYTHON_VERSION"),
@@ -113,7 +109,7 @@ fn detect_runtime(env: &impl QueryEnv) -> Option<(&'static str, String)> {
         ("go", "GO_VERSION"),
     ] {
         if let Some(version) = first_env(env, &[variable]) {
-            return Some((runtime, version));
+            return Some(format!("{runtime}{version}"));
         }
     }
     None
@@ -267,8 +263,7 @@ mod tests {
             data.resource_id,
             "//cloudfunctions.googleapis.com/projects/my-project/locations/us-central1/functions/my-fn"
         );
-        assert_eq!(data.metadata["runtime"], "python");
-        assert_eq!(data.metadata["serverless_compat_runtime_version"], "3.12.7");
+        assert_eq!(data.metadata["runtime"], "python3.12.7");
     }
 
     #[test]
@@ -314,7 +309,7 @@ mod tests {
     #[test]
     fn detects_runtime_from_platform_environment() {
         let env = FakeEnv::new(&[("PYTHON_VERSION", "3.12.7")]);
-        assert_eq!(detect_runtime(&env), Some(("python", "3.12.7".into())));
+        assert_eq!(detect_runtime(&env), Some("python3.12.7".into()));
     }
 
     #[tokio::test]
