@@ -10,20 +10,29 @@ pub(crate) fn build(
     process_id: &str,
     report_reason: &str,
     platform: &PlatformData,
+    dd_site: &str,
 ) -> Result<Vec<u8>, serde_json::Error> {
     build_with_env(
         process_id,
         report_reason,
         platform,
+        dd_site,
         &ProcessEnv,
         option_env!("DD_SERVERLESS_COMPAT_VERSION"),
     )
+}
+
+pub(crate) fn serverless_compat_binary_version() -> Option<&'static str> {
+    option_env!("DD_SERVERLESS_COMPAT_VERSION")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn build_with_env(
     process_id: &str,
     report_reason: &str,
     platform: &PlatformData,
+    dd_site: &str,
     env: &impl QueryEnv,
     embedded_version: Option<&str>,
 ) -> Result<Vec<u8>, serde_json::Error> {
@@ -54,12 +63,12 @@ fn build_with_env(
         metadata["serverless_compat_binary_version"] =
             Value::String(compat_binary_version.to_string());
     }
+    metadata["dd_site"] = Value::String(dd_site.to_string());
 
     for (env_key, metadata_key) in [
         ("DD_ENV", "dd_env"),
         ("DD_SERVICE", "dd_service"),
         ("DD_VERSION", "dd_version"),
-        ("DD_SITE", "dd_site"),
     ] {
         if let Some(value) = env.get_var(env_key).filter(|value| !value.is_empty()) {
             metadata[metadata_key] = Value::String(value);
@@ -102,7 +111,8 @@ mod tests {
             "process-id",
             "startup",
             &azure_platform(),
-            &FakeEnv::default(),
+            "datadoghq.com",
+            &FakeEnv::new(&[("DD_SITE", "ignored.example")]),
             Some("1.2.3"),
         )
         .unwrap();
@@ -118,6 +128,7 @@ mod tests {
         assert_eq!(payload["agent_metadata"]["workload_type"], "azure_function");
         assert_eq!(payload["agent_metadata"]["report_reason"], "startup");
         assert_eq!(payload["agent_metadata"]["region"], "eastus");
+        assert_eq!(payload["agent_metadata"]["dd_site"], "datadoghq.com");
         assert_eq!(
             payload["agent_metadata"]["serverless_compat_binary_version"],
             "1.2.3"
@@ -133,8 +144,15 @@ mod tests {
     #[test]
     fn reports_runtime_compat_and_binary_versions_separately() {
         let env = FakeEnv::new(&[("DD_SERVERLESS_COMPAT_VERSION", "0.18.0")]);
-        let body =
-            build_with_env("pid", "startup", &azure_platform(), &env, Some("0.28.0")).unwrap();
+        let body = build_with_env(
+            "pid",
+            "startup",
+            &azure_platform(),
+            "datadoghq.com",
+            &env,
+            Some("0.28.0"),
+        )
+        .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(
@@ -154,6 +172,7 @@ mod tests {
             "pid",
             "startup",
             &azure_platform(),
+            "datadoghq.com",
             &FakeEnv::default(),
             None,
         )

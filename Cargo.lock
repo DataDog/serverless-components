@@ -646,6 +646,7 @@ dependencies = [
  "datadog-metrics-collector",
  "datadog-trace-agent",
  "dogstatsd",
+ "inventory",
  "libdd-trace-utils",
  "reqwest",
  "serde_json",
@@ -1554,6 +1555,7 @@ checksum = "c8fae54786f62fb2918dcfae3d568594e50eb9b5c25bf04371af6fe7516452fb"
 name = "inventory"
 version = "0.1.0"
 dependencies = [
+ "datadog-fips",
  "httpmock",
  "libdd-common",
  "libdd-trace-utils",
@@ -1561,6 +1563,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

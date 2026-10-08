@@ -3,9 +3,11 @@
 
 mod payload;
 mod platform;
+mod reporter;
+
+pub use reporter::run_inventory_reporter;
 
 use libdd_common::azure_app_services::QueryEnv;
-use libdd_trace_utils::trace_utils::EnvironmentType;
 use std::env;
 
 #[derive(Clone, Copy)]
@@ -27,26 +29,19 @@ pub struct InventoryReport {
     pub workload_type: &'static str,
 }
 
-/// Builds an inventory report for a supported serverless environment.
-///
-/// Returns `None` when the environment is unsupported or its required cloud
-/// identity is unavailable. The async API leaves room for platforms such as
-/// GCP that may need metadata-server lookups to complete their identity.
-pub async fn build_inventory_report(
-    env_type: &EnvironmentType,
+/// Builds an inventory report from the cloud identity collected at startup.
+fn build_inventory_report(
+    platform: &platform::PlatformData,
     process_id: &str,
     report_reason: &str,
-) -> Result<Option<InventoryReport>, serde_json::Error> {
-    let Some(platform) = platform::collect(env_type).await else {
-        return Ok(None);
-    };
-
-    let body = payload::build(process_id, report_reason, &platform)?;
-    Ok(Some(InventoryReport {
+    dd_site: &str,
+) -> Result<InventoryReport, serde_json::Error> {
+    let body = payload::build(process_id, report_reason, platform, dd_site)?;
+    Ok(InventoryReport {
         body,
-        resource_id: platform.resource_id,
+        resource_id: platform.resource_id.clone(),
         workload_type: platform.workload_type,
-    }))
+    })
 }
 
 #[cfg(test)]
