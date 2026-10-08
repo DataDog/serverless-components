@@ -84,6 +84,7 @@ mod tests {
     fn azure_platform() -> PlatformData {
         let mut metadata = Map::new();
         metadata.insert("region".into(), Value::String("eastus".into()));
+        metadata.insert("runtime".into(), Value::String("python3.13".into()));
         metadata.insert("flavor".into(), Value::String("incorrect".into()));
         metadata.insert("resource_id".into(), Value::String("incorrect".into()));
         PlatformData {
@@ -130,20 +131,21 @@ mod tests {
     }
 
     #[test]
-    fn reports_runtime_and_binary_versions_separately() {
-        let env = FakeEnv::new(&[("DD_SERVERLESS_COMPAT_VERSION", "2.4.6")]);
+    fn reports_runtime_compat_and_binary_versions_separately() {
+        let env = FakeEnv::new(&[("DD_SERVERLESS_COMPAT_VERSION", "0.18.0")]);
         let body =
-            build_with_env("pid", "startup", &azure_platform(), &env, Some("1.2.3")).unwrap();
+            build_with_env("pid", "startup", &azure_platform(), &env, Some("0.28.0")).unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(
             payload["agent_metadata"]["serverless_compat_version"],
-            "2.4.6"
+            "0.18.0"
         );
         assert_eq!(
             payload["agent_metadata"]["serverless_compat_binary_version"],
-            "1.2.3"
+            "0.28.0"
         );
+        assert_eq!(payload["agent_metadata"]["runtime"], "python3.13");
     }
 
     #[test]
