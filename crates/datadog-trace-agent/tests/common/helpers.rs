@@ -3,14 +3,12 @@
 
 //! Helper functions for integration tests
 
-use flate2::read::GzDecoder;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use libdd_common::http_common;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::test_utils::create_test_json_span;
 use serde_json::json;
-use std::io::Read;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::time::timeout;
 
@@ -68,17 +66,6 @@ pub fn create_test_client_stats_payload(service: &str) -> Vec<u8> {
         ..Default::default()
     };
     rmp_serde::to_vec_named(&payload).expect("Failed to serialize client stats payload")
-}
-
-/// Decompress a gzip+msgpack stats payload and deserialize it into a `StatsPayload`.
-/// The stats flusher encodes payloads as `gzip(rmp_serde::to_vec_named(StatsPayload))`.
-pub fn decode_stats_payload(body: &[u8]) -> pb::StatsPayload {
-    let mut decoder = GzDecoder::new(body);
-    let mut decompressed = Vec::new();
-    decoder
-        .read_to_end(&mut decompressed)
-        .expect("Failed to decompress stats payload");
-    rmp_serde::from_slice(&decompressed).expect("Failed to deserialize stats payload")
 }
 
 /// Send an HTTP request over TCP and return the response
