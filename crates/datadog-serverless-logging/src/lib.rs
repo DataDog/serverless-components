@@ -12,8 +12,9 @@ use tracing_subscriber::{
 /// target. The other targets keep the agent's default level.
 pub const LEVEL_BY_TARGET_ENV_VAR: &str = "DD_LOG_LEVEL_BY_TARGET";
 
-/// Builds a log filter from the agent's base directives, which include its default level, such
-/// as `h2=off,info`, and a [`LEVEL_BY_TARGET_ENV_VAR`] value.
+/// Builds a log filter from the agent's base filter and a [`LEVEL_BY_TARGET_ENV_VAR`] value.
+/// The base filter uses the same comma-separated syntax, and it also sets the default level. For
+/// example, `h2=off,info` turns off the `h2` logs and sets the default level to info.
 ///
 /// A target is a custom target that a statement sets, such as `cold_start_duration`, or a
 /// module path, such as `bottlecap::traces` or the crate name `dogstatsd`. An entry matches
@@ -65,34 +66,34 @@ fn parse_target_level(entry: &str) -> Option<Directive> {
 mod tests {
     use super::build_env_filter;
 
-    fn directives(base: &str, levels_by_target: &str) -> (Vec<String>, Vec<String>) {
+    fn filter_entries(base: &str, levels_by_target: &str) -> (Vec<String>, Vec<String>) {
         let (filter, invalid) =
             build_env_filter(base, levels_by_target).expect("base filter is valid");
-        let directives = filter.to_string().split(',').map(String::from).collect();
-        (directives, invalid)
+        let entries = filter.to_string().split(',').map(String::from).collect();
+        (entries, invalid)
     }
 
     #[test]
-    fn adds_directive_per_entry() {
-        let (directives, invalid) = directives(
+    fn adds_level_per_entry() {
+        let (entries, invalid) = filter_entries(
             "h2=off,info",
             " cold_start_duration=debug, trace_flush_duration = TRACE ,",
         );
-        assert!(directives.contains(&"cold_start_duration=debug".to_string()));
-        assert!(directives.contains(&"trace_flush_duration=trace".to_string()));
-        assert!(directives.contains(&"info".to_string()));
+        assert!(entries.contains(&"cold_start_duration=debug".to_string()));
+        assert!(entries.contains(&"trace_flush_duration=trace".to_string()));
+        assert!(entries.contains(&"info".to_string()));
         assert!(invalid.is_empty());
     }
 
     #[test]
     fn skips_invalid_entries() {
-        let (directives, invalid) = directives(
+        let (entries, invalid) = filter_entries(
             "h2=off,info",
             "debug,cold_start_duration,cold_start_duration=verbose,=debug,[span]=debug,a b=debug,trace_flush_duration=debug",
         );
-        assert!(directives.contains(&"trace_flush_duration=debug".to_string()));
-        assert!(directives.contains(&"info".to_string()));
-        assert!(!directives.contains(&"debug".to_string()));
+        assert!(entries.contains(&"trace_flush_duration=debug".to_string()));
+        assert!(entries.contains(&"info".to_string()));
+        assert!(!entries.contains(&"debug".to_string()));
         assert_eq!(
             invalid,
             vec![
@@ -107,11 +108,11 @@ mod tests {
     }
 
     #[test]
-    fn overrides_base_directives() {
-        let (directives, _) = directives("h2=off,debug", "bottlecap::logs=warn,h2=debug");
-        assert!(directives.contains(&"bottlecap::logs=warn".to_string()));
-        assert!(directives.contains(&"h2=debug".to_string()));
-        assert!(!directives.contains(&"h2=off".to_string()));
+    fn overrides_base_filter() {
+        let (entries, _) = filter_entries("h2=off,debug", "bottlecap::logs=warn,h2=debug");
+        assert!(entries.contains(&"bottlecap::logs=warn".to_string()));
+        assert!(entries.contains(&"h2=debug".to_string()));
+        assert!(!entries.contains(&"h2=off".to_string()));
     }
 
     #[test]

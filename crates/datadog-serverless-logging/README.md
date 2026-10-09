@@ -2,8 +2,9 @@
 
 Log filter setup shared by the serverless agents.
 
-`build_env_filter` builds a `tracing-subscriber` filter from the agent's base directives and the
-value of `DD_LOG_LEVEL_BY_TARGET`. The value is a comma-separated list of `target=level`
+`build_env_filter` builds a `tracing-subscriber` filter from the agent's base filter, such as
+`h2=off,info`, and the value of `DD_LOG_LEVEL_BY_TARGET`. The base filter turns off some targets
+and sets the default level. The value is a comma-separated list of `target=level`
 entries. Each entry sets the log level of one target, and the other targets keep the agent's
 default level. Each agent keeps its own subscriber and log format.
 
