@@ -249,9 +249,11 @@ pub async fn main() {
                     dd_dogstatsd_windows_pipe_name.clone(),
                 )
                 .await;
-                info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
                 if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
+                    // The dogstatsd crate logs whether the best-effort UDP bind succeeded.
                     info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
+                } else {
+                    info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
                 }
             } else {
                 info!("dogstatsd disabled");
