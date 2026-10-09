@@ -7,14 +7,14 @@ value of `DD_LOG_LEVEL_BY_TARGET`. The value is a comma-separated list of `targe
 entries. Each entry sets the log level of one target, and the other targets keep the agent's
 default level. Each agent keeps its own subscriber and log format.
 
-For example, with the shell command
+Set it as an environment variable of the function, such as a Lambda function. For example:
 
-```sh
-export DD_LOG_LEVEL_BY_TARGET="cold_start_duration=debug,dogstatsd=debug"
-```
+| Environment variable | Value |
+| --- | --- |
+| `DD_LOG_LEVEL_BY_TARGET` | `cold_start_duration=debug,dogstatsd=debug` |
 
-the agent logs debug messages with the target `cold_start_duration`, and debug messages from the
-`dogstatsd` crate.
+With this value, the agent logs debug messages with the target `cold_start_duration`, and debug
+messages from the `dogstatsd` crate.
 
 ## Targets
 
