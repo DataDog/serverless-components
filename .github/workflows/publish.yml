@@ -1,26 +1,63 @@
 name: Publish Datadog Serverless Compat NPM packages
 
+run-name: Core npm v${{ inputs.core-version }} (${{ inputs.operation-ID }})
+
 on:
   workflow_dispatch:
     inputs:
-      publish:
-        description: 'Build or Build and Publish?'
+      core-version:
+        description: "NPM package version (x.y.z)"
         required: true
-        type: choice
-        default: 'Build'
-        options:
-          - 'Build'
-          - 'Build and Publish'
-      version:
-        description: 'NPM package version (x.y.z) — required when running on a branch; auto-parsed from tag when running on a datadog-serverless-compat/v<x.y.z> tag'
-        required: false
+        type: string
+      operation-ID:
+        description: "Immutable parent release operation ID"
+        required: true
         type: string
 
-permissions:
-  id-token: write # For OIDC npm publishing with provenance
+concurrency:
+  group: datadog-serverless-compat-npm-v${{ inputs.core-version }}
+  cancel-in-progress: false
+
+permissions: {}
 
 jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Authorize immutable publish request
+        env:
+          EXPECTED_ACTOR: ${{ vars.RELEASE_AUTOMATION_ACTOR }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          CORE_VERSION: ${{ inputs.core-version }}
+          OPERATION_ID: ${{ inputs.operation-ID }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$EXPECTED_ACTOR" ]]; then
+            echo "RELEASE_AUTOMATION_ACTOR is not configured" >&2
+            exit 1
+          fi
+          [[ "$EVENT_NAME" == workflow_dispatch ]] || { echo "workflow_dispatch is required" >&2; exit 1; }
+          if [[ "$ACTOR" != "$EXPECTED_ACTOR" || "$TRIGGERING_ACTOR" != "$EXPECTED_ACTOR" ]]; then
+            echo "actor and triggering actor must both match RELEASE_AUTOMATION_ACTOR" >&2
+            exit 1
+          fi
+          [[ "$CORE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || {
+            echo "core-version must be an exact semantic version without a leading v" >&2
+            exit 1
+          }
+          [[ "$OPERATION_ID" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$ ]] || { echo "invalid operation-ID" >&2; exit 1; }
+          [[ "$RELEASE_REF" == "refs/tags/datadog-serverless-compat/v${CORE_VERSION}" ]] || {
+            echo "workflow must run at refs/tags/datadog-serverless-compat/v${CORE_VERSION}" >&2
+            exit 1
+          }
+
   build:
+    needs: authorize
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -31,7 +68,7 @@ jobs:
 
   package:
     runs-on: ubuntu-24.04
-    needs: build
+    needs: [authorize, build]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -60,24 +97,11 @@ jobs:
           name: darwin-arm64
           path: target/darwin-arm64
       - run: chmod +x target/darwin-arm64/datadog-serverless-compat
-      - name: Determine version
-        id: determine-version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/datadog-serverless-compat/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/datadog-serverless-compat/v}"
-          elif [[ -n "$INPUT_VERSION" ]]; then
-            VERSION="$INPUT_VERSION"
-          else
-            echo "Error: version input is required when not running on a datadog-serverless-compat/v<x.y.z> tag"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Package binaries into npm packages
         env:
-          VERSION: ${{ steps.determine-version.outputs.version }}
+          VERSION: ${{ inputs.core-version }}
         run: |
+          set -euo pipefail
           mkdir -p npm/datadog-serverless-compat-linux-x64/bin
           cp target/linux-amd64/datadog-serverless-compat npm/datadog-serverless-compat-linux-x64/bin/
           npm --prefix npm/datadog-serverless-compat-linux-x64 pkg set version="$VERSION"
@@ -104,10 +128,12 @@ jobs:
           retention-days: 3
 
   publish:
-    if: ${{ inputs.publish == 'Build and Publish' }}
     runs-on: ubuntu-24.04
     environment: Production
     needs: package
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # 4.3.0
         with:
@@ -116,11 +142,47 @@ jobs:
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: "22.x"
-          registry-url: 'https://registry.npmjs.org'
-      - name: Publish npm packages
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish missing packages and reject conflicts
+        env:
+          VERSION: ${{ inputs.core-version }}
         run: |
-          npm publish ./npm/datadog-serverless-compat-linux-x64 --provenance --access public
-          npm publish ./npm/datadog-serverless-compat-linux-arm64 --provenance --access public
-          npm publish ./npm/datadog-serverless-compat-win32-x64 --provenance --access public
-          npm publish ./npm/datadog-serverless-compat-win32-ia32 --provenance --access public
-          npm publish ./npm/datadog-serverless-compat-darwin-arm64 --provenance --access public
+          set -euo pipefail
+          mkdir -p packed
+          packages=(
+            npm/datadog-serverless-compat-linux-x64
+            npm/datadog-serverless-compat-linux-arm64
+            npm/datadog-serverless-compat-win32-x64
+            npm/datadog-serverless-compat-win32-ia32
+            npm/datadog-serverless-compat-darwin-arm64
+          )
+
+          for package_dir in "${packages[@]}"; do
+            package_name="$(jq -er .name "$package_dir/package.json")"
+            package_version="$(jq -er .version "$package_dir/package.json")"
+            [[ "$package_version" == "$VERSION" ]] || {
+              echo "$package_name has version $package_version instead of $VERSION" >&2
+              exit 1
+            }
+
+            pack_json="$(npm pack "./$package_dir" --json --pack-destination packed)"
+            filename="$(jq -er '.[0].filename' <<<"$pack_json")"
+            local_integrity="$(jq -er '.[0].integrity' <<<"$pack_json")"
+
+            view_error="$(mktemp)"
+            if remote_json="$(npm view "${package_name}@${VERSION}" dist.integrity --json 2>"$view_error")"; then
+              remote_integrity="$(jq -er '.' <<<"$remote_json")"
+              if [[ "$remote_integrity" != "$local_integrity" ]]; then
+                echo "$package_name@$VERSION already exists with conflicting integrity" >&2
+                exit 1
+              fi
+              echo "Reusing $package_name@$VERSION with matching integrity"
+            elif grep -qE 'E404|404 Not Found' "$view_error"; then
+              npm publish "packed/$filename" --provenance --access public
+              echo "Published $package_name@$VERSION"
+            else
+              cat "$view_error" >&2
+              exit 1
+            fi
+            rm -f "$view_error"
+          done
