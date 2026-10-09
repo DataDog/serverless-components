@@ -1,0 +1,10 @@
+[package]
+name = "datadog-serverless-logging"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "env-filter"] }
