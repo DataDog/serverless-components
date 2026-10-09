@@ -15,8 +15,9 @@ pub const LEVEL_BY_TARGET_ENV_VAR: &str = "DD_LOG_LEVEL_BY_TARGET";
 /// Builds a log filter from the agent's base directives, which include its default level, such
 /// as `h2=off,info`, and a [`LEVEL_BY_TARGET_ENV_VAR`] value.
 ///
-/// Targets include the module paths of dependencies, which use underscores, such as
-/// `dogstatsd`. An entry matches every target that starts with its text.
+/// A target is a custom target that a statement sets, such as `cold_start_duration`, or a
+/// module path, such as `bottlecap::traces` or the crate name `dogstatsd`. An entry matches
+/// every target that starts with its text. The crate README lists the kinds of targets.
 ///
 /// Returns the entries that are not valid, so that the caller can log them after it sets up the
 /// subscriber. A typo then gives a warning instead of a failed startup.
