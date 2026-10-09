@@ -8,7 +8,7 @@ use tracing_subscriber::{
     filter::{Directive, ParseError},
 };
 
-/// Comma-separated `target=level` entries, each of which sets the log level of one tracing
+/// Comma-separated `<target>=<level>` entries, each of which sets the log level of one tracing
 /// target. The other targets keep the agent's default level.
 pub const LEVEL_BY_TARGET_ENV_VAR: &str = "DD_LOG_LEVEL_BY_TARGET";
 
@@ -45,7 +45,7 @@ pub fn build_env_filter(
     Ok((env_filter, invalid_entries))
 }
 
-/// Parses one `target=level` entry. Rejects the other forms that `EnvFilter` accepts, such as a
+/// Parses one `<target>=<level>` entry. Rejects the other forms that `EnvFilter` accepts, such as a
 /// span filter like `[span]`, or a level with no target, which would replace the default level.
 fn parse_target_level(entry: &str) -> Option<Directive> {
     let (target, level) = entry.split_once('=')?;
