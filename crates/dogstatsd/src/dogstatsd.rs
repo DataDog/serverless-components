@@ -18,8 +18,10 @@ use tracing::{debug, error, trace};
 // Windows-specific imports
 #[cfg(all(windows, feature = "windows-pipes"))]
 use {
-    std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions,
-    tracing::warn,
+    std::sync::Arc,
+    tokio::io::AsyncReadExt,
+    tokio::net::windows::named_pipe::ServerOptions,
+    tracing::{info, warn},
 };
 
 // Default buffer size for receiving DogStatsD packets (one read call).
@@ -240,7 +242,7 @@ impl DogStatsD {
                 // the port. The named pipe is unique per app, so a UDP bind failure is not fatal.
                 let udp_socket = match create_udp_socket(&addr, config.so_rcvbuf).await {
                     Ok(socket) => {
-                        debug!("DogStatsD listening on UDP {}", addr);
+                        info!("dogstatsd-udp: starting to listen on {}", addr);
                         Some(socket)
                     }
                     Err(e) => {
