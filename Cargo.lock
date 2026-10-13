@@ -657,6 +657,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-serverless-logging"
+version = "0.1.0"
+dependencies = [
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "datadog-trace-agent"
 version = "0.1.0"
 dependencies = [
