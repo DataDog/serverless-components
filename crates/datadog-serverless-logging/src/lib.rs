@@ -20,6 +20,10 @@ pub const LEVEL_BY_TARGET_ENV_VAR: &str = "DD_LOG_LEVEL_BY_TARGET";
 /// module path, such as `bottlecap::traces` or the crate name `dogstatsd`. An entry matches
 /// every target that starts with its text. The crate README lists the kinds of targets.
 ///
+/// `locked_targets` lists targets whose level an entry must not change, such as `h2`. Because of
+/// the prefix match, an entry is not valid if its target starts with a locked target, or if a
+/// locked target starts with its target. For example, `h=debug` would also turn on `h2`.
+///
 /// Returns the entries that are not valid, so that the caller can log them after it sets up the
 /// subscriber. A typo then gives a warning instead of a failed startup.
 ///
@@ -29,6 +33,7 @@ pub const LEVEL_BY_TARGET_ENV_VAR: &str = "DD_LOG_LEVEL_BY_TARGET";
 pub fn build_env_filter(
     base: &str,
     levels_by_target: &str,
+    locked_targets: &[&str],
 ) -> Result<(EnvFilter, Vec<String>), ParseError> {
     let mut env_filter = EnvFilter::try_new(base)?;
     let mut invalid_entries = Vec::new();
@@ -38,8 +43,14 @@ pub fn build_env_filter(
         .filter(|e| !e.is_empty())
     {
         match parse_target_level(entry) {
-            Some(directive) => env_filter = env_filter.add_directive(directive),
-            None => invalid_entries.push(entry.to_string()),
+            Some((target, directive))
+                if !locked_targets
+                    .iter()
+                    .any(|locked| target.starts_with(locked) || locked.starts_with(target)) =>
+            {
+                env_filter = env_filter.add_directive(directive);
+            }
+            _ => invalid_entries.push(entry.to_string()),
         }
     }
     Ok((env_filter, invalid_entries))
@@ -47,7 +58,7 @@ pub fn build_env_filter(
 
 /// Parses one `<target>=<level>` entry. Rejects the other forms that `EnvFilter` accepts, such as a
 /// span filter like `[span]`, or a level with no target, which would replace the default level.
-fn parse_target_level(entry: &str) -> Option<Directive> {
+fn parse_target_level(entry: &str) -> Option<(&str, Directive)> {
     let (target, level) = entry.split_once('=')?;
     let (target, level) = (target.trim(), level.trim());
     let valid_target =
@@ -59,16 +70,21 @@ fn parse_target_level(entry: &str) -> Option<Directive> {
     if !(valid_target && valid_level) {
         return None;
     }
-    format!("{target}={level}").parse().ok()
+    let directive = format!("{target}={level}").parse().ok()?;
+    Some((target, directive))
 }
 
 #[cfg(test)]
 mod tests {
     use super::build_env_filter;
 
-    fn filter_entries(base: &str, levels_by_target: &str) -> (Vec<String>, Vec<String>) {
+    fn filter_entries(
+        base: &str,
+        levels_by_target: &str,
+        locked_targets: &[&str],
+    ) -> (Vec<String>, Vec<String>) {
         let (filter, invalid) =
-            build_env_filter(base, levels_by_target).expect("base filter is valid");
+            build_env_filter(base, levels_by_target, locked_targets).expect("base filter is valid");
         let entries = filter.to_string().split(',').map(String::from).collect();
         (entries, invalid)
     }
@@ -78,6 +94,7 @@ mod tests {
         let (entries, invalid) = filter_entries(
             "h2=off,info",
             " cold_start_duration=debug, trace_flush_duration = TRACE ,",
+            &[],
         );
         assert!(entries.contains(&"cold_start_duration=debug".to_string()));
         assert!(entries.contains(&"trace_flush_duration=trace".to_string()));
@@ -90,6 +107,7 @@ mod tests {
         let (entries, invalid) = filter_entries(
             "h2=off,info",
             "debug,cold_start_duration,cold_start_duration=verbose,=debug,[span]=debug,a b=debug,trace_flush_duration=debug",
+            &[],
         );
         assert!(entries.contains(&"trace_flush_duration=debug".to_string()));
         assert!(entries.contains(&"info".to_string()));
@@ -109,14 +127,27 @@ mod tests {
 
     #[test]
     fn overrides_base_filter() {
-        let (entries, _) = filter_entries("h2=off,debug", "bottlecap::logs=warn,h2=debug");
+        let (entries, _) = filter_entries("h2=off,debug", "bottlecap::logs=warn,h2=debug", &[]);
         assert!(entries.contains(&"bottlecap::logs=warn".to_string()));
         assert!(entries.contains(&"h2=debug".to_string()));
         assert!(!entries.contains(&"h2=off".to_string()));
     }
 
     #[test]
+    fn rejects_entries_for_locked_targets() {
+        let (entries, invalid) = filter_entries(
+            "h2=off,hyper=off,info",
+            "h2=debug,hyper::proto=debug,h=debug,dogstatsd=debug",
+            &["h2", "hyper"],
+        );
+        assert_eq!(invalid, vec!["h2=debug", "hyper::proto=debug", "h=debug"]);
+        assert!(entries.contains(&"dogstatsd=debug".to_string()));
+        assert!(entries.contains(&"h2=off".to_string()));
+        assert!(entries.contains(&"hyper=off".to_string()));
+    }
+
+    #[test]
     fn rejects_invalid_base() {
-        assert!(build_env_filter("info,cold_start_duration=verbose", "").is_err());
+        assert!(build_env_filter("info,cold_start_duration=verbose", "", &[]).is_err());
     }
 }
