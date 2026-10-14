@@ -33,7 +33,7 @@ fn build_with_env(
         .map(|duration| duration.as_nanos() as i64)
         .unwrap_or(0);
 
-    let compat_version = env
+    let compat_runtime_version = env
         .get_var("DD_SERVERLESS_COMPAT_VERSION")
         .filter(|value| !value.is_empty());
     let compat_binary_version = embedded_version
@@ -47,8 +47,8 @@ fn build_with_env(
     metadata["report_reason"] = Value::String(report_reason.into());
     metadata["resource_id"] = Value::String(platform.resource_id.clone());
     metadata["resource_name"] = Value::String(platform.resource_name.clone());
-    if let Some(compat_version) = compat_version {
-        metadata["serverless_compat_version"] = Value::String(compat_version);
+    if let Some(compat_runtime_version) = compat_runtime_version {
+        metadata["serverless_compat_runtime_version"] = Value::String(compat_runtime_version);
     }
     if let Some(compat_binary_version) = compat_binary_version {
         metadata["serverless_compat_binary_version"] =
@@ -124,7 +124,7 @@ mod tests {
         );
         assert!(
             payload["agent_metadata"]
-                .get("serverless_compat_version")
+                .get("serverless_compat_runtime_version")
                 .is_none()
         );
         assert!(payload.get("hostname").is_none());
@@ -138,7 +138,7 @@ mod tests {
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(
-            payload["agent_metadata"]["serverless_compat_version"],
+            payload["agent_metadata"]["serverless_compat_runtime_version"],
             "0.18.0"
         );
         assert_eq!(
@@ -162,7 +162,7 @@ mod tests {
 
         assert!(
             payload["agent_metadata"]
-                .get("serverless_compat_version")
+                .get("serverless_compat_runtime_version")
                 .is_none()
         );
         assert!(
