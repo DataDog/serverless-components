@@ -2,5 +2,14 @@
 # aws-lc-rs >= 1.18, which pulls in AWS-LC-FIPS 4.x, pending FIPS 140-3
 # certification. Remove this ignore once a FIPS-certified aws-lc-rs is
 # available.
+#
+# RUSTSEC-2026-0346 to 0349 are fixed in rustls >= 0.23.46, which has the same
+# aws-lc-rs requirement. Remove them together with RUSTSEC-2026-0285.
 [advisories]
-ignore = ["RUSTSEC-2026-0285"]
+ignore = [
+  "RUSTSEC-2026-0285",
+  "RUSTSEC-2026-0346",
+  "RUSTSEC-2026-0347",
+  "RUSTSEC-2026-0348",
+  "RUSTSEC-2026-0349",
+]
