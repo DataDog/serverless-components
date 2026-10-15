@@ -17,7 +17,12 @@ use tracing::{debug, error, trace};
 
 // Windows-specific imports
 #[cfg(all(windows, feature = "windows-pipes"))]
-use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
+use {
+    std::sync::Arc,
+    tokio::io::AsyncReadExt,
+    tokio::net::windows::named_pipe::ServerOptions,
+    tracing::{info, warn},
+};
 
 // Default buffer size for receiving DogStatsD packets (one read call).
 // Used for both UDP recv_from and Windows named pipe reads.
@@ -31,7 +36,8 @@ const DEFAULT_QUEUE_SIZE: usize = 1024;
 pub struct DogStatsDConfig {
     /// Host to bind UDP socket to (e.g., "127.0.0.1")
     pub host: String,
-    /// Port to bind UDP socket to (e.g., 8125), will be 0 if we're using a Named Pipe
+    /// Port to bind UDP socket to (e.g., 8125). The UDP socket is also bound when a named pipe
+    /// is configured, so clients without named-pipe support can still send metrics.
     pub port: u16,
     /// Optional namespace to prepend to all metric names (e.g., "myapp")
     pub metric_namespace: Option<String>,
@@ -94,11 +100,14 @@ enum BufferReader {
     #[allow(dead_code)]
     MirrorTest(Vec<u8>, SocketAddr),
 
-    /// Windows named pipe reader (Windows-only transport)
+    /// Windows named pipe reader (Windows-only transport), read alongside the UDP socket.
+    /// `udp_socket` is `None` when the UDP bind failed, e.g. because another agent on a
+    /// shared host already owns the port.
     #[cfg(all(windows, feature = "windows-pipes"))]
     NamedPipe {
         pipe_name: Arc<String>,
         receiver: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>,
+        udp_socket: Option<tokio::net::UdpSocket>,
     },
 }
 
@@ -121,17 +130,34 @@ impl BufferReader {
             BufferReader::NamedPipe {
                 pipe_name,
                 receiver,
-            } => match receiver.lock().await.recv().await {
-                Some(data) => {
-                    let len = data.len().min(buf.len());
-                    buf[..len].copy_from_slice(&data[..len]);
-                    Ok((len, MessageSource::NamedPipe(pipe_name.clone())))
+                udp_socket,
+            } => {
+                // Wait on whichever transport delivers first. The UDP arm stays pending
+                // when the UDP bind failed.
+                let pipe_data = tokio::select! {
+                    udp_result = async {
+                        match udp_socket.as_ref() {
+                            Some(socket) => socket.recv_from(buf).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        let (amt, src) = udp_result?;
+                        return Ok((amt, MessageSource::Network(src)));
+                    }
+                    pipe_data = async { receiver.lock().await.recv().await } => pipe_data,
+                };
+                match pipe_data {
+                    Some(data) => {
+                        let len = data.len().min(buf.len());
+                        buf[..len].copy_from_slice(&data[..len]);
+                        Ok((len, MessageSource::NamedPipe(pipe_name.clone())))
+                    }
+                    None => Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "named pipe channel closed",
+                    )),
                 }
-                None => Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionReset,
-                    "named pipe channel closed",
-                )),
-            },
+            }
         }
     }
 
@@ -141,14 +167,27 @@ impl BufferReader {
     /// kernel buffer without re-entering tokio's event loop.
     fn try_read_into(&mut self, buf: &mut [u8]) -> std::io::Result<Option<(usize, MessageSource)>> {
         match self {
-            BufferReader::UdpSocket(socket) => match socket.try_recv_from(buf) {
-                Ok((amt, src)) => Ok(Some((amt, MessageSource::Network(src)))),
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-                Err(e) => Err(e),
-            },
+            BufferReader::UdpSocket(socket) => try_recv_udp(socket, buf),
+            // Drain only the UDP side; the named pipe channel is read by `read_into`.
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            BufferReader::NamedPipe {
+                udp_socket: Some(socket),
+                ..
+            } => try_recv_udp(socket, buf),
             // Non-UDP transports don't support non-blocking reads
             _ => Ok(None),
         }
+    }
+}
+
+fn try_recv_udp(
+    socket: &tokio::net::UdpSocket,
+    buf: &mut [u8],
+) -> std::io::Result<Option<(usize, MessageSource)>> {
+    match socket.try_recv_from(buf) {
+        Ok((amt, src)) => Ok(Some((amt, MessageSource::Network(src)))),
+        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -165,7 +204,8 @@ pub struct DogStatsD {
 impl DogStatsD {
     /// Creates a new DogStatsD server instance.
     ///
-    /// The server will bind to either a UDP socket or Windows named pipe based on the config.
+    /// The server always binds a UDP socket and also listens on a Windows named pipe when one
+    /// is configured.
     /// Metrics received will be forwarded to the provided aggregator_handle.
     #[must_use]
     pub async fn new(
@@ -191,10 +231,30 @@ impl DogStatsD {
             None => DEFAULT_BUFFER_SIZE,
         };
 
+        let addr = format!("{}:{}", config.host, config.port);
+
         let buffer_reader = if let Some(pipe_name_ref) = pipe_name_opt {
-            // Windows named pipe transport
+            // Windows named pipe transport, plus UDP for clients without named-pipe support
             #[cfg(all(windows, feature = "windows-pipes"))]
             {
+                // UDP bind is best-effort when a named pipe is configured. Multiple Azure apps
+                // share the same VM on certain Windows Azure plans, and only one agent can own
+                // the port. The named pipe is unique per app, so a UDP bind failure is not fatal.
+                let udp_socket = match create_udp_socket(&addr, config.so_rcvbuf).await {
+                    Ok(socket) => {
+                        info!("dogstatsd-udp: starting to listen on {}", addr);
+                        Some(socket)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "DogStatsD could not bind UDP {}: {}. Named-pipe transport is active; \
+                            metrics sent over UDP will not be received by this agent.",
+                            addr, e
+                        );
+                        None
+                    }
+                };
+
                 let pipe_name = Arc::new(pipe_name_ref.clone());
 
                 // Create channel for receiving data from client handlers
@@ -213,6 +273,7 @@ impl DogStatsD {
                 BufferReader::NamedPipe {
                     pipe_name,
                     receiver,
+                    udp_socket,
                 }
             }
             #[cfg(not(all(windows, feature = "windows-pipes")))]
@@ -225,8 +286,8 @@ impl DogStatsD {
                 );
             }
         } else {
-            // UDP socket for all platforms
-            let addr = format!("{}:{}", config.host, config.port);
+            // UDP socket for all platforms. Without a named pipe, UDP is the only transport, so a
+            // bind failure is fatal.
             // TODO (UDS socket)
             #[allow(clippy::expect_used)]
             let socket = create_udp_socket(&addr, config.so_rcvbuf)

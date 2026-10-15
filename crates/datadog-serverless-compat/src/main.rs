@@ -104,14 +104,12 @@ pub async fn main() {
             None
         }
     };
-    let dd_dogstatsd_port: u16 = if dd_dogstatsd_windows_pipe_name.is_some() {
-        0 // Override to 0 when using Windows named pipe
-    } else {
-        env::var("DD_DOGSTATSD_PORT")
-            .ok()
-            .and_then(|port| port.parse::<u16>().ok())
-            .unwrap_or(DEFAULT_DOGSTATSD_PORT)
-    };
+    // UDP listener also runs when a named pipe is set, so clients without
+    // named-pipe support can still send metrics.
+    let dd_dogstatsd_port: u16 = env::var("DD_DOGSTATSD_PORT")
+        .ok()
+        .and_then(|port| port.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_DOGSTATSD_PORT);
     let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
     let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")
         .map(|val| val.to_lowercase() != "false")
@@ -252,6 +250,7 @@ pub async fn main() {
                 )
                 .await;
                 if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
+                    // The dogstatsd crate logs whether the best-effort UDP bind succeeded.
                     info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
                 } else {
                     info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
