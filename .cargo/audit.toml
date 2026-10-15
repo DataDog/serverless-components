@@ -1,6 +1,19 @@
-# RUSTSEC-2026-0285 is fixed in rustls >= 0.23.45, but that version requires
-# aws-lc-rs >= 1.18, which pulls in AWS-LC-FIPS 4.x, pending FIPS 140-3
-# certification. Remove this ignore once a FIPS-certified aws-lc-rs is
-# available.
+# These rustls advisories are fixed in rustls >= 0.23.46, but every version
+# from 0.23.45 onward requires aws-lc-rs >= 1.18, which pulls in AWS-LC-FIPS
+# 4.x, pending FIPS 140-3 certification. Remove these ignores once a
+# FIPS-certified aws-lc-rs is available.
+#
+# RUSTSEC-2026-0285: yanked rustls release, superseded by 0.23.45.
+# RUSTSEC-2026-0348: Brotli cert-decompression DoS; the brotli feature is not
+#   enabled (default-features = false in crates/datadog-fips).
+# RUSTSEC-2026-0349: ServerHello downgrade loses post-quantum confidentiality;
+#   no key compromise or auth bypass, server policy dependent.
+# RUSTSEC-2026-0346: derived Debug impls can expose TLS session secrets, but
+#   only for custom ClientSessionStore implementations that log them.
 [advisories]
-ignore = ["RUSTSEC-2026-0285"]
+ignore = [
+    "RUSTSEC-2026-0285",
+    "RUSTSEC-2026-0348",
+    "RUSTSEC-2026-0349",
+    "RUSTSEC-2026-0346",
+]
