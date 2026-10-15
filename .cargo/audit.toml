@@ -7,8 +7,10 @@
 #   level boundaries.
 # RUSTSEC-2026-0348: Brotli cert-decompression DoS; the brotli feature is not
 #   enabled (default-features = false in crates/datadog-fips).
-# RUSTSEC-2026-0349: ServerHello downgrade loses post-quantum confidentiality;
-#   no key compromise or auth bypass, server policy dependent.
+# RUSTSEC-2026-0349: ServerHello downgrade loses post-quantum confidentiality.
+#   The FIPS provider puts X25519MLKEM768 after P-256 and P-384, so the client
+#   sends a classical key share unless the server asks for the hybrid group
+#   with a HelloRetryRequest, and the advisory excludes those servers.
 # RUSTSEC-2026-0346: derived Debug impls can expose TLS session secrets, but
 #   only for custom ClientSessionStore implementations that log them.
 [advisories]
