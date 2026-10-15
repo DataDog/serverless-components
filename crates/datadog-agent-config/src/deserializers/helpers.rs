@@ -175,6 +175,31 @@ where
         .collect())
 }
 
+/// Deserialize a string into a list of entries, choosing exactly one delimiter:
+/// if the string contains a comma, split on commas only; otherwise, split on the
+/// literal space character (not whitespace in general, so tabs stay inside entries).
+/// Each entry is trimmed and empty entries are dropped, all on the Rust side.
+/// This is deliberately NOT full Go parity: Go's `comma_then_space_separated`
+/// (pkg/config/helper/env.go) keeps empty entries.
+pub fn deserialize_comma_then_space_separated_string<'de, D>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: String = String::deserialize(deserializer)?;
+    let parts: Vec<&str> = if s.contains(',') {
+        s.split(',').collect()
+    } else {
+        s.split(' ').collect()
+    };
+    Ok(parts
+        .iter()
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect())
+}
+
 pub fn deserialize_key_value_pair_array_to_hashmap<'de, D>(
     deserializer: D,
 ) -> Result<HashMap<String, String>, D::Error>
