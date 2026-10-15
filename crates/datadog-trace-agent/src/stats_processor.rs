@@ -164,6 +164,7 @@ mod tests {
             additional_metric_tags: vec![],
             additional_metric_tags_cardinality_limit: None,
             agent_stats_computation_enabled,
+            error_sampler: datadog_agent_trace_sampler::ErrorSamplerConfig::default(),
         }
     }
 
