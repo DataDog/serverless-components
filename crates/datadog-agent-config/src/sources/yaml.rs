@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 use crate::{
     Config, ConfigError, ConfigExtension, ConfigSource, ProcessingRule, TracePropagationStyle,
     additional_endpoints::deserialize_additional_endpoints, deserialize_apm_replace_rules,
+    deserialize_comma_then_space_separated_string_or_list,
     deserialize_key_value_pair_array_to_hashmap, deserialize_option_lossless,
     deserialize_optional_bool_from_anything, deserialize_optional_string,
     deserialize_processing_rules, deserialize_string_or_int, deserialize_trace_propagation_style,
@@ -173,7 +174,7 @@ pub struct ApmConfig {
     pub obfuscation: Option<ApmObfuscation>,
     #[serde(deserialize_with = "deserialize_option_lossless")]
     pub compression_level: Option<i32>,
-    #[serde(deserialize_with = "deserialize_with_default")]
+    #[serde(deserialize_with = "deserialize_comma_then_space_separated_string_or_list")]
     pub features: Vec<String>,
     #[serde(deserialize_with = "deserialize_additional_endpoints")]
     pub additional_endpoints: HashMap<String, Vec<String>>,
@@ -1161,6 +1162,106 @@ otlp_config:
 
             // Assert that
             assert_eq!(config, expected_config);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_apm_features_comma_then_space_separated_from_yaml() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            // (yaml features value, expected Vec<String>)
+            let inputs_and_expected = [
+                ("a,b", vec!["a".to_string(), "b".to_string()]),
+                ("a b", vec!["a".to_string(), "b".to_string()]),
+                // Comma wins as delimiter, space stays inside the entry.
+                ("a,b c", vec!["a".to_string(), "b c".to_string()]),
+                // Trimming plus empty-entry dropping.
+                (" a , b ", vec!["a".to_string(), "b".to_string()]),
+                ("", vec![]),
+                // Tab is not a delimiter; it stays inside the entry.
+                ("a\tb", vec!["a\tb".to_string()]),
+            ];
+
+            for (value, expected) in inputs_and_expected {
+                jail.create_file(
+                    "datadog.yaml",
+                    &format!("apm_config:\n  features: {value:?}"),
+                )?;
+
+                let mut config: Config = Config::default();
+                let yaml_config_source = YamlConfigSource {
+                    path: Path::new("datadog.yaml").to_path_buf(),
+                };
+                yaml_config_source
+                    .load(&mut config)
+                    .expect("Failed to load config");
+
+                assert_eq!(config.apm_features, expected, "value: {value:?}");
+            }
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_apm_features_yaml_list_still_supported() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.create_file(
+                "datadog.yaml",
+                r#"
+apm_config:
+  features:
+    - "feature_one"
+    - "feature_two"
+"#,
+            )?;
+
+            let mut config: Config = Config::default();
+            let yaml_config_source = YamlConfigSource {
+                path: Path::new("datadog.yaml").to_path_buf(),
+            };
+            yaml_config_source
+                .load(&mut config)
+                .expect("Failed to load config");
+
+            assert_eq!(
+                config.apm_features,
+                vec!["feature_one".to_string(), "feature_two".to_string()]
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_apm_features_env_overrides_yaml() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.create_file(
+                "datadog.yaml",
+                r#"
+apm_config:
+  features: "yaml_feature"
+"#,
+            )?;
+            jail.set_env("DD_APM_FEATURES", "env_feature");
+
+            let mut config: Config = Config::default();
+            let yaml_config_source = YamlConfigSource {
+                path: Path::new("datadog.yaml").to_path_buf(),
+            };
+            yaml_config_source
+                .load(&mut config)
+                .expect("Failed to load yaml config");
+            crate::EnvConfigSource
+                .load(&mut config)
+                .expect("Failed to load env config");
+
+            assert_eq!(config.apm_features, vec!["env_feature".to_string()]);
 
             Ok(())
         });

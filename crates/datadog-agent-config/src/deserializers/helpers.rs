@@ -188,16 +188,60 @@ where
     D: Deserializer<'de>,
 {
     let s: String = String::deserialize(deserializer)?;
+    Ok(split_comma_then_space(&s))
+}
+
+fn split_comma_then_space(s: &str) -> Vec<String> {
     let parts: Vec<&str> = if s.contains(',') {
         s.split(',').collect()
     } else {
         s.split(' ').collect()
     };
-    Ok(parts
+    parts
         .iter()
         .map(|part| part.trim().to_string())
         .filter(|part| !part.is_empty())
-        .collect())
+        .collect()
+}
+
+/// Deserialize `apm_config.features` from YAML, accepting two shapes:
+/// - a native list, whose string elements are used as-is
+/// - a string, split with the same comma-then-space rules as `DD_APM_FEATURES`
+///   (comma wins as delimiter when present, otherwise the literal space
+///   character splits; entries are trimmed and empty entries are dropped)
+///
+/// Any other shape, or a non-string list element, is logged and ignored.
+/// This diverges from the Go agent, whose YAML path does not comma-split
+/// strings for this setting.
+pub fn deserialize_comma_then_space_separated_string_or_list<'de, D>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::Array(items) => Ok(items
+            .into_iter()
+            .filter_map(|item| match item {
+                Value::String(s) => Some(s),
+                other => {
+                    warn!(
+                        "Failed to parse features: expected a string element, got: {}, ignoring",
+                        other
+                    );
+                    None
+                }
+            })
+            .collect()),
+        Value::String(s) => Ok(split_comma_then_space(&s)),
+        other => {
+            warn!(
+                "Failed to parse features: expected a list or a string, got: {}, ignoring",
+                other
+            );
+            Ok(Vec::new())
+        }
+    }
 }
 
 pub fn deserialize_key_value_pair_array_to_hashmap<'de, D>(
