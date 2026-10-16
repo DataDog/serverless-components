@@ -175,6 +175,84 @@ where
         .collect())
 }
 
+/// Deserialize a string into a list of entries, choosing exactly one delimiter:
+/// if the string contains a comma, split on commas only; otherwise, split on the
+/// literal space character (not whitespace in general, so tabs stay inside entries).
+/// Each entry is trimmed and empty entries are dropped, all on the Rust side.
+/// This is deliberately NOT full Go parity: Go's `comma_then_space_separated`
+/// (pkg/config/helper/env.go) keeps empty entries.
+pub fn deserialize_comma_then_space_separated_string<'de, D>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: String = String::deserialize(deserializer)?;
+    Ok(split_comma_then_space(&s))
+}
+
+fn split_comma_then_space(s: &str) -> Vec<String> {
+    let parts: Vec<&str> = if s.contains(',') {
+        s.split(',').collect()
+    } else {
+        s.split(' ').collect()
+    };
+    parts
+        .iter()
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// Deserialize `apm_config.features` from YAML, accepting two shapes:
+/// - a native list, whose string elements are used as-is
+/// - a string, split with the same comma-then-space rules as `DD_APM_FEATURES`
+///   (comma wins as delimiter when present, otherwise the literal space
+///   character splits; entries are trimmed and empty entries are dropped)
+///
+/// A native list with mixed element types is rejected entirely: any
+/// non-string element is logged and the whole list falls back to `[]`.
+/// This mirrors the Go agent, where `GetStringSlice` goes through
+/// `cast.ToStringSlice`, which returns an empty slice when any element of
+/// the list is not a string (the error is swallowed, without a warning).
+///
+/// Any other shape, or a non-string list element, is logged and ignored.
+/// This diverges from the Go agent, whose YAML path does not comma-split
+/// strings for this setting.
+pub fn deserialize_comma_then_space_separated_string_or_list<'de, D>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::Array(items) => {
+            let mut features = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    Value::String(s) => features.push(s),
+                    other => {
+                        warn!(
+                            "Failed to parse features: expected a string element, got: {}, dropping the entire list",
+                            other
+                        );
+                        return Ok(Vec::new());
+                    }
+                }
+            }
+            Ok(features)
+        }
+        Value::String(s) => Ok(split_comma_then_space(&s)),
+        other => {
+            warn!(
+                "Failed to parse features: expected a list or a string, got: {}, ignoring",
+                other
+            );
+            Ok(Vec::new())
+        }
+    }
+}
+
 pub fn deserialize_key_value_pair_array_to_hashmap<'de, D>(
     deserializer: D,
 ) -> Result<HashMap<String, String>, D::Error>
