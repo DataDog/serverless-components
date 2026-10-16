@@ -16,7 +16,7 @@ pub(crate) fn build(
         report_reason,
         platform,
         &ProcessEnv,
-        option_env!("DD_SERVERLESS_COMPAT_VERSION"),
+        option_env!("DD_SERVERLESS_COMPAT_BINARY_VERSION"),
     )
 }
 
