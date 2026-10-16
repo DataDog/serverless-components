@@ -37,7 +37,7 @@ jobs:
         run: |
           VERSION="$(./scripts/resolve-serverless-compat-version.sh "$INPUT_VERSION")"
           if [[ -n "$VERSION" ]]; then
-            echo "DD_SERVERLESS_COMPAT_VERSION=$VERSION" >> "$GITHUB_ENV"
+            echo "DD_SERVERLESS_COMPAT_BINARY_VERSION=$VERSION" >> "$GITHUB_ENV"
           fi
       - name: Install Protoc Binary
         shell: bash
