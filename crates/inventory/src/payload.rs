@@ -23,7 +23,7 @@ pub(crate) fn build(
 }
 
 pub(crate) fn serverless_compat_binary_version() -> Option<&'static str> {
-    option_env!("DD_SERVERLESS_COMPAT_VERSION")
+    option_env!("DD_SERVERLESS_COMPAT_BINARY_VERSION")
         .map(str::trim)
         .filter(|value| !value.is_empty())
 }
