@@ -210,6 +210,12 @@ fn split_comma_then_space(s: &str) -> Vec<String> {
 ///   (comma wins as delimiter when present, otherwise the literal space
 ///   character splits; entries are trimmed and empty entries are dropped)
 ///
+/// A native list with mixed element types is partially preserved: string
+/// elements are kept and non-string elements are logged and skipped. This
+/// diverges from `deserialize_with_default` and the Go agent, whose all-or-
+/// nothing `[]string` YAML unmarshal drops the entire list when any element
+/// is not a string.
+///
 /// Any other shape, or a non-string list element, is logged and ignored.
 /// This diverges from the Go agent, whose YAML path does not comma-split
 /// strings for this setting.
