@@ -1238,6 +1238,37 @@ apm_config:
     }
 
     #[test]
+    fn test_apm_features_yaml_mixed_type_list_dropped_entirely() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.create_file(
+                "datadog.yaml",
+                r#"
+apm_config:
+  features:
+    - "feature_one"
+    - 2
+    - "feature_two"
+"#,
+            )?;
+
+            let mut config: Config = Config::default();
+            let yaml_config_source = YamlConfigSource {
+                path: Path::new("datadog.yaml").to_path_buf(),
+            };
+            yaml_config_source
+                .load(&mut config)
+                .expect("Failed to load config");
+
+            // Mirrors the Go agent: GetStringSlice goes through cast.ToStringSlice,
+            // which returns an empty slice when any element is not a string.
+            assert_eq!(config.apm_features, Vec::<String>::new());
+
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_apm_features_env_overrides_yaml() {
         figment::Jail::expect_with(|jail| {
             jail.clear_env();

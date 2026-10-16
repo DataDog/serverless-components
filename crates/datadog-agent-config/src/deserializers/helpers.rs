@@ -210,11 +210,11 @@ fn split_comma_then_space(s: &str) -> Vec<String> {
 ///   (comma wins as delimiter when present, otherwise the literal space
 ///   character splits; entries are trimmed and empty entries are dropped)
 ///
-/// A native list with mixed element types is partially preserved: string
-/// elements are kept and non-string elements are logged and skipped. This
-/// diverges from `deserialize_with_default` and the Go agent, whose all-or-
-/// nothing `[]string` YAML unmarshal drops the entire list when any element
-/// is not a string.
+/// A native list with mixed element types is rejected entirely: any
+/// non-string element is logged and the whole list falls back to `[]`.
+/// This mirrors the Go agent, where `GetStringSlice` goes through
+/// `cast.ToStringSlice`, which returns an empty slice when any element of
+/// the list is not a string (the error is swallowed, without a warning).
 ///
 /// Any other shape, or a non-string list element, is logged and ignored.
 /// This diverges from the Go agent, whose YAML path does not comma-split
@@ -226,19 +226,22 @@ where
     D: Deserializer<'de>,
 {
     match Value::deserialize(deserializer)? {
-        Value::Array(items) => Ok(items
-            .into_iter()
-            .filter_map(|item| match item {
-                Value::String(s) => Some(s),
-                other => {
-                    warn!(
-                        "Failed to parse features: expected a string element, got: {}, ignoring",
-                        other
-                    );
-                    None
+        Value::Array(items) => {
+            let mut features = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    Value::String(s) => features.push(s),
+                    other => {
+                        warn!(
+                            "Failed to parse features: expected a string element, got: {}, dropping the entire list",
+                            other
+                        );
+                        return Ok(Vec::new());
+                    }
                 }
-            })
-            .collect()),
+            }
+            Ok(features)
+        }
         Value::String(s) => Ok(split_comma_then_space(&s)),
         other => {
             warn!(
