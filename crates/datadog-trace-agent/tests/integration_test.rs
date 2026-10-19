@@ -1276,6 +1276,7 @@ fn error_rescue_cases() -> Vec<(&'static str, i32, i64, Option<&'static str>, bo
         ("priority_2", 2, 1, None, false),
     ]
 }
+
 fn create_error_rescue_test_payload() -> Vec<u8> {
     let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
     let span = |trace_id: u64, name: &str, error: i64, priority: f64| {
@@ -1434,18 +1435,6 @@ async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
             .and_then(|root| root.metrics.get("_dd.errors_sr").copied())
     };
 
-    // The eligible errored automatic-drop chunk is rescued: positive
-    // `_dd.errors_sr` on the root, chunk priority still 0.
-    assert_eq!(
-        errors_sr_of("rescued_error_p0"),
-        Some(1.0),
-        "rescued root must carry a positive _dd.errors_sr"
-    );
-    assert_eq!(
-        chunks_by_root_name["rescued_error_p0"].priority, 0,
-        "rescued chunk priority must remain 0, no promotion"
-    );
-
     for (name, priority, error, dm, on_child) in error_rescue_cases() {
         let chunk = &chunks_by_root_name[name];
         let eligible = error != 0
@@ -1468,17 +1457,14 @@ async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
                 Some(f64::from(priority)),
                 "{name}"
             );
-            let expected_dm = if (span.parent_id != 0) == on_child {
-                dm
-            } else {
-                None
-            };
+            let is_child = span.parent_id != 0;
+            let expected_dm = if is_child == on_child { dm } else { None };
             assert_eq!(
                 span.meta.get("_dd.p.dm").map(String::as_str),
                 expected_dm,
                 "{name}"
             );
-            if span.parent_id != 0 {
+            if is_child {
                 assert!(!span.metrics.contains_key("_dd.errors_sr"));
             }
         }
