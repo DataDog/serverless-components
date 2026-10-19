@@ -1211,7 +1211,6 @@ mod tests {
                 },
             );
         }
-        assert!(!logs_contain("DD_APM_ERROR_TPS <= 0 disables error rescue"));
         logs_assert(|lines| {
             if lines
                 .iter()

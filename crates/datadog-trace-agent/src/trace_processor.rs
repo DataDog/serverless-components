@@ -1421,7 +1421,6 @@ mod tests {
                 }
             }
         }
-        assert!(logs_contain(warning));
         logs_assert(|lines| {
             let count = lines
                 .iter()
@@ -1705,12 +1704,14 @@ mod tests {
                 );
 
                 assert_eq!(chunks.len(), 2, "chunks still forwarded");
-                assert_eq!(errors_sr(root(&chunks[1])), None);
-                assert_eq!(
-                    errors_sr(root(&chunks[0])),
-                    None,
-                    "mode {mode:?} tps {tps}: disabled sampler must not rescue"
-                );
+                for chunk in &chunks {
+                    assert_eq!(
+                        errors_sr(root(chunk)),
+                        None,
+                        "mode {mode:?} tps {tps} priority {}: disabled sampler must not rescue",
+                        chunk.priority
+                    );
+                }
             }
         }
     }
