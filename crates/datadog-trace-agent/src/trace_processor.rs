@@ -31,11 +31,12 @@ use crate::{
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
 
-/// The root-span metric the backend uses to rescue traces the ordinary P0 drop
-/// would discard: a positive `_dd.errors_sr` resolves the chunk's ingestion
-/// reason to `error`, which is retained at low priority without any priority
-/// promotion.
+/// The root-span metric used for error rescue without priority promotion.
+/// A positive value signals error sampling; backend retention also depends on
+/// its ingestion-reason handling (for example, probabilistic decision makers).
 const ERRORS_SR_METRIC_KEY: &str = "_dd.errors_sr";
+const DECISION_MAKER_KEY: &str = "_dd.p.dm";
+const MANUAL_DECISION_MAKER: &str = "-4";
 
 /// Rough upper bound on the protobuf framing overhead added when a V07 `TracerPayload` is
 /// wrapped in the outer `AgentPayload` envelope before being sent
@@ -104,6 +105,19 @@ struct ChunkProcessor {
 
 impl TraceChunkProcessor for ChunkProcessor {
     fn process(&mut self, chunk: &mut pb::TraceChunk, root_span_index: usize) {
+        // Promote before local enrichment or any future sampled-out filtering.
+        // Existing chunk values, including empty strings, take precedence.
+        if !chunk.tags.contains_key(DECISION_MAKER_KEY)
+            && let Some(value) = chunk
+                .spans
+                .iter()
+                .find_map(|span| span.meta.get(DECISION_MAKER_KEY))
+        {
+            chunk
+                .tags
+                .insert(DECISION_MAKER_KEY.to_string(), value.clone());
+        }
+
         // Clone app_name once instead of once per span
         let app_name = self.config.app_name.clone();
 
@@ -161,6 +175,11 @@ impl ServerlessTraceProcessor {
     /// Builds the error rescue sampler from parsed config settings.
     #[must_use]
     pub fn new_error_sampler(config: &Config) -> Arc<Mutex<ErrorsSampler>> {
+        if config.error_rare_sample_tracer_drop && config.error_sampler.target_tps <= 0.0 {
+            warn!(
+                "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue"
+            );
+        }
         Arc::new(Mutex::new(ErrorsSampler::new(config.error_sampler)))
     }
 
@@ -174,14 +193,13 @@ impl ServerlessTraceProcessor {
 
     /// Applies the error rescue pass to a payload collection.
     ///
-    /// For every V07 chunk that would be dropped by the backend's ordinary P0
-    /// drop (chunk priority is exactly 0, i.e. an automatic drop, not an
-    /// explicit user drop or the no-priority sentinel) and contains at least
-    /// one span with a non-zero error flag, consults the shared error sampler.
+    /// For every eligible V07 chunk containing a non-zero error flag, consults
+    /// the shared sampler. P0 is always eligible; the opt-in feature adds negative
+    /// priorities except the no-priority sentinel and exact manual drops.
     /// On a keep, stamps the sampler's `_dd.errors_sr` on the chunk's root
-    /// span; the backend keeps such chunks without any priority promotion.
+    /// span without priority promotion. Retention is decided by the backend.
     /// Chunks are never removed or reordered: unrescued chunks stay in the
-    /// payload and the backend discards them.
+    /// payload for the backend to handle.
     fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
         let mut sampler = self.lock_sampler();
         // Skip all view construction when the sampler is disabled by config
@@ -243,7 +261,13 @@ impl ServerlessTraceProcessor {
             // configured env, consistent with how stats are flushed.
             let env = resolve_payload_env(&tracer_payload.env, &config.env);
             for chunk in tracer_payload.chunks.iter_mut() {
-                sample_and_stamp(sampler, chunk, env, now_unix_secs);
+                sample_and_stamp(
+                    sampler,
+                    chunk,
+                    env,
+                    now_unix_secs,
+                    config.error_rare_sample_tracer_drop,
+                );
             }
         }
     }
@@ -320,23 +344,30 @@ fn span_view(span: &pb::Span) -> SpanView<'_> {
 /// Consults the error sampler for one chunk and, on a keep, stamps the
 /// sampler's `_dd.errors_sr` value on the chunk's root span.
 ///
-/// Only automatic-drop chunks are candidates: chunk priority must be exactly 0.
-/// Explicit user drops (-1), other negative priorities, positive priorities,
-/// and the no-priority sentinel (`i8::MIN`) are all left untouched. The chunk
+/// P0 chunks are candidates. With the feature enabled, negative priorities also
+/// qualify except the no-priority sentinel and priority -1 with chunk DM -4.
+/// Only promoted chunk tags are consulted, never span metadata. The chunk
 /// must contain at least one span with a non-zero error flag; HTTP status or
 /// error metadata alone does not qualify. The root is resolved with
 /// `get_root_span_index`: empty chunks are left unchanged, and non-empty
 /// chunks always resolve a root, falling back to the last span when no span
 /// has `parent_id 0` (e.g. a cyclic chunk). Chunks are never removed here: on
-/// a Drop decision the unrescued chunk is forwarded as-is and the backend's
-/// ordinary P0 drop handles it.
+/// a Drop decision the unrescued chunk is forwarded without rescue mutation.
 fn sample_and_stamp(
     sampler: &mut ErrorsSampler,
     chunk: &mut pb::TraceChunk,
     env: &str,
     now_unix_secs: i64,
+    tracer_drop_enabled: bool,
 ) {
-    if chunk.priority != 0 {
+    let eligible = chunk.priority == 0
+        || (tracer_drop_enabled
+            && chunk.priority < 0
+            && chunk.priority != i32::from(i8::MIN)
+            && !(chunk.priority == -1
+                && chunk.tags.get(DECISION_MAKER_KEY).map(String::as_str)
+                    == Some(MANUAL_DECISION_MAKER)));
+    if !eligible {
         return;
     }
     // An error anywhere in the chunk makes it a rescue candidate, not just an
@@ -478,9 +509,9 @@ impl TraceProcessor for ServerlessTraceProcessor {
         }
 
         // Error rescue runs after stats submission so the concentrator observes every
-        // submitted chunk exactly as the tracer sent it, and before payload splitting so
+        // submitted chunk before rescue stamping, and before payload splitting so
         // the newly inserted metric is included in the recomputed outbound size. It is
-        // gated on agent stats computation: without it, P0 chunks are not expected here.
+        // gated on agent stats computation, independently of tracer-drop eligibility.
         if config.agent_stats_computation_enabled {
             self.apply_error_rescue(&mut payload, &config);
         }
@@ -631,6 +662,7 @@ mod tests {
             additional_metric_tags_cardinality_limit: None,
             agent_stats_computation_enabled: false,
             error_sampler: ErrorSamplerConfig::default(),
+            error_rare_sample_tracer_drop: false,
         }
     }
 
@@ -1209,12 +1241,15 @@ mod tests {
     }
 
     /// Builds a `/v0.4/traces` request carrying a single root span with an
-    /// error and an automatic-drop priority: eligible for rescue.
-    fn errored_p0_request() -> http_common::HttpRequest {
+    /// error and the requested sampling priority and decision maker.
+    fn errored_request(priority: i32, dm: Option<&str>) -> http_common::HttpRequest {
         let start = get_current_timestamp_nanos();
         let mut json_span = create_test_json_span(11, 222, 333, start, true);
         json_span["error"] = serde_json::json!(1);
-        json_span["metrics"]["_sampling_priority_v1"] = serde_json::json!(0.0);
+        json_span["metrics"]["_sampling_priority_v1"] = serde_json::json!(priority);
+        if let Some(dm) = dm {
+            json_span["meta"]["_dd.p.dm"] = serde_json::json!(dm);
+        }
         let bytes = rmp_serde::to_vec(&vec![vec![json_span]]).unwrap();
         Request::builder()
             .header("datadog-meta-tracer-version", "4.0.0")
@@ -1224,6 +1259,179 @@ mod tests {
             .header("content-length", "100")
             .body(http_common::Body::from(bytes))
             .unwrap()
+    }
+
+    #[test]
+    fn test_decision_maker_promotion_is_unconditional_and_preserves_metadata() {
+        use libdd_trace_utils::tracer_payload::TraceChunkProcessor as _;
+        for feature in [false, true] {
+            for (chunk_dm, first, second, child_first, expected) in [
+                (None, None, None, false, None),
+                (None, Some("-4"), None, false, Some("-4")),
+                (None, None, Some("-3"), false, Some("-3")),
+                (None, Some("-3"), Some("-4"), true, Some("-3")),
+                (None, Some("-4"), Some("-3"), false, Some("-4")),
+                (None, Some("-3"), Some("-4"), false, Some("-3")),
+                (Some("-9"), Some("-4"), Some("-3"), false, Some("-9")),
+                (Some(""), Some("-4"), None, false, Some("")),
+                (None, Some(""), Some("-4"), true, Some("")),
+            ] {
+                let mut config = create_test_config();
+                config.error_rare_sample_tracer_drop = feature;
+                config.agent_stats_computation_enabled = false;
+                let mut spans = vec![test_span(1, 2, 0, 1), test_span(1, 3, 2, 0)];
+                if child_first {
+                    spans.swap(0, 1);
+                }
+                for (span, dm) in spans.iter_mut().zip([first, second]) {
+                    span.meta.insert("keep".into(), "metadata".into());
+                    span.metrics.insert("_sampling_priority_v1".into(), -1.0);
+                    if let Some(dm) = dm {
+                        span.meta
+                            .insert(super::DECISION_MAKER_KEY.into(), dm.into());
+                    }
+                }
+                let mut chunk = test_chunk(spans, -1);
+                chunk.origin = "synthetics".into();
+                chunk.tags.insert("other".into(), "value".into());
+                if let Some(dm) = chunk_dm {
+                    chunk
+                        .tags
+                        .insert(super::DECISION_MAKER_KEY.into(), dm.into());
+                }
+                let original = chunk.clone();
+                let root_index = usize::from(child_first);
+                super::ChunkProcessor {
+                    config: Arc::new(config),
+                    mini_agent_metadata: Arc::new(create_test_metadata()),
+                }
+                .process(&mut chunk, root_index);
+                assert_eq!(
+                    chunk
+                        .tags
+                        .get(super::DECISION_MAKER_KEY)
+                        .map(String::as_str),
+                    expected
+                );
+                assert_eq!(chunk.tags.get("other"), original.tags.get("other"));
+                assert_eq!(chunk.priority, original.priority);
+                assert_eq!(chunk.origin, original.origin);
+                for (span, before) in chunk.spans.iter().zip(&original.spans) {
+                    assert_eq!(span.span_id, before.span_id);
+                    assert_eq!(
+                        span.metrics.get("_sampling_priority_v1"),
+                        before.metrics.get("_sampling_priority_v1")
+                    );
+                    for (key, value) in &before.meta {
+                        assert_eq!(span.meta.get(key), Some(value));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_tracer_drop_rescue_eligibility_matrix() {
+        for feature in [false, true] {
+            for priority in [0, -1, -2, -127, i32::from(i8::MIN), 1, 2] {
+                for dm in [
+                    None,
+                    Some(""),
+                    Some("-4"),
+                    Some("-3"),
+                    Some("-9"),
+                    Some("-40"),
+                ] {
+                    for error in [0, 1, -1] {
+                        let (mut config, processor) = rescue_setup(always_keep_sampler_config());
+                        config.error_rare_sample_tracer_drop = feature;
+                        let mut chunk = test_chunk(
+                            vec![test_span(1, 2, 0, 0), test_span(1, 3, 2, error)],
+                            priority,
+                        );
+                        // Span DM deliberately disagrees: rescue must read only chunk tags.
+                        chunk.spans[0]
+                            .meta
+                            .insert(super::DECISION_MAKER_KEY.into(), "-4".into());
+                        chunk.spans[0]
+                            .meta
+                            .insert("http.status_code".into(), "500".into());
+                        if let Some(dm) = dm {
+                            chunk
+                                .tags
+                                .insert(super::DECISION_MAKER_KEY.into(), dm.into());
+                        }
+                        let original = chunk.clone();
+                        let mut chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
+                        let expected = error != 0
+                            && (priority == 0
+                                || (feature
+                                    && priority < 0
+                                    && priority != -128
+                                    && !(priority == -1 && dm == Some("-4"))));
+                        assert_eq!(
+                            errors_sr(&chunks[0].spans[0]),
+                            expected.then_some(1.0),
+                            "feature={feature} priority={priority} dm={dm:?} error={error}"
+                        );
+                        assert_eq!(errors_sr(&chunks[0].spans[1]), None);
+                        chunks[0].spans[0]
+                            .metrics
+                            .remove(super::ERRORS_SR_METRIC_KEY);
+                        assert_eq!(chunks[0], original);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_disabled_sampler_initialization_warning() {
+        let warning = "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue";
+        let mut expected_warnings = 0;
+        for feature in [false, true] {
+            for tps in [0.0, -1.0, 10.0] {
+                let mut config = rescue_config(always_keep_sampler_config());
+                config.error_rare_sample_tracer_drop = feature;
+                config.error_sampler.target_tps = tps;
+                let processor = trace_processor::ServerlessTraceProcessor::new(
+                    None,
+                    trace_processor::ServerlessTraceProcessor::new_error_sampler(&config),
+                );
+                expected_warnings += usize::from(feature && tps <= 0.0);
+                logs_assert(|lines| {
+                    let count = lines.iter().filter(|line| line.contains(warning)).count();
+                    if count == expected_warnings {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "expected {expected_warnings} warnings, got {count}"
+                        ))
+                    }
+                });
+                for _ in 0..3 {
+                    run_rescue(
+                        &processor.clone(),
+                        &config,
+                        vec![errored_root_chunk(1, -1)],
+                        RESCUE_NOW,
+                    );
+                }
+            }
+        }
+        assert!(logs_contain(warning));
+        logs_assert(|lines| {
+            let count = lines
+                .iter()
+                .filter(|line| line.contains("DD_APM_ERROR_TPS <= 0 disables error rescue"))
+                .count();
+            if count == 2 {
+                Ok(())
+            } else {
+                Err(format!("expected two initialization warnings, got {count}"))
+            }
+        });
     }
 
     #[test]
@@ -1340,8 +1548,8 @@ mod tests {
     fn test_non_automatic_drop_priorities_are_never_rescued() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
 
-        // -1 (explicit user drop), other negatives, positive priorities, and
-        // the no-priority sentinel (i8::MIN) are all out of scope.
+        // With the feature off, all negative and positive priorities,
+        // including the no-priority sentinel, are out of scope.
         let priorities = [-1_i32, -5, 1, 2, i8::MIN as i32];
         let chunks = run_rescue(
             &processor,
@@ -1361,6 +1569,26 @@ mod tests {
                 chunk.priority
             );
         }
+    }
+
+    #[test]
+    fn test_tracer_drop_empty_and_fallback_root() {
+        let (mut config, processor) = rescue_setup(always_keep_sampler_config());
+        config.error_rare_sample_tracer_drop = true;
+        let chunks = run_rescue(
+            &processor,
+            &config,
+            vec![
+                test_chunk(vec![], -1),
+                test_chunk(vec![test_span(1, 2, 3, 1), test_span(1, 3, 2, 0)], -1),
+            ],
+            RESCUE_NOW,
+        );
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].spans.is_empty());
+        assert_eq!(errors_sr(&chunks[1].spans[0]), None);
+        assert_eq!(errors_sr(&chunks[1].spans[1]), Some(1.0));
+        assert_eq!(chunks[1].priority, -1);
     }
 
     #[test]
@@ -1401,13 +1629,14 @@ mod tests {
     async fn test_rescue_is_noop_when_agent_stats_disabled() {
         let config = Config {
             agent_stats_computation_enabled: false,
+            error_rare_sample_tracer_drop: true,
             ..rescue_config(always_keep_sampler_config())
         };
         let (tx, mut rx): (
             Sender<trace_utils::SendData>,
             Receiver<trace_utils::SendData>,
         ) = mpsc::channel(1);
-        let request = errored_p0_request();
+        let request = errored_request(-1, Some("-3"));
 
         let trace_processor = trace_processor::ServerlessTraceProcessor::new(
             None,
@@ -1429,7 +1658,21 @@ mod tests {
             panic!("expected V07 payload");
         };
         let chunk = &tracer_payloads[0].chunks[0];
-        assert_eq!(chunk.priority, 0);
+        assert_eq!(chunk.priority, -1);
+        assert_eq!(
+            chunk
+                .tags
+                .get(super::DECISION_MAKER_KEY)
+                .map(String::as_str),
+            Some("-3")
+        );
+        assert_eq!(
+            chunk.spans[0]
+                .meta
+                .get(super::DECISION_MAKER_KEY)
+                .map(String::as_str),
+            Some("-3")
+        );
         for span in &chunk.spans {
             assert_eq!(
                 errors_sr(span),
@@ -1443,20 +1686,25 @@ mod tests {
     fn test_disabled_tps_disables_rescue_in_both_modes() {
         for mode in [ErrorSamplerMode::RateLimited, ErrorSamplerMode::AlwaysKeep] {
             for tps in [0.0_f64, -3.0] {
-                let (config, processor) = rescue_setup(ErrorSamplerConfig {
+                let (mut config, processor) = rescue_setup(ErrorSamplerConfig {
                     mode,
                     target_tps: tps,
                     extra_sample_rate: 1.0,
                 });
+                config.error_rare_sample_tracer_drop = true;
 
                 let chunks = run_rescue(
                     &processor,
                     &config,
-                    vec![errored_root_chunk(0xe000, 0)],
+                    vec![
+                        errored_root_chunk(0xe000, 0),
+                        errored_root_chunk(0xe001, -1),
+                    ],
                     RESCUE_NOW,
                 );
 
-                assert_eq!(chunks.len(), 1, "chunk still forwarded");
+                assert_eq!(chunks.len(), 2, "chunks still forwarded");
+                assert_eq!(errors_sr(root(&chunks[1])), None);
                 assert_eq!(
                     errors_sr(root(&chunks[0])),
                     None,
@@ -1554,7 +1802,8 @@ mod tests {
     #[test]
     fn test_processor_clones_share_one_budget() {
         let sampler_config = rate_limited_sampler_config(1.0);
-        let (config, processor) = rescue_setup(sampler_config);
+        let (mut config, processor) = rescue_setup(sampler_config);
+        config.error_rare_sample_tracer_drop = true;
         let processor_clone = processor.clone();
 
         // Ten errored chunks with the same signature but distinct IDs: five
@@ -1564,10 +1813,28 @@ mod tests {
         let mut observed = Vec::new();
         for (i, id) in ids.iter().enumerate() {
             let target = if i < 5 { &processor } else { &processor_clone };
+            let mut manual = errored_root_chunk(*id, -1);
+            manual
+                .tags
+                .insert(super::DECISION_MAKER_KEY.into(), "-4".into());
+            let mut healthy = errored_root_chunk(*id, -1);
+            healthy.spans[0].error = 0;
+            let excluded = run_rescue(
+                target,
+                &config,
+                vec![
+                    manual,
+                    healthy,
+                    errored_root_chunk(*id, -128),
+                    errored_root_chunk(*id, 1),
+                ],
+                RESCUE_NOW,
+            );
+            assert_eq!(rescued_count(&excluded), 0);
             let chunks = run_rescue(
                 target,
                 &config,
-                vec![errored_root_chunk(*id, 0)],
+                vec![errored_root_chunk(*id, if i % 2 == 0 { 0 } else { -1 })],
                 RESCUE_NOW,
             );
             observed.push(errors_sr(root(&chunks[0])).is_some());
@@ -1754,39 +2021,59 @@ mod tests {
 
     #[tokio::test]
     async fn test_stats_concentrator_observes_pre_rescue_chunks() {
-        let config = rescue_config(always_keep_sampler_config());
+        let mut config = rescue_config(always_keep_sampler_config());
+        config.error_rare_sample_tracer_drop = true;
+        let config = Arc::new(config);
         let (stats_tx, mut stats_rx) = tokio::sync::mpsc::unbounded_channel();
-        let concentrator = super::StatsConcentratorHandle::new(stats_tx);
         let processor = trace_processor::ServerlessTraceProcessor::new(
-            Some(concentrator),
+            Some(super::StatsConcentratorHandle::new(stats_tx)),
             sampler_for(&config.error_sampler),
         );
-
-        let res = processor
-            .process_traces(
-                Arc::new(config),
-                errored_p0_request(),
-                mpsc::channel(1).0,
-                Arc::new(create_test_metadata()),
-            )
-            .await;
-        assert!(res.is_ok());
-
-        // The concentrator must receive the chunk exactly as the tracer sent
-        // it: before rescue stamping, with no `_dd.errors_sr` anywhere.
-        let chunk = match stats_rx.try_recv() {
-            Ok(crate::stats_concentrator_service::ConcentratorCommand::AddChunk(chunk, _)) => {
-                *chunk
-            }
-            Ok(_) => panic!("expected an AddChunk command"),
-            Err(err) => panic!("expected an AddChunk command, got {err}"),
-        };
-        assert_eq!(chunk.priority, 0);
-        for span in &chunk.spans {
+        for (priority, dm, rescued) in [
+            (0, None, true),
+            (-1, Some("-3"), true),
+            (-1, Some("-4"), false),
+            (-128, None, false),
+        ] {
+            let (tx, mut rx) = mpsc::channel(1);
+            let res = processor
+                .process_traces(
+                    config.clone(),
+                    errored_request(priority, dm),
+                    tx,
+                    Arc::new(create_test_metadata()),
+                )
+                .await;
+            assert!(res.is_ok());
+            let chunk = match stats_rx.try_recv().expect("stats chunk") {
+                crate::stats_concentrator_service::ConcentratorCommand::AddChunk(chunk, _) => {
+                    *chunk
+                }
+                _ => panic!("expected AddChunk"),
+            };
+            assert_eq!(chunk.priority, priority);
             assert_eq!(
-                errors_sr(span),
-                None,
-                "stats must observe the pre-rescue chunk"
+                chunk
+                    .tags
+                    .get(super::DECISION_MAKER_KEY)
+                    .map(String::as_str),
+                dm
+            );
+            assert!(
+                chunk.spans.iter().all(|span| errors_sr(span).is_none()),
+                "stats precede stamping"
+            );
+            let send_data = rx.recv().await.expect("every chunk forwarded");
+            let TracerPayloadCollection::V07(payloads) = send_data.get_payloads() else {
+                panic!("expected V07");
+            };
+            let forwarded = &payloads[0].chunks[0];
+            assert_eq!(forwarded.priority, priority);
+            assert_eq!(
+                errors_sr(
+                    &forwarded.spans[trace_utils::get_root_span_index(&forwarded.spans).unwrap()]
+                ),
+                rescued.then_some(1.0)
             );
         }
     }

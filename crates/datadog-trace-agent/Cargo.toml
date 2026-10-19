@@ -43,6 +43,7 @@ bytes = "1.10.1"
 prost = "0.14.1"
 
 [dev-dependencies]
+tracing-test = { version = "0.2.5", default-features = false }
 flate2 = "1"
 rmp-serde = "1.1.1"
 serial_test = "2.0.0"
