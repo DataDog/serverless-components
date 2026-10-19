@@ -1290,9 +1290,23 @@ async fn test_mini_agent_dual_transport_with_real_flushers() {
     verify_stats_request(&mock_intake).await;
 }
 
-/// Builds a mixed four-trace payload for the error rescue wire test: an
-/// eligible errored automatic-drop chunk, a healthy automatic-drop chunk, an
-/// explicit user drop, and a positive-priority chunk.
+/// Identifiable stats-eligible roots covering automatic, tracer, and manual drops.
+fn error_rescue_cases() -> Vec<(&'static str, i32, i64, Option<&'static str>, bool)> {
+    vec![
+        ("rescued_error_p0", 0, 1, None, false),
+        ("healthy_p0", 0, 0, None, false),
+        ("negative_absent", -1, 1, None, false),
+        ("negative_nonmanual", -1, 1, Some("-3"), false),
+        ("negative_probabilistic", -1, 1, Some("-9"), false),
+        ("negative_empty", -1, 1, Some(""), false),
+        ("manual_root", -1, 1, Some("-4"), false),
+        ("manual_child", -1, 1, Some("-4"), true),
+        ("other_negative_manual_dm", -2, 1, Some("-4"), false),
+        ("no_priority", -128, 1, Some("-3"), false),
+        ("priority_1", 1, 1, None, false),
+        ("priority_2", 2, 1, None, false),
+    ]
+}
 fn create_error_rescue_test_payload() -> Vec<u8> {
     let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
     let span = |trace_id: u64, name: &str, error: i64, priority: f64| {
@@ -1302,36 +1316,61 @@ fn create_error_rescue_test_payload() -> Vec<u8> {
         span["metrics"]["_sampling_priority_v1"] = json!(priority);
         span
     };
-    let traces = vec![
-        vec![span(700, "rescued_error_p0", 1, 0.0)],
-        vec![span(701, "healthy_p0", 0, 0.0)],
-        vec![span(702, "user_drop_p0", 1, -1.0)],
-        vec![span(703, "priority_1", 1, 1.0)],
-    ];
+    let traces: Vec<_> = error_rescue_cases()
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, priority, error, dm, on_child))| {
+            let id = 700 + index as u64 * 10;
+            let mut root = span(id, name, error, f64::from(priority));
+            if let Some(dm) = dm
+                && !on_child
+            {
+                root["meta"]["_dd.p.dm"] = json!(dm);
+            }
+            if on_child {
+                let mut child = create_test_json_span(id, id + 2, id + 1, start, false);
+                child["name"] = json!("manual_child_span");
+                child["meta"]["span.kind"] = json!("server");
+                child["meta"]["_dd.p.dm"] = json!(dm.unwrap());
+                child["metrics"]["_sampling_priority_v1"] = json!(priority);
+                vec![root, child]
+            } else {
+                vec![root]
+            }
+        })
+        .collect();
     rmp_serde::to_vec(&traces).expect("Failed to serialize error rescue test trace")
 }
 
-/// End-to-end error rescue verification against the outbound wire payload and
-/// agent-computed stats: an eligible errored P0 chunk is rescued (positive
-/// `_dd.errors_sr` on the root, priority still 0) while all other chunks are
-/// forwarded unchanged, and every submitted span still contributes to stats.
-/// This proves the wire contract only; backend retention of rescued chunks is
-/// established by the backend implementation, not by this fake intake.
-#[cfg(test)]
+/// Checks unconditional promotion, opt-in rescue, unchanged priorities, forwarding,
+/// and stats against the actual outbound payload. Fake intake proves the wire
+/// contract, not backend retention.
 #[tokio::test]
 #[serial]
-async fn test_error_rescue_outbound_payload_and_stats() {
+async fn test_error_rescue_feature_off_outbound_payload_and_stats() {
+    verify_error_rescue_outbound_payload_and_stats(false).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_error_rescue_feature_on_outbound_payload_and_stats() {
+    verify_error_rescue_outbound_payload_and_stats(true).await;
+}
+
+async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
     use datadog_agent_trace_sampler::{ErrorSamplerConfig, ErrorSamplerMode};
     use libdd_trace_protobuf::pb::{AgentPayload, TraceChunk};
     use prost::Message as _;
     use std::collections::HashMap;
 
-    let mock_server: MockServer = MockServer::start().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mock_intake = MockIntake::start().await;
 
-    let mut config = create_tcp_test_config(8137); // use different port to avoid race condition with other tests
-    configure_mock_endpoints(&mut config, &mock_server.url());
+    // nextest runs tests in separate processes, so #[serial] alone cannot
+    // prevent the paired tests from competing for the same listener.
+    let mut config = create_tcp_test_config(if feature { 8138 } else { 8137 });
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.agent_stats_computation_enabled = true;
+    config.error_rare_sample_tracer_drop = feature;
     // Deterministic rescue settings: every eligible chunk is kept at 1.0.
     config.error_sampler = ErrorSamplerConfig {
         mode: ErrorSamplerMode::AlwaysKeep,
@@ -1377,11 +1416,17 @@ async fn test_error_rescue_outbound_payload_and_stats() {
     .expect("Failed to send /v0.4/traces request");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
-    verify_trace_request(&mock_server).await;
+    verify_trace_request(&mock_intake).await;
+    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
+    let _ = shutdown_tx.send(true);
+    tokio::time::timeout(Duration::from_secs(10), agent_handle)
+        .await
+        .expect("bounded agent shutdown")
+        .expect("agent task");
 
     // Decode the actual outbound protobuf payload(s) and locate each submitted
     // chunk by its root span name.
-    let trace_reqs = mock_server.get_requests_for_path("/api/v0.2/traces");
+    let trace_reqs = mock_intake.requests_for_path("/api/v0.2/traces");
     let mut chunks_by_root_name: HashMap<String, TraceChunk> = HashMap::new();
     for req in &trace_reqs {
         let agent_payload = AgentPayload::decode(&req.body[..])
@@ -1399,13 +1444,11 @@ async fn test_error_rescue_outbound_payload_and_stats() {
         }
     }
 
-    let names = [
-        "rescued_error_p0",
-        "healthy_p0",
-        "user_drop_p0",
-        "priority_1",
-    ];
-    for name in names {
+    let names: Vec<_> = error_rescue_cases()
+        .into_iter()
+        .map(|case| case.0)
+        .collect();
+    for name in names.iter().copied() {
         assert!(
             chunks_by_root_name.contains_key(name),
             "expected chunk {name} to be forwarded to the backend, got: {:?}",
@@ -1433,37 +1476,49 @@ async fn test_error_rescue_outbound_payload_and_stats() {
         "rescued chunk priority must remain 0, no promotion"
     );
 
-    // Non-candidate chunks receive no rescue metric and keep their priority.
-    assert_eq!(errors_sr_of("healthy_p0"), None, "healthy P0 not rescued");
-    assert_eq!(chunks_by_root_name["healthy_p0"].priority, 0);
-    assert_eq!(
-        errors_sr_of("user_drop_p0"),
-        None,
-        "explicit user drop never rescued"
-    );
-    assert_eq!(chunks_by_root_name["user_drop_p0"].priority, -1);
-    assert_eq!(
-        errors_sr_of("priority_1"),
-        None,
-        "positive priority not rescued"
-    );
-    assert_eq!(chunks_by_root_name["priority_1"].priority, 1);
+    for (name, priority, error, dm, on_child) in error_rescue_cases() {
+        let chunk = &chunks_by_root_name[name];
+        let eligible = error != 0
+            && (priority == 0
+                || (feature
+                    && priority < 0
+                    && priority != -128
+                    && !(priority == -1 && dm == Some("-4"))));
+        assert_eq!(
+            errors_sr_of(name),
+            eligible.then_some(1.0),
+            "{name}, feature={feature}"
+        );
+        assert_eq!(chunk.priority, priority, "{name}");
+        assert_eq!(chunk.tags.get("_dd.p.dm").map(String::as_str), dm, "{name}");
+        assert_eq!(chunk.spans.len(), if on_child { 2 } else { 1 });
+        for span in &chunk.spans {
+            assert_eq!(
+                span.metrics.get("_sampling_priority_v1").copied(),
+                Some(f64::from(priority)),
+                "{name}"
+            );
+            let expected_dm = if (span.parent_id != 0) == on_child {
+                dm
+            } else {
+                None
+            };
+            assert_eq!(
+                span.meta.get("_dd.p.dm").map(String::as_str),
+                expected_dm,
+                "{name}"
+            );
+            if span.parent_id != 0 {
+                assert!(!span.metrics.contains_key("_dd.errors_sr"));
+            }
+        }
+    }
 
-    // Wait for the stats flush, then assert agent-computed stats include all
-    // four submitted spans, independent of rescue decisions.
-    tokio::time::sleep(FLUSH_WAIT_DURATION).await;
-    let _ = shutdown_tx.send(true);
-    let _ = agent_handle.await;
-
-    let stats_reqs = mock_server.get_requests_for_path("/api/v0.2/stats");
-    assert!(
-        !stats_reqs.is_empty(),
-        "Expected at least one stats request"
-    );
-
-    let all_groups: Vec<_> = stats_reqs
-        .iter()
-        .map(|req| decode_stats_payload(&req.body))
+    // Agent-computed stats include every submitted span, independent of rescue.
+    verify_stats_request(&mock_intake).await;
+    let all_groups: Vec<_> = mock_intake
+        .stats_payloads()
+        .into_iter()
         .flat_map(|payload| {
             payload
                 .stats
@@ -1473,7 +1528,7 @@ async fn test_error_rescue_outbound_payload_and_stats() {
         })
         .collect();
 
-    for name in names {
+    for name in names.into_iter().chain(["manual_child_span"]) {
         let group = all_groups
             .iter()
             .find(|g| g.name == name)
