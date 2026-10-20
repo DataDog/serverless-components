@@ -1158,3 +1158,209 @@ async fn test_default_logging_warns_once_per_dropped_oversized_entry() {
     assert_eq!(logged.warnings(), 2);
     assert_eq!(logged.errors(), 0, "default logging uses warn!, not error!");
 }
+
+/// A resolver that counts its calls and returns `keys` in order; the last key repeats.
+fn resolver(keys: &[Option<&'static str>], calls: Arc<AtomicUsize>) -> ApiKeyResolver {
+    let keys: Vec<Option<String>> = keys.iter().map(|k| k.map(str::to_string)).collect();
+    Arc::new(
+        move || -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>> {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            let key = keys.get(n).or(keys.last()).cloned().flatten();
+            Box::pin(async move { key })
+        },
+    )
+}
+
+/// In Datadog mode, `with_datadog_intake_url` replaces the public intake URL; headers
+/// and compression are unchanged.
+#[tokio::test]
+async fn test_datadog_intake_url_override_is_used_in_datadog_mode() {
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/custom/path")
+        .match_header("DD-API-KEY", "test-api-key")
+        .match_header("DD-PROTOCOL", "agent-json")
+        .match_header("Content-Encoding", "zstd")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let config = LogFlusherConfig {
+        mode: Destination::Datadog,
+        use_compression: true,
+        ..config_for_mock("http://unused")
+    };
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config, client, handle.clone())
+        .with_datadog_intake_url(format!("{}/custom/path", server.url()));
+    handle
+        .insert_batch(vec![make_entry("override")])
+        .expect("insert");
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    mock.assert_async().await;
+}
+
+/// `with_datadog_intake_url` does not affect Observability Pipelines Worker mode.
+#[tokio::test]
+async fn test_datadog_intake_url_override_is_ignored_for_opw() {
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/v2/logs")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone())
+        .with_datadog_intake_url("http://127.0.0.1:1/never");
+    handle
+        .insert_batch(vec![make_entry("opw")])
+        .expect("insert");
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    mock.assert_async().await;
+}
+
+/// With a resolver, the primary uses the resolved key, not `LogFlusherConfig::api_key`.
+#[tokio::test]
+async fn test_api_key_resolver_key_is_used_for_the_primary() {
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/v2/logs")
+        .match_header("DD-API-KEY", "resolved-key")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone())
+        .with_api_key_resolver(resolver(
+            &[Some("resolved-key")],
+            Arc::new(AtomicUsize::new(0)),
+        ));
+    handle
+        .insert_batch(vec![make_entry("keyed")])
+        .expect("insert");
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    mock.assert_async().await;
+}
+
+/// The resolver is called on every flush, even when there is nothing to send.
+#[tokio::test]
+async fn test_api_key_resolver_is_called_on_every_flush() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock("http://127.0.0.1:1"), client, handle)
+        .with_api_key_resolver(resolver(&[Some("k")], calls.clone()));
+
+    for _ in 0..3 {
+        assert!(flusher.flush(vec![]).await.is_empty());
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+/// A key that changes between flushes (e.g. a reloaded secret) is used on the next flush.
+#[tokio::test]
+async fn test_reloaded_api_key_is_used_on_the_next_flush() {
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let first = server
+        .mock("POST", "/api/v2/logs")
+        .match_header("DD-API-KEY", "key-1")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let second = server
+        .mock("POST", "/api/v2/logs")
+        .match_header("DD-API-KEY", "key-2")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone())
+        .with_api_key_resolver(resolver(
+            &[Some("key-1"), Some("key-2")],
+            Arc::new(AtomicUsize::new(0)),
+        ));
+
+    handle
+        .insert_batch(vec![make_entry("one")])
+        .expect("insert");
+    assert!(flusher.flush(vec![]).await.is_empty());
+    handle
+        .insert_batch(vec![make_entry("two")])
+        .expect("insert");
+    assert!(flusher.flush(vec![]).await.is_empty());
+    first.assert_async().await;
+    second.assert_async().await;
+}
+
+/// If the key cannot be resolved, the primary is skipped with one error line, and
+/// additional endpoints are still sent with their own keys.
+#[tokio::test(flavor = "current_thread")]
+async fn test_unresolved_api_key_skips_the_primary_but_sends_extras() {
+    let (logged, _guard) = LevelCounter::install();
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut primary = mockito::Server::new_async().await;
+    let mut extra = mockito::Server::new_async().await;
+    let primary_mock = primary
+        .mock("POST", "/api/v2/logs")
+        .expect(0)
+        .create_async()
+        .await;
+    let extra_mock = extra
+        .mock("POST", "/extra")
+        .match_header("DD-API-KEY", "extra-key")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let config = LogFlusherConfig {
+        additional_endpoints: vec![LogsAdditionalEndpoint {
+            api_key: "extra-key".to_string(),
+            url: format!("{}/extra", extra.url()),
+            is_reliable: true,
+        }],
+        ..config_for_mock(&primary.url())
+    };
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config, client, handle.clone())
+        .with_api_key_resolver(resolver(&[None], Arc::new(AtomicUsize::new(0))));
+    handle
+        .insert_batch(vec![make_entry("log")])
+        .expect("insert");
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    primary_mock.assert_async().await;
+    extra_mock.assert_async().await;
+    assert_eq!((logged.warnings(), logged.errors()), (0, 1));
+}
+
+/// The unresolved-key error is logged on every flush, even with nothing to send.
+#[tokio::test(flavor = "current_thread")]
+async fn test_unresolved_api_key_logs_an_error_even_without_batches() {
+    let (logged, _guard) = LevelCounter::install();
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock("http://127.0.0.1:1"), client, handle)
+        .with_api_key_resolver(resolver(&[None], Arc::new(AtomicUsize::new(0))));
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    assert!(flusher.flush(vec![]).await.is_empty());
+    assert_eq!(logged.errors(), 2);
+}

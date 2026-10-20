@@ -1,7 +1,10 @@
 // Copyright 2025-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+use std::future::Future;
 use std::io::Write as _;
+use std::pin::Pin;
+use std::sync::Arc;
 
 use futures::future::join_all;
 use reqwest::Client;
@@ -15,12 +18,18 @@ use crate::errors::FlushError;
 /// Maximum number of send attempts before giving up on a batch.
 const MAX_FLUSH_ATTEMPTS: u32 = 3;
 
+/// Returns the API key for the primary endpoint, or `None` if it cannot be resolved.
+pub type ApiKeyResolver =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<String>> + Send>> + Send + Sync>;
+
 /// Drains log batches from an [`AggregatorHandle`] and ships them to Datadog.
 #[derive(Clone)]
 pub struct LogFlusher {
     config: LogFlusherConfig,
     client: Client,
     aggregator_handle: AggregatorHandle,
+    api_key_resolver: Option<ApiKeyResolver>,
+    datadog_intake_url: Option<String>,
 }
 
 impl LogFlusher {
@@ -38,7 +47,28 @@ impl LogFlusher {
             config,
             client,
             aggregator_handle,
+            api_key_resolver: None,
+            datadog_intake_url: None,
         }
+    }
+
+    /// Get the primary endpoint's API key from `resolver` on every flush instead of using
+    /// `LogFlusherConfig::api_key`. If it returns `None`, the primary endpoint is skipped
+    /// for that flush (its batches are dropped, with one `error!`); additional endpoints
+    /// still use their own keys.
+    #[must_use]
+    pub fn with_api_key_resolver(mut self, resolver: ApiKeyResolver) -> Self {
+        self.api_key_resolver = Some(resolver);
+        self
+    }
+
+    /// In `Destination::Datadog` mode, send to `url` (full URL, including the path) instead
+    /// of `https://http-intake.logs.{site}/api/v2/logs`. Ignored in Observability Pipelines
+    /// Worker mode.
+    #[must_use]
+    pub fn with_datadog_intake_url(mut self, url: impl Into<String>) -> Self {
+        self.datadog_intake_url = Some(url.into());
+        self
     }
 
     /// Drain the aggregator, ship all pending batches to Datadog, and redrive any
@@ -55,7 +85,8 @@ impl LogFlusher {
     /// A vec of `RequestBuilder`s that still failed after all in-call retries.
     /// The caller should pass these back on the next invocation to re-attempt
     /// delivery. An empty vec means every batch was delivered successfully
-    /// (or encountered a permanent error and was dropped — those are logged).
+    /// (or encountered a permanent error, or the primary API key could not be
+    /// resolved, and was dropped — those are logged).
     ///
     /// Failures on additional endpoints are logged as warnings but their
     /// builders are not included in the returned vec (best-effort delivery).
@@ -88,6 +119,19 @@ impl LogFlusher {
             }
         };
 
+        let primary_api_key = match &self.api_key_resolver {
+            None => Some(self.config.api_key.clone()),
+            Some(resolve) => {
+                let key = resolve().await;
+                if key.is_none() {
+                    error!(
+                        "failed to resolve the logs API key; skipping the primary endpoint for this flush"
+                    );
+                }
+                key
+            }
+        };
+
         if batches.is_empty() {
             debug!("no log batches to flush");
             return failed;
@@ -99,12 +143,17 @@ impl LogFlusher {
 
         let batch_futures = batches.iter().map(|batch| {
             let primary_url = primary_url.clone();
+            let primary_api_key = primary_api_key.as_deref();
             async move {
                 // Primary endpoint — failures are tracked for cross-invocation retry.
                 let is_primary_datadog = matches!(self.config.mode, Destination::Datadog);
-                let primary_result = self
-                    .ship_batch(batch, &primary_url, primary_use_compression, &self.config.api_key, is_primary_datadog)
-                    .await;
+                let primary_result = match primary_api_key {
+                    Some(api_key) => {
+                        self.ship_batch(batch, &primary_url, primary_use_compression, api_key, is_primary_datadog)
+                            .await
+                    }
+                    None => Ok(()),
+                };
 
                 // Additional endpoints — best-effort; failures are only logged.
                 // Additional endpoints are always Datadog intakes regardless of the
@@ -145,7 +194,9 @@ impl LogFlusher {
     fn resolve_endpoint(&self) -> (String, bool) {
         match &self.config.mode {
             Destination::Datadog => {
-                let url = format!("https://http-intake.logs.{}/api/v2/logs", self.config.site);
+                let url = self.datadog_intake_url.clone().unwrap_or_else(|| {
+                    format!("https://http-intake.logs.{}/api/v2/logs", self.config.site)
+                });
                 (url, self.config.use_compression)
             }
             Destination::ObservabilityPipelinesWorker { url } => {
