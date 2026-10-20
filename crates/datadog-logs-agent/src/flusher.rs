@@ -12,7 +12,7 @@ use tracing::{debug, error, warn};
 use zstd::stream::write::Encoder;
 
 use crate::aggregator::AggregatorHandle;
-use crate::config::{Destination, LogFlusherConfig};
+use crate::config::{Destination, FailureLogging, FlushPolicy, LogFlusherConfig};
 use crate::errors::FlushError;
 
 /// Maximum number of send attempts before giving up on a batch.
@@ -30,6 +30,7 @@ pub struct LogFlusher {
     aggregator_handle: AggregatorHandle,
     api_key_resolver: Option<ApiKeyResolver>,
     datadog_intake_url: Option<String>,
+    policy: FlushPolicy,
 }
 
 impl LogFlusher {
@@ -49,6 +50,7 @@ impl LogFlusher {
             aggregator_handle,
             api_key_resolver: None,
             datadog_intake_url: None,
+            policy: FlushPolicy::default(),
         }
     }
 
@@ -71,12 +73,37 @@ impl LogFlusher {
         self
     }
 
+    /// Use `policy` instead of the default flush behavior.
+    #[must_use]
+    pub fn with_policy(mut self, policy: FlushPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Re-send requests handed back by an earlier `flush` or `retry`, without draining the
+    /// aggregator and without resolving the API key again. Returns the requests that still
+    /// failed.
+    pub async fn retry(
+        &self,
+        requests: Vec<reqwest::RequestBuilder>,
+    ) -> Vec<reqwest::RequestBuilder> {
+        let futures = requests
+            .into_iter()
+            .map(|builder| async move { self.send_with_retry(builder).await.err() });
+        join_all(futures)
+            .await
+            .into_iter()
+            .flatten()
+            .map(|b| *b)
+            .collect()
+    }
+
     /// Drain the aggregator, ship all pending batches to Datadog, and redrive any
     /// builders that failed transiently in the previous invocation.
     ///
     /// # Arguments
     ///
-    /// * `retry_requests` — builders returned by a previous `flush` call that
+    /// * `retry_requests` — builders returned by a previous `flush` or `retry` call that
     ///   exhausted their per-invocation retry budget. They are re-sent before
     ///   draining new batches from the aggregator.
     ///
@@ -89,13 +116,12 @@ impl LogFlusher {
     /// resolved, and was dropped — those are logged).
     ///
     /// Failures on additional endpoints are logged as warnings but their
-    /// builders are not included in the returned vec (best-effort delivery).
+    /// builders are not included in the returned vec (best-effort delivery),
+    /// unless `FlushPolicy::return_additional_endpoint_failures` is set.
     pub async fn flush(
         &self,
         retry_requests: Vec<reqwest::RequestBuilder>,
     ) -> Vec<reqwest::RequestBuilder> {
-        let mut failed: Vec<reqwest::RequestBuilder> = Vec::new();
-
         // Redrive builders that failed transiently in the previous invocation.
         if !retry_requests.is_empty() {
             debug!(
@@ -103,12 +129,7 @@ impl LogFlusher {
                 retry_requests.len()
             );
         }
-        let retry_futures = retry_requests
-            .into_iter()
-            .map(|builder| async move { self.send_with_retry(builder).await.err() });
-        for b in join_all(retry_futures).await.into_iter().flatten() {
-            failed.push(*b);
-        }
+        let mut failed = self.retry(retry_requests).await;
 
         // Drain new batches from the aggregator.
         let batches = match self.aggregator_handle.get_batches().await {
@@ -145,47 +166,56 @@ impl LogFlusher {
             let primary_url = primary_url.clone();
             let primary_api_key = primary_api_key.as_deref();
             async move {
-                // Primary endpoint — failures are tracked for cross-invocation retry.
                 let is_primary_datadog = matches!(self.config.mode, Destination::Datadog);
-                let primary_result = match primary_api_key {
-                    Some(api_key) => {
-                        self.ship_batch(batch, &primary_url, primary_use_compression, api_key, is_primary_datadog)
-                            .await
+                // Primary endpoint — failures are tracked for cross-invocation retry.
+                let primary = async {
+                    match primary_api_key {
+                        Some(api_key) => {
+                            self.ship_batch(batch, &primary_url, primary_use_compression, api_key, is_primary_datadog)
+                                .await
+                        }
+                        None => Ok(()),
                     }
-                    None => Ok(()),
                 };
 
-                // Additional endpoints — best-effort; failures are only logged.
                 // Additional endpoints are always Datadog intakes regardless of the
                 // primary destination, so DD-PROTOCOL: agent-json is always required.
                 // They use config.use_compression independently of the primary: OPW
                 // primaries disable compression for themselves but Datadog extras
                 // should still honour DD_LOGS_CONFIG_USE_COMPRESSION.
-                let extra_futures = self.config.additional_endpoints.iter().map(|endpoint| {
-                    let url = endpoint.url.clone();
-                    let api_key = endpoint.api_key.clone();
-                    async move {
-                        if self
-                            .ship_batch(batch, &url, self.config.use_compression, &api_key, true)
-                            .await
-                            .is_err()
-                        {
-                            warn!(
-                                "failed to ship log batch to additional endpoint {url} after all retries"
-                            );
-                        }
+                let extras = join_all(self.config.additional_endpoints.iter().map(|endpoint| async move {
+                    let url = &endpoint.url;
+                    let result = self
+                        .ship_batch(batch, url, self.config.use_compression, &endpoint.api_key, true)
+                        .await;
+                    if result.is_err() && !self.policy.return_additional_endpoint_failures {
+                        warn!(
+                            "failed to ship log batch to additional endpoint {url} after all retries"
+                        );
                     }
-                });
-                join_all(extra_futures).await;
+                    result
+                }));
 
-                primary_result
+                let (primary_result, extra_results) = if self.policy.parallel_additional_endpoints {
+                    futures::future::join(primary, extras).await
+                } else {
+                    let primary_result = primary.await;
+                    (primary_result, extras.await)
+                };
+
+                let mut batch_failed = Vec::new();
+                if let Err(b) = primary_result {
+                    batch_failed.push(*b);
+                }
+                if self.policy.return_additional_endpoint_failures {
+                    batch_failed.extend(extra_results.into_iter().filter_map(|r| r.err().map(|b| *b)));
+                }
+                batch_failed
             }
         });
 
-        for result in join_all(batch_futures).await {
-            if let Err(b) = result {
-                failed.push(*b);
-            }
+        for batch_failed in join_all(batch_futures).await {
+            failed.extend(batch_failed);
         }
 
         failed
@@ -250,7 +280,7 @@ impl LogFlusher {
     /// # Returns
     ///
     /// * `Ok(())` — success **or** a permanent error (no point retrying; already
-    ///   logged at `warn!`).
+    ///   logged at `warn!`, or `error!` under `FailureLogging::OncePerRequest`).
     /// * `Err(Box<builder>)` — all attempts exhausted on a transient error. The
     ///   original builder is returned (boxed) so the caller can retry it next invocation.
     async fn send_with_retry(
@@ -258,6 +288,7 @@ impl LogFlusher {
         builder: reqwest::RequestBuilder,
     ) -> Result<(), Box<reqwest::RequestBuilder>> {
         let mut attempts: u32 = 0;
+        let mut last_failure: String;
 
         loop {
             attempts += 1;
@@ -288,33 +319,65 @@ impl LogFlusher {
                     // 408 = Request Timeout (transient network condition)
                     // 425 = Too Early (TLS 0-RTT replay rejection)
                     // 429 = Too Many Requests (intake rate-limiting)
+                    // With FlushPolicy::retry_client_errors, every 4xx except 403 is retried too.
                     //
                     // TODO: for 429, parse the `Retry-After` response header
                     // and sleep for the indicated duration before retrying
                     // instead of retrying immediately, to avoid hammering the
                     // intake endpoint while it is still rate-limiting us.
-                    let retryable_4xx = matches!(status.as_u16(), 408 | 425 | 429);
+                    let retryable_4xx = matches!(status.as_u16(), 408 | 425 | 429)
+                        || (self.policy.retry_client_errors && status.as_u16() != 403);
 
                     // Permanent client errors — stop immediately, do not retry.
                     if status.as_u16() >= 400 && status.as_u16() < 500 && !retryable_4xx {
-                        warn!("permanent error from logs intake: {status}; dropping batch");
+                        match self.policy.failure_logging {
+                            FailureLogging::PerAttempt => {
+                                warn!("permanent error from logs intake: {status}; dropping batch");
+                            }
+                            FailureLogging::OncePerRequest => {
+                                error!(
+                                    "permanent error from logs intake: {status}; dropping batch"
+                                );
+                            }
+                        }
                         return Ok(());
                     }
 
-                    // Transient server errors — fall through to retry.
-                    warn!(
-                        "transient error from logs intake: {status} (attempt {attempts}/{MAX_FLUSH_ATTEMPTS})"
-                    );
+                    // Transient errors (5xx, retryable 4xx) — fall through to retry.
+                    last_failure = format!("status {status}");
+                    match self.policy.failure_logging {
+                        FailureLogging::PerAttempt => warn!(
+                            "transient error from logs intake: {status} (attempt {attempts}/{MAX_FLUSH_ATTEMPTS})"
+                        ),
+                        FailureLogging::OncePerRequest => debug!(
+                            "transient error from logs intake: {status} (attempt {attempts}/{MAX_FLUSH_ATTEMPTS})"
+                        ),
+                    }
                 }
                 Err(e) => {
-                    warn!(
-                        "network error sending log batch (attempt {attempts}/{MAX_FLUSH_ATTEMPTS}): {e}"
-                    );
+                    match self.policy.failure_logging {
+                        FailureLogging::PerAttempt => warn!(
+                            "network error sending log batch (attempt {attempts}/{MAX_FLUSH_ATTEMPTS}): {e}"
+                        ),
+                        FailureLogging::OncePerRequest => debug!(
+                            "network error sending log batch (attempt {attempts}/{MAX_FLUSH_ATTEMPTS}): {e}"
+                        ),
+                    }
+                    last_failure = e.to_string();
                 }
             }
 
             if attempts >= MAX_FLUSH_ATTEMPTS {
-                warn!("log batch failed after {attempts} attempts; will retry next flush");
+                match self.policy.failure_logging {
+                    FailureLogging::PerAttempt => {
+                        warn!("log batch failed after {attempts} attempts; will retry next flush");
+                    }
+                    FailureLogging::OncePerRequest => {
+                        error!(
+                            "log batch failed after {attempts} attempts ({last_failure}); will retry next flush"
+                        );
+                    }
+                }
                 return Err(Box::new(builder));
             }
         }
