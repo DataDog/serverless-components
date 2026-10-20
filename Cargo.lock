@@ -691,6 +691,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "datadog-agent-trace-sampler",
  "datadog-fips",
  "duplicate",
  "flate2",
@@ -717,6 +718,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]

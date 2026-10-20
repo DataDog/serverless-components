@@ -33,6 +33,7 @@ libdd-trace-stats = { version = "7.0.0", features = ["stats-obfuscation"] }
 libdd-common = { workspace = true, features = ["https"] }
 libdd-trace-obfuscation = { workspace = true, features = ["https"] }
 libdd-trace-utils = { workspace = true, features = ["https", "mini_agent"] }
+datadog-agent-trace-sampler = { path = "../datadog-agent-trace-sampler" }
 datadog-fips = { path = "../datadog-fips" }
 reqwest = { version = "0.12.23", features = [
     "json",
@@ -42,6 +43,7 @@ bytes = "1.10.1"
 prost = "0.14.1"
 
 [dev-dependencies]
+tracing-test = { version = "0.2.5", default-features = false }
 flate2 = "1"
 rmp-serde = "1.1.1"
 serial_test = "2.0.0"
