@@ -10,9 +10,10 @@ use crate::{
     additional_endpoints::deserialize_additional_endpoints,
     apm_replace_rule::deserialize_apm_replace_rules,
     deserialize_apm_filter_tags, deserialize_array_from_comma_separated_string,
-    deserialize_key_value_pairs, deserialize_option_lossless,
-    deserialize_optional_bool_from_anything, deserialize_optional_string,
-    deserialize_string_or_int, deserialize_trace_propagation_style, deserialize_with_default,
+    deserialize_comma_then_space_separated_string, deserialize_key_value_pairs,
+    deserialize_option_lossless, deserialize_optional_bool_from_anything,
+    deserialize_optional_string, deserialize_string_or_int, deserialize_trace_propagation_style,
+    deserialize_with_default,
     log_level::LogLevel,
     logs_additional_endpoints::{LogsAdditionalEndpoint, deserialize_logs_additional_endpoints},
     merge_hashmap, merge_option, merge_option_to_value, merge_string, merge_vec,
@@ -65,6 +66,8 @@ pub struct EnvConfig {
     /// @env `DD_PROXY_NO_PROXY`
     ///
     /// Specify hosts the Agent should connect to directly, bypassing the proxy.
+    // Comma-only splitting, which diverges from Go: the Go agent parses NO_PROXY
+    // with comma+space via strings.FieldsFunc and drops empty entries.
     #[serde(deserialize_with = "deserialize_array_from_comma_separated_string")]
     pub proxy_no_proxy: Vec<String>,
     /// @env `DD_HTTP_PROTOCOL`
@@ -231,7 +234,7 @@ pub struct EnvConfig {
     #[serde(deserialize_with = "deserialize_option_lossless")]
     pub apm_config_compression_level: Option<i32>,
     /// @env `DD_APM_FEATURES`
-    #[serde(deserialize_with = "deserialize_array_from_comma_separated_string")]
+    #[serde(deserialize_with = "deserialize_comma_then_space_separated_string")]
     pub apm_features: Vec<String>,
     /// @env `DD_APM_ADDITIONAL_ENDPOINTS`
     ///
@@ -939,7 +942,7 @@ mod tests {
             jail.set_env("DD_APM_CONFIG_COMPRESSION_LEVEL", "2");
             jail.set_env(
                 "DD_APM_FEATURES",
-                "enable_otlp_compute_top_level_by_span_kind,enable_stats_by_span_kind",
+                "enable_otlp_compute_top_level_by_span_kind enable_stats_by_span_kind",
             );
             jail.set_env("DD_APM_ADDITIONAL_ENDPOINTS", "{\"https://trace.agent.datadoghq.com\": [\"apikey2\", \"apikey3\"], \"https://trace.agent.datadoghq.eu\": [\"apikey4\"]}");
             jail.set_env(
@@ -1259,6 +1262,40 @@ mod tests {
                 .expect("Failed to load config");
 
             assert!(config.dd_org_uuid.is_empty());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_apm_features_comma_then_space_separated_from_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+
+            let inputs_and_expected = [
+                ("a b", vec!["a".to_string(), "b".to_string()]),
+                ("a,b", vec!["a".to_string(), "b".to_string()]),
+                // Comma wins as delimiter, space stays inside the entry.
+                ("a,b c", vec!["a".to_string(), "b c".to_string()]),
+                // Trimming plus empty-entry dropping.
+                (" a ,, b ", vec!["a".to_string(), "b".to_string()]),
+                // Split on the literal space char, then trim.
+                (" a  b ", vec!["a".to_string(), "b".to_string()]),
+                ("", vec![]),
+                ("   ", vec![]),
+                // Tab is not a delimiter; it stays inside the entry.
+                ("a\tb", vec!["a\tb".to_string()]),
+            ];
+
+            for (input, expected) in inputs_and_expected {
+                jail.set_env("DD_APM_FEATURES", input);
+
+                let mut config: Config = Config::default();
+                EnvConfigSource
+                    .load(&mut config)
+                    .expect("Failed to load config");
+
+                assert_eq!(config.apm_features, expected, "input: {input:?}");
+            }
             Ok(())
         });
     }
