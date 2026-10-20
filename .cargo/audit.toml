@@ -13,10 +13,20 @@
 #   with a HelloRetryRequest, and the advisory excludes those servers.
 # RUSTSEC-2026-0346: derived Debug impls can expose TLS session secrets, but
 #   only for custom ClientSessionStore implementations that log them.
+#
+# Distrusted emSign intermediates (CVE-2026-111943):
+# RUSTSEC-2026-0382: fixed in rustls-webpki >= 0.103.16, which also requires
+#   aws-lc-rs >= 1.18. FIPS clients reject the distrusted keys through the
+#   certificate_distrust wrapper in crates/datadog-fips; other clients use
+#   webpki-roots >= 1.0.10, which removes emSign ECC Root CA - G3.
+# RUSTSEC-2026-0381: flags webpki-roots 0.26.11, which only re-exports the
+#   webpki-roots 1.x list (locked at 1.0.10). hyper-http-proxy requires ^0.26.
 [advisories]
 ignore = [
     "RUSTSEC-2026-0285",
     "RUSTSEC-2026-0348",
     "RUSTSEC-2026-0349",
     "RUSTSEC-2026-0346",
+    "RUSTSEC-2026-0382",
+    "RUSTSEC-2026-0381",
 ]
