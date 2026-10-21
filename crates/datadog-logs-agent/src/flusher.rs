@@ -4,7 +4,7 @@
 use std::future::Future;
 use std::io::Write as _;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use futures::future::join_all;
 use reqwest::Client;
@@ -167,11 +167,14 @@ impl LogFlusher {
             let primary_api_key = primary_api_key.as_deref();
             async move {
                 let is_primary_datadog = matches!(self.config.mode, Destination::Datadog);
+                // Compressed at most once, on first use, and reused by every endpoint that
+                // wants compression.
+                let compressed = &OnceLock::new();
                 // Primary endpoint — failures are tracked for cross-invocation retry.
                 let primary = async {
                     match primary_api_key {
                         Some(api_key) => {
-                            self.ship_batch(batch, &primary_url, primary_use_compression, api_key, is_primary_datadog)
+                            self.ship_batch(batch, compressed, &primary_url, primary_use_compression, api_key, is_primary_datadog)
                                 .await
                         }
                         None => Ok(()),
@@ -186,7 +189,7 @@ impl LogFlusher {
                 let extras = join_all(self.config.additional_endpoints.iter().map(|endpoint| async move {
                     let url = &endpoint.url;
                     let result = self
-                        .ship_batch(batch, url, self.config.use_compression, &endpoint.api_key, true)
+                        .ship_batch(batch, compressed, url, self.config.use_compression, &endpoint.api_key, true)
                         .await;
                     if result.is_err() && !self.policy.return_additional_endpoint_failures {
                         warn!(
@@ -239,14 +242,15 @@ impl LogFlusher {
     async fn ship_batch(
         &self,
         batch: &[u8],
+        compressed: &OnceLock<Result<Vec<u8>, FlushError>>,
         url: &str,
         compress: bool,
         api_key: &str,
         is_datadog_intake: bool,
     ) -> Result<(), Box<reqwest::RequestBuilder>> {
         let (body, content_encoding) = if compress {
-            match compress_zstd(batch, self.config.compression_level) {
-                Ok(compressed) => (compressed, Some("zstd")),
+            match compressed.get_or_init(|| compress_zstd(batch, self.config.compression_level)) {
+                Ok(bytes) => (bytes.clone(), Some("zstd")),
                 Err(e) => {
                     warn!("failed to compress log batch, sending uncompressed: {e}");
                     (batch.to_vec(), None)

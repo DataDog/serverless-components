@@ -86,7 +86,7 @@ async fn test_flush_sends_post_with_api_key_header() {
     let url = format!("{}/api/v2/logs", mock_server.url());
     let batch = b"[{\"message\":\"test\"}]";
     flusher
-        .ship_batch(batch, &url, false, "test-api-key", true)
+        .ship_batch(batch, &OnceLock::new(), &url, false, "test-api-key", true)
         .await
         .expect("ship_batch should succeed");
 
@@ -1765,4 +1765,122 @@ async fn test_once_per_request_logging_on_network_errors() {
 
     assert_eq!(flusher.flush(vec![]).await.len(), 1);
     assert_eq!((logged.warnings(), logged.errors()), (0, 1));
+}
+
+/// A compressed Datadog-mode primary and every additional endpoint receive the same bytes,
+/// equal to compressing the batch once at the configured level.
+#[tokio::test]
+async fn test_datadog_primary_and_extras_receive_identical_compressed_bytes() {
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (primary_url, mut primary_body) =
+        capture_once("primary", Duration::ZERO, events.clone()).await;
+    let (url_1, mut body_1) = capture_once("extra1", Duration::ZERO, events.clone()).await;
+    let (url_2, mut body_2) = capture_once("extra2", Duration::ZERO, events.clone()).await;
+
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let config = LogFlusherConfig {
+        mode: Destination::Datadog,
+        use_compression: true,
+        additional_endpoints: vec![
+            LogsAdditionalEndpoint {
+                api_key: "k1".to_string(),
+                url: url_1,
+                is_reliable: true,
+            },
+            LogsAdditionalEndpoint {
+                api_key: "k2".to_string(),
+                url: url_2,
+                is_reliable: true,
+            },
+        ],
+        ..config_for_mock("http://unused")
+    };
+    let level = config.compression_level;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher =
+        LogFlusher::new(config, client, handle.clone()).with_datadog_intake_url(primary_url);
+    handle
+        .insert_batch(
+            (0..200_u64)
+                .map(|i| {
+                    let words: Vec<String> = (0..40)
+                        .map(|j| format!("{:x}", (i * 40 + j) * 2_654_435_761 % 1_000_003))
+                        .collect();
+                    make_entry(&format!("same bytes {i} {}", words.join(" ")))
+                })
+                .collect(),
+        )
+        .expect("insert");
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    let primary = primary_body.try_recv().expect("primary received a request");
+    let extra_1 = body_1.try_recv().expect("extra1 received a request");
+    let extra_2 = body_2.try_recv().expect("extra2 received a request");
+    assert_eq!(primary, extra_1);
+    assert_eq!(extra_1, extra_2);
+    let raw = zstd::decode_all(primary.as_slice()).expect("zstd");
+    assert_eq!(primary, compress_zstd(&raw, level).expect("compress"));
+}
+
+/// With several batches in one flush, each request carries its own batch's compressed bytes.
+#[tokio::test]
+async fn test_each_batch_is_compressed_separately() {
+    use crate::constants::MAX_BATCH_ENTRIES;
+
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+    let recorded = bodies.clone();
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/v2/logs")
+        .match_request(move |req| {
+            recorded
+                .lock()
+                .expect("lock")
+                .push(req.body().expect("body").clone());
+            true
+        })
+        .with_status(202)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let config = LogFlusherConfig {
+        mode: Destination::Datadog,
+        use_compression: true,
+        ..config_for_mock("http://unused")
+    };
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config, client, handle.clone())
+        .with_datadog_intake_url(format!("{}/api/v2/logs", server.url()));
+    let count = MAX_BATCH_ENTRIES + 5;
+    handle
+        .insert_batch(
+            (0..count)
+                .map(|i| make_entry(&format!("entry {i}")))
+                .collect(),
+        )
+        .expect("insert");
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    mock.assert_async().await;
+    let bodies = bodies.lock().expect("lock");
+    let mut messages: Vec<String> = bodies
+        .iter()
+        .flat_map(|body| {
+            let raw = zstd::decode_all(body.as_slice()).expect("zstd");
+            let json: serde_json::Value = serde_json::from_slice(&raw).expect("json");
+            json.as_array()
+                .expect("array")
+                .iter()
+                .map(|e| e["message"].as_str().expect("message").to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    messages.sort();
+    let mut expected: Vec<String> = (0..count).map(|i| format!("entry {i}")).collect();
+    expected.sort();
+    assert_eq!(messages, expected);
 }
