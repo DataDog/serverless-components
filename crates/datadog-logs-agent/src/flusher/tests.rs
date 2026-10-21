@@ -1884,3 +1884,142 @@ async fn test_each_batch_is_compressed_separately() {
     expected.sort();
     assert_eq!(messages, expected);
 }
+
+/// A resolver that records how many `compress_zstd` calls had run on this thread when the
+/// API key was requested.
+fn compressions_seen_by(seen: Arc<AtomicUsize>) -> ApiKeyResolver {
+    Arc::new(
+        move || -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>> {
+            seen.store(COMPRESSIONS.with(std::cell::Cell::get), Ordering::SeqCst);
+            Box::pin(async { Some("k".to_string()) })
+        },
+    )
+}
+
+/// Every batch is compressed before the API key is requested, so a slow key lookup
+/// overlaps compression instead of adding to it; the batches are not compressed again.
+#[tokio::test(flavor = "current_thread")]
+async fn test_batches_are_compressed_before_the_api_key_is_resolved() {
+    use crate::constants::MAX_BATCH_ENTRIES;
+
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/v2/logs")
+        .match_header("Content-Encoding", "zstd")
+        .with_status(202)
+        .expect(2)
+        .create_async()
+        .await;
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let config = LogFlusherConfig {
+        mode: Destination::Datadog,
+        use_compression: true,
+        ..config_for_mock("http://unused")
+    };
+    let seen = Arc::new(AtomicUsize::new(usize::MAX));
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config, client, handle.clone())
+        .with_datadog_intake_url(format!("{}/api/v2/logs", server.url()))
+        .with_api_key_resolver(compressions_seen_by(seen.clone()));
+    handle
+        .insert_batch(
+            (0..MAX_BATCH_ENTRIES + 5)
+                .map(|i| make_entry(&format!("entry {i}")))
+                .collect(),
+        )
+        .expect("insert");
+    COMPRESSIONS.with(|n| n.set(0));
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    mock.assert_async().await;
+    assert_eq!(
+        seen.load(Ordering::SeqCst),
+        2,
+        "both batches compressed before the key lookup"
+    );
+    assert_eq!(
+        COMPRESSIONS.with(std::cell::Cell::get),
+        2,
+        "and not compressed again"
+    );
+}
+
+/// Nothing is compressed when no endpoint wants compression (an OPW primary is never
+/// compressed and there are no additional endpoints), even with `use_compression` set.
+#[tokio::test(flavor = "current_thread")]
+async fn test_nothing_is_compressed_when_no_endpoint_compresses() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/v2/logs")
+        .match_header("Content-Encoding", Matcher::Missing)
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let config = LogFlusherConfig {
+        use_compression: true,
+        ..config_for_mock(&server.url())
+    };
+    let seen = Arc::new(AtomicUsize::new(usize::MAX));
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config, client, handle.clone())
+        .with_api_key_resolver(compressions_seen_by(seen.clone()));
+    handle
+        .insert_batch(vec![make_entry("opw")])
+        .expect("insert");
+    COMPRESSIONS.with(|n| n.set(0));
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    mock.assert_async().await;
+    assert_eq!(seen.load(Ordering::SeqCst), 0);
+    assert_eq!(COMPRESSIONS.with(std::cell::Cell::get), 0);
+}
+
+/// With an OPW primary (never compressed) and a compressing additional endpoint, each
+/// batch is compressed once before the key is requested and the extra reuses it.
+#[tokio::test(flavor = "current_thread")]
+async fn test_batches_are_compressed_up_front_for_additional_endpoints_only() {
+    let mut server = mockito::Server::new_async().await;
+    let primary = server
+        .mock("POST", "/api/v2/logs")
+        .match_header("Content-Encoding", Matcher::Missing)
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let extra = server
+        .mock("POST", "/extra")
+        .match_header("Content-Encoding", "zstd")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let config = LogFlusherConfig {
+        use_compression: true,
+        additional_endpoints: vec![LogsAdditionalEndpoint {
+            api_key: "k1".to_string(),
+            url: format!("{}/extra", server.url()),
+            is_reliable: true,
+        }],
+        ..config_for_mock(&server.url())
+    };
+    let seen = Arc::new(AtomicUsize::new(usize::MAX));
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config, client, handle.clone())
+        .with_api_key_resolver(compressions_seen_by(seen.clone()));
+    handle
+        .insert_batch(vec![make_entry("opw with extra")])
+        .expect("insert");
+    COMPRESSIONS.with(|n| n.set(0));
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    primary.assert_async().await;
+    extra.assert_async().await;
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
+    assert_eq!(COMPRESSIONS.with(std::cell::Cell::get), 1);
+}
