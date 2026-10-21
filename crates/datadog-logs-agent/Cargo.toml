@@ -11,7 +11,7 @@ license.workspace = true
 bench = false
 
 [dependencies]
-datadog-fips = { path = "../datadog-fips" }
+datadog-fips = { path = "../datadog-fips", default-features = false }
 reqwest = { version = "0.12.4", features = ["json", "http2"], default-features = false }
 serde = { version = "1.0.197", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0.116", default-features = false, features = ["alloc"] }
@@ -33,4 +33,5 @@ tokio = { version = "1.37.0", default-features = false, features = ["macros", "r
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 
 [features]
-default = []
+default = ["datadog-fips/default"]
+fips = ["datadog-fips/fips"]
