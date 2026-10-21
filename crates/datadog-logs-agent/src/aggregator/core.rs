@@ -267,4 +267,28 @@ mod tests {
             );
         }
     }
+
+    /// An entry whose JSON is exactly MAX_LOG_BYTES is accepted; one byte more is rejected.
+    #[test]
+    fn test_entry_at_max_log_bytes_is_accepted_and_one_more_byte_is_rejected() {
+        let overhead = serde_json::to_string(&make_entry(""))
+            .expect("serialize")
+            .len();
+        let mut agg = Aggregator::new();
+
+        let exact = make_entry(&"a".repeat(MAX_LOG_BYTES - overhead));
+        assert_eq!(
+            serde_json::to_string(&exact).expect("serialize").len(),
+            MAX_LOG_BYTES
+        );
+        assert!(agg.insert(&exact).is_ok());
+
+        let too_big = make_entry(&"a".repeat(MAX_LOG_BYTES - overhead + 1));
+        assert!(matches!(
+            agg.insert(&too_big),
+            Err(AggregatorError::EntryTooLarge { size, max })
+                if size == MAX_LOG_BYTES + 1 && max == MAX_LOG_BYTES
+        ));
+        assert_eq!(agg.len(), 1);
+    }
 }
