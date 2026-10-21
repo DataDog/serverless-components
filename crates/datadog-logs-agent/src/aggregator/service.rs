@@ -4,12 +4,13 @@
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
 
-use crate::aggregator::Aggregator;
+use crate::aggregator::{Aggregator, OversizePolicy};
 use crate::intake_entry::IntakeEntry;
 
 #[derive(Debug)]
 enum AggregatorCommand {
     InsertBatch(Vec<IntakeEntry>),
+    InsertSerializedBatch(Vec<String>),
     GetBatches(oneshot::Sender<Vec<Vec<u8>>>),
     Shutdown,
 }
@@ -28,6 +29,17 @@ impl AggregatorHandle {
         self.tx
             .send(AggregatorCommand::InsertBatch(entries))
             .map_err(|e| format!("failed to send InsertBatch: {e}"))
+    }
+
+    /// Queue log entries that are already serialized as JSON objects. They are batched
+    /// as-is, without validation; the caller must pass valid JSON. The oversize policy
+    /// still applies.
+    ///
+    /// Returns an error only if the service has already stopped.
+    pub fn insert_serialized_batch(&self, entries: Vec<String>) -> Result<(), String> {
+        self.tx
+            .send(AggregatorCommand::InsertSerializedBatch(entries))
+            .map_err(|e| format!("failed to send InsertSerializedBatch: {e}"))
     }
 
     /// Retrieve and drain all accumulated log batches as JSON arrays.
@@ -71,6 +83,13 @@ impl AggregatorService {
         (service, handle)
     }
 
+    /// Set how entries larger than `MAX_LOG_BYTES` are handled. Default: drop them.
+    #[must_use]
+    pub fn with_oversize_policy(mut self, policy: OversizePolicy) -> Self {
+        self.aggregator = std::mem::take(&mut self.aggregator).with_oversize_policy(policy);
+        self
+    }
+
     /// Run the service event loop.
     ///
     /// Returns when a `Shutdown` command is received or the last handle is dropped.
@@ -82,6 +101,14 @@ impl AggregatorService {
                 AggregatorCommand::InsertBatch(entries) => {
                     for entry in &entries {
                         if let Err(e) = self.aggregator.insert(entry) {
+                            warn!("dropping log entry: {e}");
+                        }
+                    }
+                }
+
+                AggregatorCommand::InsertSerializedBatch(entries) => {
+                    for entry in entries {
+                        if let Err(e) = self.aggregator.insert_serialized(entry) {
                             warn!("dropping log entry: {e}");
                         }
                     }
@@ -181,5 +208,88 @@ mod tests {
 
         handle.shutdown().expect("shutdown");
         task.await.expect("task");
+    }
+
+    use crate::test_support::LevelCounter;
+
+    fn json_string_of_len(len: usize) -> String {
+        format!("\"{}\"", "a".repeat(len - 2))
+    }
+
+    #[tokio::test]
+    async fn test_insert_serialized_batch_roundtrip() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        handle
+            .insert_serialized_batch(vec![r#"{"a":1}"#.to_string(), r#"{"b":2}"#.to_string()])
+            .expect("insert");
+        let batches = handle.get_batches().await.expect("batches");
+        assert_eq!(batches, vec![br#"[{"a":1},{"b":2}]"#.to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn test_entry_and_serialized_inserts_share_one_queue() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        handle
+            .insert_batch(vec![IntakeEntry::from_message("first", 1)])
+            .expect("insert");
+        handle
+            .insert_serialized_batch(vec![r#"{"second":true}"#.to_string()])
+            .expect("insert");
+        let batches = handle.get_batches().await.expect("batches");
+        assert_eq!(batches.len(), 1);
+        let text = String::from_utf8(batches[0].clone()).expect("utf8");
+        let first = text.find("first").expect("first entry");
+        let second = text.find("second").expect("second entry");
+        assert!(
+            first < second,
+            "entries keep insertion order across both insert paths"
+        );
+    }
+
+    /// Default policy: an oversized pre-serialized entry is dropped with one warning.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_insert_serialized_batch_drops_oversized_entry_by_default() {
+        let (logged, _guard) = LevelCounter::install();
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        handle
+            .insert_serialized_batch(vec![json_string_of_len(
+                crate::constants::MAX_LOG_BYTES + 1,
+            )])
+            .expect("insert");
+        assert!(handle.get_batches().await.expect("batches").is_empty());
+        assert_eq!((logged.warnings(), logged.errors()), (1, 0));
+    }
+
+    /// With `SendWithWarning`, each oversized entry that is kept logs exactly one warning.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_send_with_warning_warns_once_per_kept_oversized_entry() {
+        let (logged, _guard) = LevelCounter::install();
+        let (service, handle) = AggregatorService::new();
+        let service = service.with_oversize_policy(OversizePolicy::SendWithWarning);
+        let _task = tokio::spawn(service.run());
+        let big = json_string_of_len(2 * crate::constants::MAX_LOG_BYTES);
+        handle
+            .insert_serialized_batch(vec![big.clone(), big])
+            .expect("insert");
+        assert!(!handle.get_batches().await.expect("batches").is_empty());
+        assert_eq!((logged.warnings(), logged.errors()), (2, 0));
+    }
+
+    /// With `SendWithWarning`, an entry too big for any payload is dropped with one warning.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_send_with_warning_warns_once_per_entry_too_big_for_any_payload() {
+        let (logged, _guard) = LevelCounter::install();
+        let (service, handle) = AggregatorService::new();
+        let service = service.with_oversize_policy(OversizePolicy::SendWithWarning);
+        let _task = tokio::spawn(service.run());
+        let too_big = json_string_of_len(crate::constants::MAX_CONTENT_BYTES);
+        handle
+            .insert_serialized_batch(vec![too_big])
+            .expect("insert");
+        assert!(handle.get_batches().await.expect("batches").is_empty());
+        assert_eq!((logged.warnings(), logged.errors()), (1, 0));
     }
 }

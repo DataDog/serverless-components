@@ -3,9 +3,24 @@
 
 use std::collections::VecDeque;
 
+use tracing::warn;
+
 use crate::constants::{MAX_BATCH_ENTRIES, MAX_CONTENT_BYTES, MAX_LOG_BYTES};
 use crate::errors::AggregatorError;
 use crate::intake_entry::IntakeEntry;
+
+/// What the aggregator does with a log entry larger than `MAX_LOG_BYTES`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OversizePolicy {
+    /// Drop the entry: `insert` returns `EntryTooLarge`, and the aggregator service logs
+    /// one warning per dropped entry.
+    #[default]
+    Drop,
+    /// Keep the entry, with one warning, as long as it still fits in a payload on its own.
+    /// Entries too big for any payload are dropped, with one warning from the service.
+    SendWithWarning,
+}
 
 /// In-memory log batch accumulator.
 ///
@@ -15,6 +30,7 @@ use crate::intake_entry::IntakeEntry;
 pub struct Aggregator {
     messages: VecDeque<String>,
     current_size_bytes: usize,
+    oversize_policy: OversizePolicy,
 }
 
 impl Default for Aggregator {
@@ -29,23 +45,54 @@ impl Aggregator {
         Self {
             messages: VecDeque::new(),
             current_size_bytes: 0,
+            oversize_policy: OversizePolicy::default(),
         }
+    }
+
+    /// Set how entries larger than `MAX_LOG_BYTES` are handled. Default: drop them.
+    #[must_use]
+    pub fn with_oversize_policy(mut self, policy: OversizePolicy) -> Self {
+        self.oversize_policy = policy;
+        self
     }
 
     /// Insert a log entry into the batch.
     ///
     /// Returns `Ok(true)` if the batch is now full and ready to flush.
-    /// Returns `Err(AggregatorError::EntryTooLarge)` if the serialized
-    /// entry exceeds `MAX_LOG_BYTES` — the entry is dropped.
+    /// Returns `Err(AggregatorError::EntryTooLarge)` if the entry is dropped under the
+    /// oversize policy.
     pub fn insert(&mut self, entry: &IntakeEntry) -> Result<bool, AggregatorError> {
         let serialized = serde_json::to_string(entry)?;
+        self.insert_serialized(serialized)
+    }
+
+    /// Insert an entry that is already serialized as a JSON object. It is batched as-is,
+    /// without re-serializing or validating it: the caller must pass valid JSON, or the
+    /// whole payload it lands in is rejected by the intake.
+    ///
+    /// Same return values as [`Aggregator::insert`].
+    pub fn insert_serialized(&mut self, serialized: String) -> Result<bool, AggregatorError> {
         let len = serialized.len();
 
         if len > MAX_LOG_BYTES {
-            return Err(AggregatorError::EntryTooLarge {
-                size: len,
-                max: MAX_LOG_BYTES,
-            });
+            match self.oversize_policy {
+                OversizePolicy::Drop => {
+                    return Err(AggregatorError::EntryTooLarge {
+                        size: len,
+                        max: MAX_LOG_BYTES,
+                    });
+                }
+                OversizePolicy::SendWithWarning => {
+                    // The entry must fit in a payload on its own: `[` + entry + `]`.
+                    let max = MAX_CONTENT_BYTES - 2;
+                    if len > max {
+                        return Err(AggregatorError::EntryTooLarge { size: len, max });
+                    }
+                    warn!(
+                        "log entry of {len} bytes exceeds {MAX_LOG_BYTES} bytes; sending it anyway"
+                    );
+                }
+            }
         }
 
         self.messages.push_back(serialized);
@@ -289,6 +336,99 @@ mod tests {
             Err(AggregatorError::EntryTooLarge { size, max })
                 if size == MAX_LOG_BYTES + 1 && max == MAX_LOG_BYTES
         ));
+        assert_eq!(agg.len(), 1);
+    }
+
+    /// A JSON string of exactly `len` bytes, for size tests.
+    fn json_string_of_len(len: usize) -> String {
+        format!("\"{}\"", "a".repeat(len - 2))
+    }
+
+    #[test]
+    fn test_insert_serialized_keeps_entry_bytes_as_is() {
+        let mut agg = Aggregator::new();
+        let raw = r#"{"message":{"message":"x","lambda":{"arn":"a","request_id":null}},"ddsource":"lambda"}"#;
+        agg.insert_serialized(raw.to_string()).expect("insert");
+        assert_eq!(
+            agg.get_batch().expect("batch"),
+            format!("[{raw}]").into_bytes()
+        );
+    }
+
+    #[test]
+    fn test_insert_serialized_drops_oversized_entry_by_default() {
+        let mut agg = Aggregator::new();
+        let result = agg.insert_serialized(json_string_of_len(MAX_LOG_BYTES + 1));
+        assert!(matches!(
+            result,
+            Err(AggregatorError::EntryTooLarge { size, max })
+                if size == MAX_LOG_BYTES + 1 && max == MAX_LOG_BYTES
+        ));
+        assert!(agg.is_empty());
+    }
+
+    #[test]
+    fn test_send_with_warning_keeps_entry_over_max_log_bytes() {
+        let mut agg = Aggregator::new().with_oversize_policy(OversizePolicy::SendWithWarning);
+        let big = json_string_of_len(2 * MAX_LOG_BYTES);
+        agg.insert_serialized(big.clone()).expect("kept");
+        assert_eq!(
+            agg.get_batch().expect("batch"),
+            format!("[{big}]").into_bytes()
+        );
+    }
+
+    #[test]
+    fn test_send_with_warning_drops_only_entries_that_cannot_fit_a_payload() {
+        let mut agg = Aggregator::new().with_oversize_policy(OversizePolicy::SendWithWarning);
+        let largest = MAX_CONTENT_BYTES - 2;
+        agg.insert_serialized(json_string_of_len(largest))
+            .expect("fits exactly");
+        assert_eq!(agg.get_batch().expect("batch").len(), MAX_CONTENT_BYTES);
+
+        let result = agg.insert_serialized(json_string_of_len(largest + 1));
+        assert!(matches!(
+            result,
+            Err(AggregatorError::EntryTooLarge { size, max })
+                if size == largest + 1 && max == largest
+        ));
+    }
+
+    /// Three 2 MiB entries cannot share one 5 MiB payload: they are split across batches,
+    /// every batch stays within the limit, and nothing is lost.
+    #[test]
+    fn test_send_with_warning_splits_oversized_entries_across_batches() {
+        let mut agg = Aggregator::new().with_oversize_policy(OversizePolicy::SendWithWarning);
+        for _ in 0..3 {
+            agg.insert_serialized(json_string_of_len(2 * MAX_LOG_BYTES))
+                .expect("kept");
+        }
+        agg.insert_serialized(r#"{"after":1}"#.to_string())
+            .expect("kept");
+
+        let batches = agg.get_all_batches();
+        assert!(
+            batches.len() >= 2,
+            "three 2 MiB entries need at least two payloads"
+        );
+        assert!(batches.iter().all(|b| b.len() <= MAX_CONTENT_BYTES));
+        let entries: usize = batches
+            .iter()
+            .map(|b| {
+                serde_json::from_slice::<Vec<serde_json::Value>>(b)
+                    .expect("json")
+                    .len()
+            })
+            .sum();
+        assert_eq!(entries, 4);
+        assert!(agg.is_empty());
+    }
+
+    #[test]
+    fn test_insert_entry_honors_send_with_warning() {
+        let mut agg = Aggregator::new().with_oversize_policy(OversizePolicy::SendWithWarning);
+        agg.insert(&make_entry(&"a".repeat(MAX_LOG_BYTES + 1)))
+            .expect("kept");
         assert_eq!(agg.len(), 1);
     }
 }
