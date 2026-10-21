@@ -140,6 +140,22 @@ impl LogFlusher {
             }
         };
 
+        let (primary_url, primary_use_compression) = self.resolve_endpoint();
+
+        // Compress before awaiting the API key: when a slow key lookup is already in flight
+        // (e.g. the first Secrets Manager call after a cold start, started by another flusher
+        // sharing the key source), compression overlaps it instead of adding to it. Each batch
+        // is compressed at most once and reused by every endpoint that wants compression.
+        let compressed: Vec<OnceLock<Result<Vec<u8>, FlushError>>> =
+            batches.iter().map(|_| OnceLock::new()).collect();
+        let extras_compress =
+            self.config.use_compression && !self.config.additional_endpoints.is_empty();
+        if primary_use_compression || extras_compress {
+            for (batch, cell) in batches.iter().zip(&compressed) {
+                cell.get_or_init(|| compress_zstd(batch, self.config.compression_level));
+            }
+        }
+
         let primary_api_key = match &self.api_key_resolver {
             None => Some(self.config.api_key.clone()),
             Some(resolve) => {
@@ -160,16 +176,11 @@ impl LogFlusher {
 
         debug!("flushing {} log batch(es)", batches.len());
 
-        let (primary_url, primary_use_compression) = self.resolve_endpoint();
-
-        let batch_futures = batches.iter().map(|batch| {
+        let batch_futures = batches.iter().zip(&compressed).map(|(batch, compressed)| {
             let primary_url = primary_url.clone();
             let primary_api_key = primary_api_key.as_deref();
             async move {
                 let is_primary_datadog = matches!(self.config.mode, Destination::Datadog);
-                // Compressed at most once, on first use, and reused by every endpoint that
-                // wants compression.
-                let compressed = &OnceLock::new();
                 // Primary endpoint — failures are tracked for cross-invocation retry.
                 let primary = async {
                     match primary_api_key {
@@ -388,7 +399,15 @@ impl LogFlusher {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Number of `compress_zstd` calls on this thread, so tests can see when compression ran.
+    static COMPRESSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn compress_zstd(data: &[u8], level: i32) -> Result<Vec<u8>, FlushError> {
+    #[cfg(test)]
+    COMPRESSIONS.with(|n| n.set(n.get() + 1));
     let mut encoder =
         Encoder::new(Vec::new(), level).map_err(|e| FlushError::Compression(e.to_string()))?;
     encoder
