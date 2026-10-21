@@ -21,7 +21,7 @@ mod test_support;
 
 // Re-export the most commonly used types at the crate root
 pub use aggregator::{AggregatorHandle, AggregatorService, OversizePolicy};
-pub use config::{Destination, LogFlusherConfig};
+pub use config::{Destination, FailureLogging, FlushPolicy, LogFlusherConfig};
 pub use flusher::{ApiKeyResolver, LogFlusher};
 pub use intake_entry::IntakeEntry;
 pub use logs_additional_endpoint::LogsAdditionalEndpoint;

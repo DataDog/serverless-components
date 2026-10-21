@@ -108,6 +108,48 @@ impl LogFlusherConfig {
     }
 }
 
+/// Optional flush behavior. `FlushPolicy::default()` is the crate's standard behavior.
+/// Build it with `..FlushPolicy::default()` so new fields don't break callers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlushPolicy {
+    /// `false` (default): 4xx responses other than 408/425/429 are dropped after one attempt.
+    /// `true`: every non-2xx response except 403 is retried and, if it keeps failing,
+    /// handed back. 403 is always dropped.
+    pub retry_client_errors: bool,
+    /// `false` (default): additional-endpoint failures are dropped with a warning.
+    /// `true`: they are handed back from `flush` / `retry` alongside primary failures.
+    pub return_additional_endpoint_failures: bool,
+    /// `false` (default): per batch, additional endpoints are sent after the primary
+    /// request (including its retries) finishes. `true`: they are sent at the same time.
+    pub parallel_additional_endpoints: bool,
+    /// How failed requests are logged.
+    pub failure_logging: FailureLogging,
+}
+
+/// How the flusher logs failed requests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FailureLogging {
+    /// One warning per failed attempt, plus one when giving up (default).
+    #[default]
+    PerAttempt,
+    /// One error when a request gives up or is dropped; individual attempts log at debug.
+    /// The warning for a dropped additional-endpoint failure and the compression-fallback
+    /// warning still log at warn.
+    OncePerRequest,
+}
+
+impl Default for FlushPolicy {
+    fn default() -> Self {
+        Self {
+            retry_client_errors: false,
+            return_additional_endpoint_failures: false,
+            parallel_additional_endpoints: false,
+            failure_logging: FailureLogging::PerAttempt,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

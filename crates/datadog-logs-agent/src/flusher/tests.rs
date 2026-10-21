@@ -4,6 +4,7 @@
 use super::*;
 use crate::aggregator::AggregatorService;
 use crate::config::{Destination, LogFlusherConfig};
+use crate::config::{FailureLogging, FlushPolicy};
 use crate::intake_entry::IntakeEntry;
 use crate::logs_additional_endpoint::LogsAdditionalEndpoint;
 use crate::test_support::LevelCounter;
@@ -1363,4 +1364,405 @@ async fn test_unresolved_api_key_logs_an_error_even_without_batches() {
     assert!(flusher.flush(vec![]).await.is_empty());
     assert!(flusher.flush(vec![]).await.is_empty());
     assert_eq!(logged.errors(), 2);
+}
+
+fn bottlecap_policy() -> FlushPolicy {
+    FlushPolicy {
+        retry_client_errors: true,
+        return_additional_endpoint_failures: true,
+        parallel_additional_endpoints: true,
+        failure_logging: FailureLogging::OncePerRequest,
+    }
+}
+
+/// Reads one full HTTP/1.1 request (headers plus a Content-Length body) from `stream`.
+async fn read_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    use tokio::io::AsyncReadExt as _;
+    let mut raw = Vec::new();
+    let mut buf = [0_u8; 8192];
+    loop {
+        let n = stream.read(&mut buf).await.expect("read");
+        assert!(n > 0, "connection closed before the request was complete");
+        raw.extend_from_slice(&buf[..n]);
+        let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+            continue;
+        };
+        let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+        let len: usize = head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-length:"))
+            .expect("request has content-length")
+            .trim()
+            .parse()
+            .expect("content-length");
+        while raw.len() < end + 4 + len {
+            let n = stream.read(&mut buf).await.expect("read body");
+            assert!(n > 0, "connection closed before the body was complete");
+            raw.extend_from_slice(&buf[..n]);
+        }
+        return raw[end + 4..end + 4 + len].to_vec();
+    }
+}
+
+#[test]
+fn test_flush_policy_default_is_todays_behavior() {
+    assert_eq!(
+        FlushPolicy::default(),
+        FlushPolicy {
+            retry_client_errors: false,
+            return_additional_endpoint_failures: false,
+            parallel_additional_endpoints: false,
+            failure_logging: FailureLogging::PerAttempt,
+        }
+    );
+}
+
+/// `retry` re-sends handed-back requests without draining the aggregator.
+#[tokio::test]
+async fn test_retry_does_not_drain_the_aggregator() {
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/v2/logs")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone());
+    handle
+        .insert_batch(vec![make_entry("pending")])
+        .expect("insert");
+
+    assert!(flusher.retry(vec![]).await.is_empty());
+    assert!(
+        !mock.matched_async().await,
+        "retry must not send the pending batch"
+    );
+    assert!(flusher.flush(vec![]).await.is_empty());
+    mock.assert_async().await;
+}
+
+/// `retry` hands back the requests that still fail.
+#[tokio::test]
+async fn test_retry_hands_back_requests_that_still_fail() {
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/v2/logs")
+        .with_status(503)
+        .expect(6)
+        .create_async()
+        .await;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone());
+    handle
+        .insert_batch(vec![make_entry("log")])
+        .expect("insert");
+
+    let failed = flusher.flush(vec![]).await;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(flusher.retry(failed).await.len(), 1);
+    mock.assert_async().await;
+}
+
+/// Under bottlecap's policy a 400 is retried in both `flush` and `retry`, each logging
+/// one error line when it gives up.
+#[tokio::test(flavor = "current_thread")]
+async fn test_bottlecap_policy_retries_400_in_flush_and_retry() {
+    let (logged, _guard) = LevelCounter::install();
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/v2/logs")
+        .with_status(400)
+        .expect(6)
+        .create_async()
+        .await;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone())
+        .with_policy(bottlecap_policy());
+    handle
+        .insert_batch(vec![make_entry("log")])
+        .expect("insert");
+
+    let failed = flusher.flush(vec![]).await;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(flusher.retry(failed).await.len(), 1);
+    mock.assert_async().await;
+    assert_eq!((logged.warnings(), logged.errors()), (0, 2));
+}
+
+/// 403 stays terminal even with `retry_client_errors`.
+#[tokio::test(flavor = "current_thread")]
+async fn test_bottlecap_policy_keeps_403_terminal() {
+    let (logged, _guard) = LevelCounter::install();
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/api/v2/logs")
+        .with_status(403)
+        .expect(1)
+        .create_async()
+        .await;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone())
+        .with_policy(bottlecap_policy());
+    handle
+        .insert_batch(vec![make_entry("log")])
+        .expect("insert");
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    mock.assert_async().await;
+    assert_eq!((logged.warnings(), logged.errors()), (0, 1));
+}
+
+/// `retry` never asks the key resolver: handed-back requests keep their headers.
+#[tokio::test]
+async fn test_retry_never_calls_the_api_key_resolver() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/api/v2/logs")
+        .with_status(503)
+        .expect(6)
+        .create_async()
+        .await;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone())
+        .with_api_key_resolver(resolver(&[Some("k")], calls.clone()));
+    handle
+        .insert_batch(vec![make_entry("log")])
+        .expect("insert");
+
+    let failed = flusher.flush(vec![]).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let _ = flusher.retry(failed).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// With `return_additional_endpoint_failures`, a failing extra is handed back and no
+/// "dropped" warning is logged for it (default per-attempt logging).
+#[tokio::test(flavor = "current_thread")]
+async fn test_policy_returns_additional_endpoint_failures() {
+    let (logged, _guard) = LevelCounter::install();
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut primary = mockito::Server::new_async().await;
+    let mut extra = mockito::Server::new_async().await;
+    let _primary_mock = primary
+        .mock("POST", "/api/v2/logs")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let extra_mock = extra
+        .mock("POST", "/extra")
+        .with_status(503)
+        .expect(3)
+        .create_async()
+        .await;
+    let config = LogFlusherConfig {
+        additional_endpoints: vec![LogsAdditionalEndpoint {
+            api_key: "extra-key".to_string(),
+            url: format!("{}/extra", extra.url()),
+            is_reliable: true,
+        }],
+        ..config_for_mock(&primary.url())
+    };
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config, client, handle.clone()).with_policy(FlushPolicy {
+        return_additional_endpoint_failures: true,
+        ..FlushPolicy::default()
+    });
+    handle
+        .insert_batch(vec![make_entry("log")])
+        .expect("insert");
+
+    let failed = flusher.flush(vec![]).await;
+    assert_eq!(failed.len(), 1);
+    let request = failed
+        .into_iter()
+        .next()
+        .expect("one")
+        .build()
+        .expect("request");
+    assert_eq!(request.url().as_str(), format!("{}/extra", extra.url()));
+    extra_mock.assert_async().await;
+    assert_eq!(
+        logged.warnings(),
+        4,
+        "3 transient + 1 gave-up, no 'dropped' warning"
+    );
+}
+
+/// Under bottlecap's policy a failing extra is handed back with one error line.
+#[tokio::test(flavor = "current_thread")]
+async fn test_bottlecap_policy_failing_extra_logs_one_error() {
+    let (logged, _guard) = LevelCounter::install();
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut primary = mockito::Server::new_async().await;
+    let mut extra = mockito::Server::new_async().await;
+    let _primary_mock = primary
+        .mock("POST", "/api/v2/logs")
+        .with_status(202)
+        .expect(1)
+        .create_async()
+        .await;
+    let _extra_mock = extra
+        .mock("POST", "/extra")
+        .with_status(503)
+        .expect(3)
+        .create_async()
+        .await;
+    let config = LogFlusherConfig {
+        additional_endpoints: vec![LogsAdditionalEndpoint {
+            api_key: "extra-key".to_string(),
+            url: format!("{}/extra", extra.url()),
+            is_reliable: true,
+        }],
+        ..config_for_mock(&primary.url())
+    };
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config, client, handle.clone()).with_policy(bottlecap_policy());
+    handle
+        .insert_batch(vec![make_entry("log")])
+        .expect("insert");
+
+    assert_eq!(flusher.flush(vec![]).await.len(), 1);
+    assert_eq!((logged.warnings(), logged.errors()), (0, 1));
+}
+
+/// With `parallel_additional_endpoints`, the extra is contacted while the primary
+/// request is still in flight.
+#[tokio::test]
+async fn test_policy_parallel_additional_endpoints() {
+    use tokio::io::AsyncWriteExt as _;
+    const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+    let extra_seen = Arc::new(tokio::sync::Notify::new());
+    let extra_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let extra_port = extra_listener.local_addr().expect("addr").port();
+    let signal = extra_seen.clone();
+    tokio::spawn(async move {
+        let (mut stream, _) = extra_listener.accept().await.expect("accept");
+        let _ = read_request(&mut stream).await;
+        signal.notify_one();
+        let _ = stream.write_all(OK).await;
+    });
+
+    // The primary answers only after the extra was contacted, or after 2 s if it never is.
+    let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let primary_port = primary_listener.local_addr().expect("addr").port();
+    let (overlap_tx, overlap_rx) = tokio::sync::oneshot::channel();
+    let wait = extra_seen.clone();
+    tokio::spawn(async move {
+        let (mut stream, _) = primary_listener.accept().await.expect("accept");
+        let _ = read_request(&mut stream).await;
+        let overlapped = tokio::time::timeout(Duration::from_secs(2), wait.notified())
+            .await
+            .is_ok();
+        let _ = overlap_tx.send(overlapped);
+        let _ = stream.write_all(OK).await;
+    });
+
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let config = LogFlusherConfig {
+        mode: Destination::ObservabilityPipelinesWorker {
+            url: format!("http://127.0.0.1:{primary_port}/logs"),
+        },
+        additional_endpoints: vec![LogsAdditionalEndpoint {
+            api_key: "extra-key".to_string(),
+            url: format!("http://127.0.0.1:{extra_port}/logs"),
+            is_reliable: true,
+        }],
+        ..config_for_mock("http://unused")
+    };
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config, client, handle.clone()).with_policy(FlushPolicy {
+        parallel_additional_endpoints: true,
+        ..FlushPolicy::default()
+    });
+    handle
+        .insert_batch(vec![make_entry("parallel")])
+        .expect("insert");
+
+    assert!(flusher.flush(vec![]).await.is_empty());
+    assert!(
+        overlap_rx.await.expect("primary handled a request"),
+        "the extra was contacted while the primary was in flight"
+    );
+}
+
+/// With `FailureLogging::OncePerRequest`, a request that keeps failing logs one error
+/// line and no warnings.
+#[tokio::test(flavor = "current_thread")]
+async fn test_once_per_request_logging_on_transient_failure() {
+    let (logged, _guard) = LevelCounter::install();
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let mut server = mockito::Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/api/v2/logs")
+        .with_status(503)
+        .expect(3)
+        .create_async()
+        .await;
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone())
+        .with_policy(FlushPolicy {
+            failure_logging: FailureLogging::OncePerRequest,
+            ..FlushPolicy::default()
+        });
+    handle
+        .insert_batch(vec![make_entry("log")])
+        .expect("insert");
+
+    assert_eq!(flusher.flush(vec![]).await.len(), 1);
+    assert_eq!((logged.warnings(), logged.errors()), (0, 1));
+}
+
+/// With `FailureLogging::OncePerRequest`, dropped connections log one error line.
+#[tokio::test(flavor = "current_thread")]
+async fn test_once_per_request_logging_on_network_errors() {
+    let (logged, _guard) = LevelCounter::install();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let _server = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+    let (service, handle) = AggregatorService::new();
+    let _task = tokio::spawn(service.run());
+    let client = reqwest::Client::builder().build().expect("client");
+    let flusher = LogFlusher::new(
+        config_for_mock(&format!("http://127.0.0.1:{port}")),
+        client,
+        handle.clone(),
+    )
+    .with_policy(FlushPolicy {
+        failure_logging: FailureLogging::OncePerRequest,
+        ..FlushPolicy::default()
+    });
+    handle
+        .insert_batch(vec![make_entry("log")])
+        .expect("insert");
+
+    assert_eq!(flusher.flush(vec![]).await.len(), 1);
+    assert_eq!((logged.warnings(), logged.errors()), (0, 1));
 }
