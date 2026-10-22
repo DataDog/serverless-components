@@ -28,6 +28,7 @@ jobs:
     uses: ./.github/workflows/build-datadog-serverless-compat.yml
     with:
       runner: ${{ matrix.runner }}
+      version: ${{ inputs.version }}
 
   package:
     runs-on: ubuntu-24.04
@@ -35,7 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          sparse-checkout: npm
+          sparse-checkout: |
+            npm
+            scripts/resolve-serverless-compat-version.sh
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # 4.3.0
         with:
@@ -65,11 +68,8 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/datadog-serverless-compat/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/datadog-serverless-compat/v}"
-          elif [[ -n "$INPUT_VERSION" ]]; then
-            VERSION="$INPUT_VERSION"
-          else
+          VERSION="$(./scripts/resolve-serverless-compat-version.sh "$INPUT_VERSION")"
+          if [[ -z "$VERSION" ]]; then
             echo "Error: version input is required when not running on a datadog-serverless-compat/v<x.y.z> tag"
             exit 1
           fi

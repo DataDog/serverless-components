@@ -28,6 +28,8 @@ use datadog_metrics_collector::azure_cpu::CpuMetricsCollector;
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
+use metadata::run_metadata_reporter;
+
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_logs_agent::{
     AggregatorHandle as LogAggregatorHandle, AggregatorService as LogAggregatorService,
@@ -160,6 +162,22 @@ pub async fn main() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     debug!("Logging subsystem enabled");
+
+    // Metadata runs independently from traces and metrics so failures cannot
+    // block mini-agent startup or request handling.
+    let metadata_api_key = dd_api_key.clone();
+    let metadata_site = dd_site.clone();
+    let metadata_proxy = https_proxy.clone();
+    let metadata_env = env_type.clone();
+    tokio::spawn(async move {
+        run_metadata_reporter(
+            metadata_api_key.as_deref(),
+            &metadata_site,
+            metadata_proxy.as_deref(),
+            metadata_env,
+        )
+        .await;
+    });
 
     let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
 

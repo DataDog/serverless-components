@@ -689,6 +689,7 @@ dependencies = [
  "datadog-trace-agent",
  "dogstatsd",
  "libdd-trace-utils",
+ "metadata",
  "reqwest",
  "serde_json",
  "tokio",
@@ -2221,6 +2222,7 @@ dependencies = [
 name = "metadata"
 version = "0.1.0"
 dependencies = [
+ "datadog-fips",
  "httpmock",
  "libdd-common",
  "libdd-trace-utils",
@@ -2228,6 +2230,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
