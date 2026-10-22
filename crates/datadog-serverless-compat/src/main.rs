@@ -458,8 +458,14 @@ async fn start_dogstatsd_listener(
     )
     .await;
 
+    let spin_cancel_token = dogstatsd_cancel_token.clone();
     tokio::spawn(async move {
         dogstatsd_client.spin().await;
+        if !spin_cancel_token.is_cancelled() {
+            error!(
+                "dogstatsd: listener stopped unexpectedly; custom metrics are no longer received"
+            );
+        }
     });
 
     dogstatsd_cancel_token

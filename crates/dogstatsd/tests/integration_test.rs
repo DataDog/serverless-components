@@ -602,8 +602,30 @@ async fn test_named_pipe_and_udp_dual_listen() {
 
     sleep(Duration::from_millis(100)).await;
 
+    // Pipe messages carry right-sized buffers. UDP packets longer than the pipe message must
+    // still arrive whole, so those buffers must not be reused for UDP reads. Send several,
+    // because the reader takes a pooled buffer before each wait.
+    for i in 0..4 {
+        let metric = format!("dual.udp.after.pipe.{i}.metric.with.a.much.longer.name:1|c");
+        socket
+            .send_to(metric.as_bytes(), ("127.0.0.1", udp_port))
+            .await
+            .expect("UDP send failed");
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    sleep(Duration::from_millis(100)).await;
+
     let response = handle.flush().await.expect("flush failed");
     let series_json = serde_json::to_string(&response.series).expect("serialize series");
+    for i in 0..4 {
+        assert!(
+            series_json.contains(&format!(
+                "dual.udp.after.pipe.{i}.metric.with.a.much.longer.name"
+            )),
+            "UDP packet {i} after a pipe message was not received whole: {series_json}"
+        );
+    }
     assert!(
         series_json.contains("dual.udp.metric"),
         "UDP metric was not received when a pipe name is also configured: {series_json}"
