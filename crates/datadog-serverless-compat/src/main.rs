@@ -105,7 +105,7 @@ pub async fn main() {
         }
     };
     // UDP listener also runs when a named pipe is set, so clients without
-    // named-pipe support can still send metrics.
+    // named-pipe support can still send metrics. With a pipe, port 0 turns UDP off.
     let dd_dogstatsd_port: u16 = env::var("DD_DOGSTATSD_PORT")
         .ok()
         .and_then(|port| port.parse::<u16>().ok())

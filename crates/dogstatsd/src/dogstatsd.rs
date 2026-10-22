@@ -37,7 +37,8 @@ pub struct DogStatsDConfig {
     /// Host to bind UDP socket to (e.g., "127.0.0.1")
     pub host: String,
     /// Port to bind UDP socket to (e.g., 8125). The UDP socket is also bound when a named pipe
-    /// is configured, so clients without named-pipe support can still send metrics.
+    /// is configured, so clients without named-pipe support can still send metrics. With a
+    /// named pipe, port 0 turns UDP off, as `dogstatsd_port: 0` does in the Datadog Agent.
     pub port: u16,
     /// Optional namespace to prepend to all metric names (e.g., "myapp")
     pub metric_namespace: Option<String>,
@@ -240,18 +241,23 @@ impl DogStatsD {
                 // UDP bind is best-effort when a named pipe is configured. Multiple Azure apps
                 // share the same VM on certain Windows Azure plans, and only one agent can own
                 // the port. The named pipe is unique per app, so a UDP bind failure is not fatal.
-                let udp_socket = match create_udp_socket(&addr, config.so_rcvbuf).await {
-                    Ok(socket) => {
-                        info!("dogstatsd-udp: starting to listen on {}", addr);
-                        Some(socket)
-                    }
-                    Err(e) => {
-                        warn!(
-                            "DogStatsD could not bind UDP {}: {}. Named-pipe transport is active; \
-                            metrics sent over UDP will not be received by this agent.",
-                            addr, e
-                        );
-                        None
+                let udp_socket = if config.port == 0 {
+                    info!("dogstatsd-udp: port is 0, so only the named pipe is listening");
+                    None
+                } else {
+                    match create_udp_socket(&addr, config.so_rcvbuf).await {
+                        Ok(socket) => {
+                            info!("dogstatsd-udp: starting to listen on {}", addr);
+                            Some(socket)
+                        }
+                        Err(e) => {
+                            warn!(
+                                "DogStatsD could not bind UDP {}: {}. Named-pipe transport is \
+                                active; metrics sent over UDP will not be received by this agent.",
+                                addr, e
+                            );
+                            None
+                        }
                     }
                 };
 
