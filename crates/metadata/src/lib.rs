@@ -5,7 +5,7 @@ mod payload;
 mod platform;
 mod reporter;
 
-pub use reporter::run_inventory_reporter;
+pub use reporter::run_metadata_reporter;
 
 use libdd_common::azure_app_services::QueryEnv;
 use std::env;
@@ -29,8 +29,8 @@ pub struct MetadataReport {
     pub workload_type: &'static str,
 }
 
-/// Builds an inventory report from the cloud identity collected at startup.
-fn build_inventory_report(
+/// Builds a metadata report from the cloud identity collected at startup.
+fn build_metadata_report(
     platform: &platform::PlatformData,
     process_id: &str,
     report_reason: &str,

@@ -1,7 +1,7 @@
 // Copyright 2026-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{ProcessEnv, build_inventory_report, payload, platform};
+use crate::{ProcessEnv, build_metadata_report, payload, platform};
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use libdd_common::azure_app_services::QueryEnv;
 use libdd_trace_utils::trace_utils::EnvironmentType;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, warn};
 
-const INVENTORY_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const METADATA_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const MAX_ATTEMPTS: u32 = 3;
 
 struct Reporter {
@@ -22,42 +22,42 @@ struct Reporter {
     process_id: String,
 }
 
-/// Runs the inventory reporter for the lifetime of the mini-agent.
+/// Runs the metadata reporter for the lifetime of the mini-agent.
 ///
 /// A report is sent at startup and every 30 minutes afterward. Failures are
-/// logged and contained so inventory never blocks agent startup or processing.
-pub async fn run_inventory_reporter(
+/// logged and contained so metadata never blocks agent startup or processing.
+pub async fn run_metadata_reporter(
     api_key: Option<&str>,
     dd_site: &str,
     https_proxy: Option<&str>,
     env_type: EnvironmentType,
 ) {
-    if !is_inventory_enabled(&ProcessEnv) || !is_supported(&env_type) {
+    if !is_metadata_enabled(&ProcessEnv) || !is_supported(&env_type) {
         return;
     }
 
     let Some(api_key) = api_key else {
-        warn!("DD_API_KEY not set, skipping inventory reporter");
+        warn!("DD_API_KEY not set, skipping metadata reporter");
         return;
     };
 
     let intake_url = match build_intake_url(dd_site) {
         Ok(url) => url,
         Err(error) => {
-            warn!("inventory: invalid DD_SITE, skipping reporter: {error}");
+            warn!("metadata: invalid DD_SITE, skipping reporter: {error}");
             return;
         }
     };
 
     let Some(platform) = platform::collect(&env_type).await else {
-        warn!("inventory: required cloud identity unavailable, skipping reporter");
+        warn!("metadata: required cloud identity unavailable, skipping reporter");
         return;
     };
 
     let client = match build_client(https_proxy) {
         Ok(client) => client,
         Err(error) => {
-            warn!("inventory: failed to create HTTP client: {error}");
+            warn!("metadata: failed to create HTTP client: {error}");
             return;
         }
     };
@@ -77,7 +77,7 @@ pub async fn run_inventory_reporter(
     };
     reporter.send_report("startup").await;
 
-    let mut ticker = interval(INVENTORY_INTERVAL);
+    let mut ticker = interval(METADATA_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     ticker.tick().await; // Consume the immediate first tick.
     loop {
@@ -86,8 +86,8 @@ pub async fn run_inventory_reporter(
     }
 }
 
-fn is_inventory_enabled(env: &impl QueryEnv) -> bool {
-    env.get_var("DD_SERVERLESS_COMPAT_INVENTORY_ENABLED")
+fn is_metadata_enabled(env: &impl QueryEnv) -> bool {
+    env.get_var("DD_SERVERLESS_COMPAT_METADATA_ENABLED")
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
@@ -100,7 +100,7 @@ fn is_supported(env_type: &EnvironmentType) -> bool {
 
 impl Reporter {
     async fn send_report(&self, report_reason: &str) {
-        let report = match build_inventory_report(
+        let report = match build_metadata_report(
             &self.platform,
             &self.process_id,
             report_reason,
@@ -108,7 +108,7 @@ impl Reporter {
         ) {
             Ok(report) => report,
             Err(error) => {
-                warn!("inventory: failed to serialize payload: {error}");
+                warn!("metadata: failed to serialize payload: {error}");
                 return;
             }
         };
@@ -125,7 +125,7 @@ impl Reporter {
             {
                 Ok(status) if status < 300 => {
                     debug!(
-                        "inventory: report sent (report_reason={report_reason}, workload_type={}, resource_id={}, status={status})",
+                        "metadata: report sent (report_reason={report_reason}, workload_type={}, resource_id={}, status={status})",
                         report.workload_type, report.resource_id
                     );
                     return;
@@ -133,14 +133,14 @@ impl Reporter {
                 Ok(status) if should_retry_status(status) && attempt + 1 < MAX_ATTEMPTS => {
                     let backoff = retry_backoff(attempt);
                     warn!(
-                        "inventory: transient failure, retrying in {backoff:?} (report_reason={report_reason}, attempt={}, status={status})",
+                        "metadata: transient failure, retrying in {backoff:?} (report_reason={report_reason}, attempt={}, status={status})",
                         attempt + 1
                     );
                     tokio::time::sleep(backoff).await;
                 }
                 Ok(status) => {
                     warn!(
-                        "inventory: intake rejected report (report_reason={report_reason}, workload_type={}, status={status})",
+                        "metadata: intake rejected report (report_reason={report_reason}, workload_type={}, status={status})",
                         report.workload_type
                     );
                     return;
@@ -148,14 +148,14 @@ impl Reporter {
                 Err(error) if attempt + 1 < MAX_ATTEMPTS => {
                     let backoff = retry_backoff(attempt);
                     warn!(
-                        "inventory: transport error, retrying in {backoff:?} (report_reason={report_reason}, attempt={}, error={error})",
+                        "metadata: transport error, retrying in {backoff:?} (report_reason={report_reason}, attempt={}, error={error})",
                         attempt + 1
                     );
                     tokio::time::sleep(backoff).await;
                 }
                 Err(error) => {
                     warn!(
-                        "inventory: transport error after {MAX_ATTEMPTS} attempts (report_reason={report_reason}, error={error})"
+                        "metadata: transport error after {MAX_ATTEMPTS} attempts (report_reason={report_reason}, error={error})"
                     );
                     return;
                 }
@@ -219,28 +219,36 @@ mod tests {
     use crate::test_env::FakeEnv;
 
     #[test]
-    fn inventory_gate_is_off_by_default() {
-        assert!(!is_inventory_enabled(&FakeEnv::default()));
+    fn metadata_gate_is_off_by_default() {
+        assert!(!is_metadata_enabled(&FakeEnv::default()));
     }
 
     #[test]
-    fn inventory_gate_accepts_case_insensitive_true() {
-        assert!(is_inventory_enabled(&FakeEnv::new(&[(
+    fn legacy_inventory_flag_does_not_enable_metadata() {
+        assert!(!is_metadata_enabled(&FakeEnv::new(&[(
             "DD_SERVERLESS_COMPAT_INVENTORY_ENABLED",
+            "true",
+        )])));
+    }
+
+    #[test]
+    fn metadata_gate_accepts_case_insensitive_true() {
+        assert!(is_metadata_enabled(&FakeEnv::new(&[(
+            "DD_SERVERLESS_COMPAT_METADATA_ENABLED",
             "true"
         ),])));
-        assert!(is_inventory_enabled(&FakeEnv::new(&[(
-            "DD_SERVERLESS_COMPAT_INVENTORY_ENABLED",
+        assert!(is_metadata_enabled(&FakeEnv::new(&[(
+            "DD_SERVERLESS_COMPAT_METADATA_ENABLED",
             "TRUE"
         ),])));
-        assert!(!is_inventory_enabled(&FakeEnv::new(&[(
-            "DD_SERVERLESS_COMPAT_INVENTORY_ENABLED",
+        assert!(!is_metadata_enabled(&FakeEnv::new(&[(
+            "DD_SERVERLESS_COMPAT_METADATA_ENABLED",
             "1"
         ),])));
     }
 
     #[test]
-    fn only_compat_inventory_workloads_are_supported() {
+    fn only_compat_metadata_workloads_are_supported() {
         assert!(is_supported(&EnvironmentType::AzureFunction));
         assert!(is_supported(&EnvironmentType::CloudFunction));
         assert!(!is_supported(&EnvironmentType::LambdaFunction));
@@ -264,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_inventory_intake_site() {
+    fn validates_metadata_intake_site() {
         assert_eq!(
             build_intake_url("us5.datadoghq.com").unwrap().as_str(),
             "https://api.us5.datadoghq.com/api/v1/metadata"
