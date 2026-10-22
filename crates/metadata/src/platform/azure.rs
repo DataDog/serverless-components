@@ -29,7 +29,7 @@ pub(super) fn collect() -> Option<PlatformData> {
 }
 
 fn collect_from<E: QueryEnv>(env: E) -> Option<PlatformData> {
-    // These values are inventory-specific enrichments that are not exposed by
+    // These values are metadata-specific enrichments that are not exposed by
     // the published libdd-common 5.2 API used by this repository.
     let region = env
         .get_var("REGION_NAME")
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_required_identity_skips_inventory() {
+    fn missing_required_identity_skips_metadata() {
         let incomplete_environments = [
             FakeEnv::new(&[
                 ("FUNCTIONS_WORKER_RUNTIME", "python"),
