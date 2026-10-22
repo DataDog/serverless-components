@@ -5,7 +5,7 @@ mod payload;
 mod platform;
 mod reporter;
 
-pub use reporter::run_inventory_reporter;
+pub use reporter::run_metadata_reporter;
 
 use libdd_common::azure_app_services::QueryEnv;
 use std::env;
@@ -22,22 +22,22 @@ impl QueryEnv for ProcessEnv {
     }
 }
 
-/// A serialized inventory report and the identity used for operational logs.
-pub struct InventoryReport {
+/// A serialized metadata report and the identity used for operational logs.
+pub struct MetadataReport {
     pub body: Vec<u8>,
     pub resource_id: String,
     pub workload_type: &'static str,
 }
 
-/// Builds an inventory report from the cloud identity collected at startup.
-fn build_inventory_report(
+/// Builds a metadata report from the cloud identity collected at startup.
+fn build_metadata_report(
     platform: &platform::PlatformData,
     process_id: &str,
     report_reason: &str,
     dd_site: &str,
-) -> Result<InventoryReport, serde_json::Error> {
+) -> Result<MetadataReport, serde_json::Error> {
     let body = payload::build(process_id, report_reason, platform, dd_site)?;
-    Ok(InventoryReport {
+    Ok(MetadataReport {
         body,
         resource_id: platform.resource_id.clone(),
         workload_type: platform.workload_type,

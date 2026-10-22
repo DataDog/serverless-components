@@ -28,7 +28,7 @@ use datadog_metrics_collector::azure_cpu::CpuMetricsCollector;
 
 use libdd_trace_utils::{config_utils::read_cloud_env, trace_utils::EnvironmentType};
 
-use inventory::run_inventory_reporter;
+use metadata::run_metadata_reporter;
 
 use datadog_fips::reqwest_adapter::create_reqwest_client_builder;
 use datadog_logs_agent::{
@@ -163,18 +163,18 @@ pub async fn main() {
 
     debug!("Logging subsystem enabled");
 
-    // Inventory runs independently from traces and metrics so failures cannot
+    // Metadata runs independently from traces and metrics so failures cannot
     // block mini-agent startup or request handling.
-    let inventory_api_key = dd_api_key.clone();
-    let inventory_site = dd_site.clone();
-    let inventory_proxy = https_proxy.clone();
-    let inventory_env = env_type.clone();
+    let metadata_api_key = dd_api_key.clone();
+    let metadata_site = dd_site.clone();
+    let metadata_proxy = https_proxy.clone();
+    let metadata_env = env_type.clone();
     tokio::spawn(async move {
-        run_inventory_reporter(
-            inventory_api_key.as_deref(),
-            &inventory_site,
-            inventory_proxy.as_deref(),
-            inventory_env,
+        run_metadata_reporter(
+            metadata_api_key.as_deref(),
+            &metadata_site,
+            metadata_proxy.as_deref(),
+            metadata_env,
         )
         .await;
     });
