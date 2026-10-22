@@ -104,12 +104,10 @@ pub async fn main() {
             None
         }
     };
-    // UDP listener also runs when a named pipe is set, so clients without
-    // named-pipe support can still send metrics. With a pipe, port 0 turns UDP off.
-    let dd_dogstatsd_port: u16 = env::var("DD_DOGSTATSD_PORT")
-        .ok()
-        .and_then(|port| port.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_DOGSTATSD_PORT);
+    let dd_dogstatsd_port = decide_dogstatsd_port(
+        dd_dogstatsd_windows_pipe_name.is_some(),
+        env::var("DD_DOGSTATSD_PORT").ok().as_deref(),
+    );
     let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
     let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")
         .map(|val| val.to_lowercase() != "false")
@@ -568,6 +566,26 @@ struct EnabledMetricsComponents {
     start_cpu_metrics_collector: bool,
 }
 
+/// Chooses the DogStatsD UDP port. 0 means UDP is off.
+///
+/// Without a named pipe, UDP is the only transport: use `DD_DOGSTATSD_PORT`, else 8125.
+///
+/// With a named pipe, UDP is off unless `DD_DOGSTATSD_PORT` is set. Several Windows function
+/// apps can share one instance, and only one binary can own UDP 8125. A binary without a pipe
+/// panics when the port is taken, so a binary with a pipe must not take it by default. The .NET
+/// and Node compatibility layers point their in-process clients at the pipe, so their binaries
+/// don't need UDP. The Java compatibility layer can't: a JVM can't change its own environment
+/// after it starts, so older Java DogStatsD clients, and clients that can't open the pipe,
+/// still send to UDP 8125. compat-java sets `DD_DOGSTATSD_PORT` for its binary to keep them
+/// working.
+fn decide_dogstatsd_port(has_pipe: bool, configured_port: Option<&str>) -> u16 {
+    match configured_port.and_then(|port| port.parse::<u16>().ok()) {
+        Some(port) => port,
+        None if has_pipe => 0,
+        None => DEFAULT_DOGSTATSD_PORT,
+    }
+}
+
 /// Determines which components should be started based on configuration.
 ///
 /// The metrics aggregator and flusher are started together and shared between dogstatsd and enhanced metrics,
@@ -778,6 +796,35 @@ mod metrics_components_tests {
             assert_eq!(
                 &actual, expected,
                 "case (dd_use_dogstatsd={dogstatsd}, instance_metric_enabled={instance}, dd_enhanced_metrics={enhanced})"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod dogstatsd_port_tests {
+    use super::{DEFAULT_DOGSTATSD_PORT, decide_dogstatsd_port};
+
+    #[test]
+    fn test_decide_dogstatsd_port() {
+        let cases: &[(bool, Option<&str>, u16)] = &[
+            // Without a pipe, UDP is the only transport.
+            (false, None, DEFAULT_DOGSTATSD_PORT),
+            (false, Some("18125"), 18125),
+            (false, Some("not-a-port"), DEFAULT_DOGSTATSD_PORT),
+            // With a pipe, UDP stays off unless a port is set, so this binary doesn't take
+            // 8125 from a neighbor without a pipe.
+            (true, None, 0),
+            (true, Some("not-a-port"), 0),
+            (true, Some("8125"), 8125),
+            (true, Some("0"), 0),
+        ];
+
+        for (has_pipe, configured_port, expected) in cases {
+            assert_eq!(
+                decide_dogstatsd_port(*has_pipe, *configured_port),
+                *expected,
+                "case (has_pipe={has_pipe}, DD_DOGSTATSD_PORT={configured_port:?})"
             );
         }
     }

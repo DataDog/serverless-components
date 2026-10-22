@@ -36,9 +36,9 @@ const DEFAULT_QUEUE_SIZE: usize = 1024;
 pub struct DogStatsDConfig {
     /// Host to bind UDP socket to (e.g., "127.0.0.1")
     pub host: String,
-    /// Port to bind UDP socket to (e.g., 8125). The UDP socket is also bound when a named pipe
-    /// is configured, so clients without named-pipe support can still send metrics. With a
-    /// named pipe, port 0 turns UDP off, as `dogstatsd_port: 0` does in the Datadog Agent.
+    /// Port to bind UDP socket to (e.g., 8125). With a named pipe, a non-zero port also binds
+    /// UDP, best-effort, for clients that can't use the pipe; port 0 turns UDP off, as
+    /// `dogstatsd_port: 0` does in the Datadog Agent.
     pub port: u16,
     /// Optional namespace to prepend to all metric names (e.g., "myapp")
     pub metric_namespace: Option<String>,
@@ -211,8 +211,9 @@ pub struct DogStatsD {
 impl DogStatsD {
     /// Creates a new DogStatsD server instance.
     ///
-    /// The server always binds a UDP socket and also listens on a Windows named pipe when one
-    /// is configured.
+    /// Binds UDP on `config.port`. With a Windows named pipe configured, also listens on the
+    /// pipe; then port 0 turns UDP off and a failed bind is logged, not fatal. Without a pipe,
+    /// panics if the UDP bind fails.
     /// Metrics received will be forwarded to the provided aggregator_handle.
     #[must_use]
     pub async fn new(
