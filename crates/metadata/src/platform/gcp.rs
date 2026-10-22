@@ -127,7 +127,7 @@ fn build_metadata_client() -> Option<reqwest::Client> {
     {
         Ok(client) => Some(client),
         Err(error) => {
-            warn!("inventory: failed to create GCP metadata client: {error}");
+            warn!("metadata: failed to create GCP metadata client: {error}");
             None
         }
     }
@@ -148,14 +148,14 @@ async fn fetch_metadata_value(
     {
         Ok(response) => response,
         Err(error) => {
-            warn!("inventory: failed to fetch GCP metadata {label}: {error}");
+            warn!("metadata: failed to fetch GCP metadata {label}: {error}");
             return None;
         }
     };
 
     if !response.status().is_success() {
         warn!(
-            "inventory: GCP metadata server returned {} for {label}",
+            "metadata: GCP metadata server returned {} for {label}",
             response.status()
         );
         return None;
@@ -166,7 +166,7 @@ async fn fetch_metadata_value(
         .get("Metadata-Flavor")
         .and_then(|value| value.to_str().ok());
     if response_flavor != Some("Google") {
-        warn!("inventory: GCP metadata response missing Metadata-Flavor header for {label}");
+        warn!("metadata: GCP metadata response missing Metadata-Flavor header for {label}");
         return None;
     }
 
@@ -174,7 +174,7 @@ async fn fetch_metadata_value(
         .content_length()
         .is_some_and(|length| length > MAX_METADATA_RESPONSE_BYTES as u64)
     {
-        warn!("inventory: GCP metadata response too large for {label}");
+        warn!("metadata: GCP metadata response too large for {label}");
         return None;
     }
 
@@ -185,12 +185,12 @@ async fn fetch_metadata_value(
                 body.extend_from_slice(&chunk);
             }
             Ok(Some(_)) => {
-                warn!("inventory: GCP metadata response too large for {label}");
+                warn!("metadata: GCP metadata response too large for {label}");
                 return None;
             }
             Ok(None) => break,
             Err(error) => {
-                warn!("inventory: failed to read GCP metadata {label}: {error}");
+                warn!("metadata: failed to read GCP metadata {label}: {error}");
                 return None;
             }
         }
@@ -199,12 +199,12 @@ async fn fetch_metadata_value(
     let body = match std::str::from_utf8(&body) {
         Ok(body) => body,
         Err(error) => {
-            warn!("inventory: GCP metadata {label} was not UTF-8: {error}");
+            warn!("metadata: GCP metadata {label} was not UTF-8: {error}");
             return None;
         }
     };
     let value = parse(body.trim());
-    debug!("inventory: GCP metadata server {label}: {value:?}");
+    debug!("metadata: GCP metadata server {label}: {value:?}");
     value
 }
 
@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_complete_inventory_data() {
+    fn builds_complete_metadata_data() {
         let env = FakeEnv::new(&[
             ("FUNCTION_NAME", "my-fn"),
             ("FUNCTION_REGION", "us-central1"),
@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_name_is_not_an_inventory_workload() {
+    fn missing_name_is_not_a_metadata_workload() {
         let env = FakeEnv::new(&[
             ("FUNCTION_REGION", "us-central1"),
             ("GCP_PROJECT", "my-project"),
