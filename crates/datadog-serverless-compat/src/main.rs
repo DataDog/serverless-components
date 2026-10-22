@@ -104,9 +104,15 @@ pub async fn main() {
             None
         }
     };
+    let dd_dogstatsd_port_setting = env::var("DD_DOGSTATSD_PORT").ok();
+    if let Some(ref port) = dd_dogstatsd_port_setting
+        && port.parse::<u16>().is_err()
+    {
+        warn!("DD_DOGSTATSD_PORT={port:?} is not a valid port, so it is ignored");
+    }
     let dd_dogstatsd_port = decide_dogstatsd_port(
         dd_dogstatsd_windows_pipe_name.is_some(),
-        env::var("DD_DOGSTATSD_PORT").ok().as_deref(),
+        dd_dogstatsd_port_setting.as_deref(),
     );
     let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
     let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")

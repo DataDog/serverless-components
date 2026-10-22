@@ -663,7 +663,9 @@ async fn test_oversized_udp_datagram_keeps_both_transports_running() {
                     port: udp_port,
                     metric_namespace: None,
                     windows_pipe_name: Some(pipe_name.to_string()),
-                    so_rcvbuf: None,
+                    // Room for the oversized datagram, so Windows delivers it to recvfrom
+                    // instead of dropping it in the kernel.
+                    so_rcvbuf: Some(262_144),
                     buffer_size: None,
                     queue_size: None,
                 },
@@ -686,6 +688,11 @@ async fn test_oversized_udp_datagram_keeps_both_transports_running() {
         .await
         .expect("UDP send failed");
     sleep(Duration::from_millis(100)).await;
+    // Checked before opening the pipe: if DogStatsD stopped, the pipe server is gone too.
+    assert!(
+        !dogstatsd_task.is_finished(),
+        "DogStatsD stopped after an oversized UDP datagram"
+    );
 
     socket
         .send_to(b"after.oversized.udp.metric:1|c", ("127.0.0.1", udp_port))
@@ -699,10 +706,6 @@ async fn test_oversized_udp_datagram_keeps_both_transports_running() {
     client.flush().await.expect("pipe flush failed");
     sleep(Duration::from_millis(100)).await;
 
-    assert!(
-        !dogstatsd_task.is_finished(),
-        "DogStatsD stopped after an oversized UDP datagram"
-    );
     let response = handle.flush().await.expect("flush failed");
     let series_json = serde_json::to_string(&response.series).expect("serialize series");
     assert!(

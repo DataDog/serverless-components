@@ -249,7 +249,7 @@ impl DogStatsD {
                 // share the same VM on certain Windows Azure plans, and only one agent can own
                 // the port. The named pipe is unique per app, so a UDP bind failure is not fatal.
                 let udp_socket = if config.port == 0 {
-                    info!("dogstatsd-udp: port is 0, so only the named pipe is listening");
+                    info!("dogstatsd-udp: UDP is off (port 0), only the named pipe is listening");
                     None
                 } else {
                     match create_udp_socket(&addr, config.so_rcvbuf).await {
