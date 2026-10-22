@@ -134,7 +134,8 @@ enum UdpErrorPolicy {
     /// UDP is the only transport: keep the single-transport behavior.
     SoleTransport,
     /// UDP runs beside the named pipe. Like the trace agent's accept loops, skip
-    /// connection-level errors and end the reader on any other error, so the supervisor
+    /// connection-level errors. Log and skip errors about one bad datagram, as the
+    /// single-transport reader does. End the reader on any other error, so the supervisor
     /// stops DogStatsD with an error log instead of leaving it half running. Also skip the
     /// non-yielding drain so the pipe task always gets to run.
     BesideNamedPipe,
@@ -150,6 +151,16 @@ fn is_connection_error(e: &std::io::Error) -> bool {
             | std::io::ErrorKind::ConnectionReset
             | std::io::ErrorKind::ConnectionRefused
     )
+}
+
+/// Windows `recvfrom` errors that concern one datagram, not the socket: `WSAEMSGSIZE` (10040),
+/// a datagram larger than the buffer, and `WSAENETRESET` (10052), which on a datagram socket
+/// means its time to live expired. Rust maps neither to an `ErrorKind`.
+#[cfg(all(windows, feature = "windows-pipes"))]
+fn is_datagram_error(e: &std::io::Error) -> bool {
+    const WSAEMSGSIZE: i32 = 10040;
+    const WSAENETRESET: i32 = 10052;
+    matches!(e.raw_os_error(), Some(WSAEMSGSIZE | WSAENETRESET))
 }
 
 impl BufferReader {
@@ -427,7 +438,8 @@ impl DogStatsD {
 /// promptly even on a quiet socket (where `read_into` would block forever).
 ///
 /// Returns an error only when `policy` is `BesideNamedPipe` and a read fails with an error
-/// that isn't connection-level; the caller then stops DogStatsD.
+/// that concerns the socket rather than one connection or datagram; the caller then stops
+/// DogStatsD.
 #[allow(clippy::too_many_arguments)]
 async fn read_loop(
     mut reader: BufferReader,
@@ -462,6 +474,14 @@ async fn read_loop(
                 if matches!(policy, UdpErrorPolicy::BesideNamedPipe) && is_connection_error(&e) =>
             {
                 debug!("DogStatsD UDP read skipped a connection error: {}", e);
+                let _ = pool_tx.send(buf);
+                continue;
+            }
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            Err(e)
+                if matches!(policy, UdpErrorPolicy::BesideNamedPipe) && is_datagram_error(&e) =>
+            {
+                error!("DogStatsD read error: {}", e);
                 let _ = pool_tx.send(buf);
                 continue;
             }

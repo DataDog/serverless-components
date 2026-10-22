@@ -645,6 +645,84 @@ async fn test_named_pipe_and_udp_dual_listen() {
 #[cfg(test)]
 #[cfg(all(windows, feature = "windows-pipes"))]
 #[tokio::test]
+async fn test_oversized_udp_datagram_keeps_both_transports_running() {
+    let pipe_name = r"\\.\pipe\test_dogstatsd_oversized_udp";
+    let udp_port: u16 = 18131;
+    let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
+        .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+
+    let cancel_token = CancellationToken::new();
+    let dogstatsd_task = {
+        let handle = handle.clone();
+        let cancel_token = cancel_token.clone();
+        tokio::spawn(async move {
+            let dogstatsd = DogStatsD::new(
+                &DogStatsDConfig {
+                    host: "127.0.0.1".to_string(),
+                    port: udp_port,
+                    metric_namespace: None,
+                    windows_pipe_name: Some(pipe_name.to_string()),
+                    so_rcvbuf: None,
+                    buffer_size: None,
+                    queue_size: None,
+                },
+                handle,
+                cancel_token,
+            )
+            .await;
+            dogstatsd.spin().await;
+        })
+    };
+
+    sleep(Duration::from_millis(100)).await;
+
+    // Larger than the default 8192-byte read buffer. Windows reports this datagram as
+    // WSAEMSGSIZE, which must drop only this datagram.
+    let socket = UdpSocket::bind("0.0.0.0:0").await.expect("bind failed");
+    let oversized = format!("oversized.metric:1|c|#tag:{}", "x".repeat(9_000));
+    socket
+        .send_to(oversized.as_bytes(), ("127.0.0.1", udp_port))
+        .await
+        .expect("UDP send failed");
+    sleep(Duration::from_millis(100)).await;
+
+    socket
+        .send_to(b"after.oversized.udp.metric:1|c", ("127.0.0.1", udp_port))
+        .await
+        .expect("UDP send failed");
+    let mut client = ClientOptions::new().open(pipe_name).expect("client open");
+    client
+        .write_all(b"after.oversized.pipe.metric:1|c\n")
+        .await
+        .expect("pipe write failed");
+    client.flush().await.expect("pipe flush failed");
+    sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        !dogstatsd_task.is_finished(),
+        "DogStatsD stopped after an oversized UDP datagram"
+    );
+    let response = handle.flush().await.expect("flush failed");
+    let series_json = serde_json::to_string(&response.series).expect("serialize series");
+    assert!(
+        series_json.contains("after.oversized.udp.metric"),
+        "UDP metric after an oversized datagram was not received: {series_json}"
+    );
+    assert!(
+        series_json.contains("after.oversized.pipe.metric"),
+        "pipe metric after an oversized UDP datagram was not received: {series_json}"
+    );
+
+    cancel_token.cancel();
+    let result = timeout(Duration::from_millis(500), dogstatsd_task).await;
+    assert!(result.is_ok(), "task should complete after cancellation");
+    handle.shutdown().expect("shutdown failed");
+}
+
+#[cfg(test)]
+#[cfg(all(windows, feature = "windows-pipes"))]
+#[tokio::test]
 async fn test_named_pipe_disconnect_reconnect() {
     let pipe_name = r"\\.\pipe\test_dogstatsd_reconnect";
     let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
