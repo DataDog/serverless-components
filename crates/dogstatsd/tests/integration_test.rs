@@ -22,7 +22,11 @@ use tokio_util::sync::CancellationToken;
 use zstd::zstd_safe::CompressionLevel;
 
 #[cfg(all(windows, feature = "windows-pipes"))]
-use tokio::{io::AsyncWriteExt, net::windows::named_pipe::ClientOptions};
+use tokio::{
+    io::AsyncWriteExt,
+    net::windows::named_pipe::{ClientOptions, NamedPipeClient},
+    time::Instant,
+};
 
 #[cfg(test)]
 #[tokio::test]
@@ -548,94 +552,145 @@ async fn test_named_pipe_basic_communication() {
     handle.shutdown().expect("shutdown failed");
 }
 
+/// Starts DogStatsD with a named pipe and, for a non-zero `udp_port`, UDP beside it. UDP is
+/// bound when this returns; the pipe server starts in `spin`, so open it with
+/// `open_pipe_client`.
+#[cfg(all(windows, feature = "windows-pipes"))]
+async fn start_dogstatsd_with_pipe(
+    handle: AggregatorHandle,
+    pipe_name: &str,
+    udp_port: u16,
+    so_rcvbuf: Option<usize>,
+) -> (tokio::task::JoinHandle<()>, CancellationToken) {
+    let cancel_token = CancellationToken::new();
+    let dogstatsd = DogStatsD::new(
+        &DogStatsDConfig {
+            host: "127.0.0.1".to_string(),
+            port: udp_port,
+            metric_namespace: None,
+            windows_pipe_name: Some(pipe_name.to_string()),
+            so_rcvbuf,
+            buffer_size: None,
+            queue_size: None,
+        },
+        handle,
+        cancel_token.clone(),
+    )
+    .await;
+    (tokio::spawn(dogstatsd.spin()), cancel_token)
+}
+
+/// Opens a client on `pipe_name`, retrying until the pipe server has created it.
+#[cfg(all(windows, feature = "windows-pipes"))]
+async fn open_pipe_client(pipe_name: &str) -> NamedPipeClient {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match ClientOptions::new().open(pipe_name) {
+            Ok(client) => return client,
+            Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(10)).await,
+            Err(e) => panic!("could not open pipe {pipe_name}: {e}"),
+        }
+    }
+}
+
+/// Flushes until every name in `names` has appeared in the flushed series. Panics if DogStatsD
+/// stops first, or after a deadline.
+#[cfg(all(windows, feature = "windows-pipes"))]
+async fn flush_until_seen(
+    handle: &AggregatorHandle,
+    dogstatsd_task: &tokio::task::JoinHandle<()>,
+    names: &[&str],
+) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut flushed = String::new();
+    while !names.iter().all(|name| flushed.contains(name)) {
+        assert!(
+            !dogstatsd_task.is_finished(),
+            "DogStatsD stopped while waiting for {names:?}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "metrics {names:?} were not received; flushed: {flushed}"
+        );
+        let response = handle.flush().await.expect("flush failed");
+        flushed.push_str(&serde_json::to_string(&response.series).expect("serialize series"));
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[cfg(test)]
 #[cfg(all(windows, feature = "windows-pipes"))]
 #[tokio::test]
 async fn test_named_pipe_and_udp_dual_listen() {
     let pipe_name = r"\\.\pipe\test_dogstatsd_dual_listen";
-    let udp_port: u16 = 18130;
     let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
         .expect("aggregator service creation failed");
     tokio::spawn(service.run());
-
-    let cancel_token = CancellationToken::new();
-
-    // Both transports are deliberately set on the same server: a non-zero UDP
-    // port AND a pipe name. They must come up concurrently.
-    let dogstatsd_task = {
-        let handle = handle.clone();
-        let cancel_token = cancel_token.clone();
-        tokio::spawn(async move {
-            let dogstatsd = DogStatsD::new(
-                &DogStatsDConfig {
-                    host: "127.0.0.1".to_string(),
-                    port: udp_port,
-                    metric_namespace: None,
-                    windows_pipe_name: Some(pipe_name.to_string()),
-                    so_rcvbuf: None,
-                    buffer_size: None,
-                    queue_size: None,
-                },
-                handle,
-                cancel_token,
-            )
-            .await;
-            dogstatsd.spin().await;
-        })
-    };
-
-    sleep(Duration::from_millis(100)).await;
+    let (dogstatsd_task, cancel_token) =
+        start_dogstatsd_with_pipe(handle.clone(), pipe_name, 18130, None).await;
 
     // One metric per transport, distinguishable by metric name.
     let socket = UdpSocket::bind("0.0.0.0:0").await.expect("bind failed");
     socket
-        .send_to(b"dual.udp.metric:1|c", ("127.0.0.1", udp_port))
+        .send_to(b"dual.udp.metric:1|c", ("127.0.0.1", 18130))
         .await
         .expect("UDP send failed");
-
-    let mut client = ClientOptions::new().open(pipe_name).expect("client open");
+    let mut client = open_pipe_client(pipe_name).await;
     client
         .write_all(b"dual.pipe.metric:1|c\n")
         .await
         .expect("pipe write failed");
     client.flush().await.expect("pipe flush failed");
 
-    sleep(Duration::from_millis(100)).await;
+    flush_until_seen(
+        &handle,
+        &dogstatsd_task,
+        &["dual.udp.metric", "dual.pipe.metric"],
+    )
+    .await;
 
-    // Pipe messages carry right-sized buffers. UDP packets longer than the pipe message must
-    // still arrive whole, so those buffers must not be reused for UDP reads. Send several,
-    // because the reader takes a pooled buffer before each wait.
-    for i in 0..4 {
-        let metric = format!("dual.udp.after.pipe.{i}.metric.with.a.much.longer.name:1|c");
+    cancel_token.cancel();
+    let result = timeout(Duration::from_millis(500), dogstatsd_task).await;
+    assert!(result.is_ok(), "task should complete after cancellation");
+    handle.shutdown().expect("shutdown failed");
+}
+
+#[cfg(test)]
+#[cfg(all(windows, feature = "windows-pipes"))]
+#[tokio::test]
+async fn test_pipe_buffers_are_not_reused_for_udp_reads() {
+    let pipe_name = r"\\.\pipe\test_dogstatsd_pipe_buffers";
+    let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
+        .expect("aggregator service creation failed");
+    tokio::spawn(service.run());
+    let (dogstatsd_task, cancel_token) =
+        start_dogstatsd_with_pipe(handle.clone(), pipe_name, 18132, None).await;
+
+    // A pipe message's buffer is sized to the message. Once it is processed, it must not go
+    // back to the pool that UDP reads draw from.
+    let mut client = open_pipe_client(pipe_name).await;
+    client
+        .write_all(b"short.pipe:1|c\n")
+        .await
+        .expect("pipe write failed");
+    client.flush().await.expect("pipe flush failed");
+    flush_until_seen(&handle, &dogstatsd_task, &["short.pipe"]).await;
+
+    // Several UDP packets longer than the pipe message, because the reader takes a pooled
+    // buffer before each read. A reused pipe buffer would lose one of them.
+    let socket = UdpSocket::bind("0.0.0.0:0").await.expect("bind failed");
+    let names: Vec<String> = (0..4)
+        .map(|i| format!("udp.after.pipe.{i}.metric.with.a.much.longer.name"))
+        .collect();
+    for name in &names {
         socket
-            .send_to(metric.as_bytes(), ("127.0.0.1", udp_port))
+            .send_to(format!("{name}:1|c").as_bytes(), ("127.0.0.1", 18132))
             .await
             .expect("UDP send failed");
-        sleep(Duration::from_millis(20)).await;
     }
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    flush_until_seen(&handle, &dogstatsd_task, &names).await;
 
-    sleep(Duration::from_millis(100)).await;
-
-    let response = handle.flush().await.expect("flush failed");
-    let series_json = serde_json::to_string(&response.series).expect("serialize series");
-    for i in 0..4 {
-        assert!(
-            series_json.contains(&format!(
-                "dual.udp.after.pipe.{i}.metric.with.a.much.longer.name"
-            )),
-            "UDP packet {i} after a pipe message was not received whole: {series_json}"
-        );
-    }
-    assert!(
-        series_json.contains("dual.udp.metric"),
-        "UDP metric was not received when a pipe name is also configured: {series_json}"
-    );
-    assert!(
-        series_json.contains("dual.pipe.metric"),
-        "pipe metric was not received when UDP is also listening: {series_json}"
-    );
-
-    // Cleanup
     cancel_token.cancel();
     let result = timeout(Duration::from_millis(500), dogstatsd_task).await;
     assert!(result.is_ok(), "task should complete after cancellation");
@@ -647,75 +702,34 @@ async fn test_named_pipe_and_udp_dual_listen() {
 #[tokio::test]
 async fn test_oversized_udp_datagram_keeps_both_transports_running() {
     let pipe_name = r"\\.\pipe\test_dogstatsd_oversized_udp";
-    let udp_port: u16 = 18131;
     let (service, handle) = AggregatorService::new(SortedTags::parse("test:value").unwrap(), 1_024)
         .expect("aggregator service creation failed");
     tokio::spawn(service.run());
-
-    let cancel_token = CancellationToken::new();
-    let dogstatsd_task = {
-        let handle = handle.clone();
-        let cancel_token = cancel_token.clone();
-        tokio::spawn(async move {
-            let dogstatsd = DogStatsD::new(
-                &DogStatsDConfig {
-                    host: "127.0.0.1".to_string(),
-                    port: udp_port,
-                    metric_namespace: None,
-                    windows_pipe_name: Some(pipe_name.to_string()),
-                    // Room for the oversized datagram, so Windows delivers it to recvfrom
-                    // instead of dropping it in the kernel.
-                    so_rcvbuf: Some(262_144),
-                    buffer_size: None,
-                    queue_size: None,
-                },
-                handle,
-                cancel_token,
-            )
-            .await;
-            dogstatsd.spin().await;
-        })
-    };
-
-    sleep(Duration::from_millis(100)).await;
+    // Room for the oversized datagram, so Windows delivers it to recvfrom instead of dropping
+    // it in the kernel.
+    let (dogstatsd_task, cancel_token) =
+        start_dogstatsd_with_pipe(handle.clone(), pipe_name, 18131, Some(262_144)).await;
 
     // Larger than the default 8192-byte read buffer. Windows reports this datagram as
-    // WSAEMSGSIZE, which must drop only this datagram.
+    // WSAEMSGSIZE, which must drop only this datagram. If it stopped DogStatsD instead, the
+    // next wait fails with "DogStatsD stopped".
     let socket = UdpSocket::bind("0.0.0.0:0").await.expect("bind failed");
     let oversized = format!("oversized.metric:1|c|#tag:{}", "x".repeat(9_000));
-    socket
-        .send_to(oversized.as_bytes(), ("127.0.0.1", udp_port))
-        .await
-        .expect("UDP send failed");
-    sleep(Duration::from_millis(100)).await;
-    // Checked before opening the pipe: if DogStatsD stopped, the pipe server is gone too.
-    assert!(
-        !dogstatsd_task.is_finished(),
-        "DogStatsD stopped after an oversized UDP datagram"
-    );
+    for datagram in [oversized.as_bytes(), b"after.oversized.udp.metric:1|c"] {
+        socket
+            .send_to(datagram, ("127.0.0.1", 18131))
+            .await
+            .expect("UDP send failed");
+    }
+    flush_until_seen(&handle, &dogstatsd_task, &["after.oversized.udp.metric"]).await;
 
-    socket
-        .send_to(b"after.oversized.udp.metric:1|c", ("127.0.0.1", udp_port))
-        .await
-        .expect("UDP send failed");
-    let mut client = ClientOptions::new().open(pipe_name).expect("client open");
+    let mut client = open_pipe_client(pipe_name).await;
     client
         .write_all(b"after.oversized.pipe.metric:1|c\n")
         .await
         .expect("pipe write failed");
     client.flush().await.expect("pipe flush failed");
-    sleep(Duration::from_millis(100)).await;
-
-    let response = handle.flush().await.expect("flush failed");
-    let series_json = serde_json::to_string(&response.series).expect("serialize series");
-    assert!(
-        series_json.contains("after.oversized.udp.metric"),
-        "UDP metric after an oversized datagram was not received: {series_json}"
-    );
-    assert!(
-        series_json.contains("after.oversized.pipe.metric"),
-        "pipe metric after an oversized UDP datagram was not received: {series_json}"
-    );
+    flush_until_seen(&handle, &dogstatsd_task, &["after.oversized.pipe.metric"]).await;
 
     cancel_token.cancel();
     let result = timeout(Duration::from_millis(500), dogstatsd_task).await;
