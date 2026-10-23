@@ -118,8 +118,7 @@ enum Transport {
     Reader(BufferReader),
 
     /// Windows named pipe, plus UDP when it bound. `udp_socket` is `None` when the port is 0
-    /// or another agent on a shared host already owns it. Each transport runs in its own task,
-    /// like the trace agent's TCP and named-pipe listeners.
+    /// or another agent on a shared host already owns it. See `spin_named_pipe`.
     #[cfg(all(windows, feature = "windows-pipes"))]
     NamedPipe {
         pipe_name: Arc<String>,
@@ -127,8 +126,8 @@ enum Transport {
     },
 }
 
-/// Connection-level errors that the trace agent's accept loops skip. On a Windows UDP socket,
-/// `ConnectionReset` reports an ICMP Port Unreachable reply to an earlier send.
+/// Errors about a peer, not the socket. On a Windows UDP socket, `ConnectionReset` reports an
+/// ICMP Port Unreachable reply to an earlier send.
 #[cfg(all(windows, feature = "windows-pipes"))]
 fn is_connection_error(e: &std::io::Error) -> bool {
     matches!(
@@ -704,15 +703,12 @@ async fn create_udp_socket(
     tokio::net::UdpSocket::from_std(std_socket)
 }
 
-/// Reads UDP beside the named pipe into the processing queue. It does the same job as
-/// `read_loop`, so keep the two in step, but differs in two ways:
-/// - It reads only with async `recv_from` and skips `read_loop`'s `try_recv_from` drain. That
-///   drain never yields, so on a one-core host (Azure Functions EP1) it would hold the only
-///   worker thread and starve the pipe. Each async read counts against tokio's cooperative
-///   budget, which yields regularly.
-/// - Like the trace agent's accept loops, it skips connection-level errors, and it logs and
-///   skips errors about one bad datagram, as `read_loop` does. Any other error ends the loop
-///   with that error, and `spin_named_pipe` then stops DogStatsD.
+/// Reads UDP beside the named pipe. Same job as `read_loop`; keep the two in step. It differs
+/// in two ways:
+/// - No `try_recv_from` drain. The drain never yields, so on a one-core host it would starve
+///   the pipe task; async `recv_from` yields under tokio's cooperative budget.
+/// - It skips peer and single-datagram errors and returns any other error, which makes
+///   `spin_named_pipe` stop DogStatsD.
 #[cfg(all(windows, feature = "windows-pipes"))]
 async fn udp_read_loop_beside_pipe(
     socket: tokio::net::UdpSocket,

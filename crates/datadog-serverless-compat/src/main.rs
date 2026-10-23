@@ -572,18 +572,14 @@ struct EnabledMetricsComponents {
     start_cpu_metrics_collector: bool,
 }
 
-/// Chooses the DogStatsD UDP port. 0 means UDP is off.
+/// Chooses the DogStatsD UDP port; 0 means UDP is off.
 ///
-/// Without a named pipe, UDP is the only transport: use `DD_DOGSTATSD_PORT`, else 8125.
+/// Without a named pipe, UDP is the only transport: `DD_DOGSTATSD_PORT`, else 8125.
 ///
-/// With a named pipe, UDP is off unless `DD_DOGSTATSD_PORT` is set. Several Windows function
-/// apps can share one instance, and only one binary can own UDP 8125. A binary without a pipe
-/// panics when the port is taken, so a binary with a pipe must not take it by default. The .NET
-/// and Node compatibility layers point their in-process clients at the pipe, so their binaries
-/// don't need UDP. The Java compatibility layer can't: a JVM can't change its own environment
-/// after it starts, so older Java DogStatsD clients, and clients that can't open the pipe,
-/// still send to UDP 8125. compat-java sets `DD_DOGSTATSD_PORT` for its binary to keep them
-/// working.
+/// With a named pipe, UDP is off unless `DD_DOGSTATSD_PORT` is set. Function apps on one
+/// Windows instance share ports, and a binary without a pipe panics if another one owns 8125,
+/// so a binary with a pipe must not take it by default. Callers whose clients still send UDP,
+/// such as datadog-serverless-compat-java, set the port.
 fn decide_dogstatsd_port(has_pipe: bool, configured_port: Option<&str>) -> u16 {
     match configured_port.and_then(|port| port.parse::<u16>().ok()) {
         Some(port) => port,
