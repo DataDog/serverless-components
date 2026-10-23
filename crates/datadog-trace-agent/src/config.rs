@@ -178,13 +178,16 @@ impl Config {
                 None
             }
         };
-        let dd_dogstatsd_port: u16 = if dd_dogstatsd_windows_pipe_name.is_some() {
-            0 // Override to 0 when using Windows named pipe
-        } else {
-            env::var("DD_DOGSTATSD_PORT")
-                .ok()
-                .and_then(|port| port.parse::<u16>().ok())
-                .unwrap_or(DEFAULT_DOGSTATSD_PORT)
+        // Reported as `statsd_port` in /info, so it follows the DogStatsD listener's rule in
+        // datadog-serverless-compat: with a named pipe, UDP is off (0) unless DD_DOGSTATSD_PORT
+        // is set.
+        let dd_dogstatsd_port: u16 = match env::var("DD_DOGSTATSD_PORT")
+            .ok()
+            .and_then(|port| port.parse::<u16>().ok())
+        {
+            Some(port) => port,
+            None if dd_dogstatsd_windows_pipe_name.is_some() => 0,
+            None => DEFAULT_DOGSTATSD_PORT,
         };
 
         let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
@@ -529,6 +532,7 @@ mod tests {
                     Some("test-spring-app"),
                 ),
                 ("DD_DOGSTATSD_WINDOWS_PIPE_NAME", Some(r"test_pipe")),
+                ("DD_DOGSTATSD_PORT", None),
             ],
             || {
                 let config_res = config::Config::new();
@@ -539,8 +543,30 @@ mod tests {
                     Some(r"\\.\pipe\test_pipe".to_string())
                 );
 
-                // Port should be overridden to 0 when pipe is set
+                // With a pipe and no DD_DOGSTATSD_PORT, UDP is off
                 assert_eq!(config.dd_dogstatsd_port, 0);
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(any(all(windows, feature = "windows-pipes"), test))]
+    fn test_dogstatsd_windows_pipe_name_with_port() {
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                (
+                    "ASCSVCRT_SPRING__APPLICATION__NAME",
+                    Some("test-spring-app"),
+                ),
+                ("DD_DOGSTATSD_WINDOWS_PIPE_NAME", Some(r"test_pipe")),
+                ("DD_DOGSTATSD_PORT", Some("8125")),
+            ],
+            || {
+                let config = config::Config::new().unwrap();
+                // DogStatsD also listens on UDP, so /info reports the port
+                assert_eq!(config.dd_dogstatsd_port, 8125);
             },
         );
     }
