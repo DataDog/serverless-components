@@ -127,20 +127,6 @@ enum Transport {
     },
 }
 
-/// How the UDP reader treats read errors.
-#[cfg(all(windows, feature = "windows-pipes"))]
-#[derive(Clone, Copy)]
-enum UdpErrorPolicy {
-    /// UDP is the only transport: keep the single-transport behavior.
-    SoleTransport,
-    /// UDP runs beside the named pipe. Like the trace agent's accept loops, skip
-    /// connection-level errors. Log and skip errors about one bad datagram, as the
-    /// single-transport reader does. End the reader on any other error, so the supervisor
-    /// stops DogStatsD with an error log instead of leaving it half running. Also skip the
-    /// non-yielding drain so the pipe task always gets to run.
-    BesideNamedPipe,
-}
-
 /// Connection-level errors that the trace agent's accept loops skip. On a Windows UDP socket,
 /// `ConnectionReset` reports an ICMP Port Unreachable reply to an earlier send.
 #[cfg(all(windows, feature = "windows-pipes"))]
@@ -351,7 +337,7 @@ impl DogStatsD {
                 let reader_pool_tx = pool_tx.clone();
                 let reader_token = cancel_token.clone();
                 tokio::spawn(async move {
-                    let _ = read_loop(
+                    read_loop(
                         buffer_reader,
                         tx,
                         reader_token,
@@ -359,8 +345,6 @@ impl DogStatsD {
                         queue_size,
                         pool_rx,
                         reader_pool_tx,
-                        #[cfg(all(windows, feature = "windows-pipes"))]
-                        UdpErrorPolicy::SoleTransport,
                     )
                     .await;
                 });
@@ -437,11 +421,6 @@ impl DogStatsD {
 /// Uses `is_cancelled()` as a fast-path check at the top of each iteration,
 /// and `tokio::select!` on the async `read_into()` to ensure the reader exits
 /// promptly even on a quiet socket (where `read_into` would block forever).
-///
-/// Returns an error only when `policy` is `BesideNamedPipe` and a read fails with an error
-/// that concerns the socket rather than one connection or datagram; the caller then stops
-/// DogStatsD.
-#[allow(clippy::too_many_arguments)]
 async fn read_loop(
     mut reader: BufferReader,
     tx: tokio::sync::mpsc::Sender<Packet>,
@@ -450,11 +429,8 @@ async fn read_loop(
     queue_capacity: usize,
     mut pool_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     pool_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-    #[cfg(all(windows, feature = "windows-pipes"))] policy: UdpErrorPolicy,
-) -> std::io::Result<()> {
+) {
     let mut dropped: u64 = 0;
-    #[cfg_attr(not(all(windows, feature = "windows-pipes")), allow(unused_mut))]
-    let mut exit = Ok(());
     while !cancel.is_cancelled() {
         // Get a buffer from the pool, or allocate if the pool is empty (cold start).
         let mut buf = pool_rx.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
@@ -470,28 +446,6 @@ async fn read_loop(
         };
         let (len, source) = match result {
             Ok(r) => r,
-            #[cfg(all(windows, feature = "windows-pipes"))]
-            Err(e)
-                if matches!(policy, UdpErrorPolicy::BesideNamedPipe) && is_connection_error(&e) =>
-            {
-                debug!("DogStatsD UDP read skipped a connection error: {}", e);
-                let _ = pool_tx.send(buf);
-                continue;
-            }
-            #[cfg(all(windows, feature = "windows-pipes"))]
-            Err(e)
-                if matches!(policy, UdpErrorPolicy::BesideNamedPipe) && is_datagram_error(&e) =>
-            {
-                error!("DogStatsD read error: {}", e);
-                let _ = pool_tx.send(buf);
-                continue;
-            }
-            #[cfg(all(windows, feature = "windows-pipes"))]
-            Err(e) if matches!(policy, UdpErrorPolicy::BesideNamedPipe) => {
-                let _ = pool_tx.send(buf);
-                exit = Err(e);
-                break;
-            }
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
                 debug!("DogStatsD transport closed: {}", e);
                 break;
@@ -508,14 +462,6 @@ async fn read_loop(
         }
         if !try_send_packet(&tx, Packet { buf, len, source }, &mut dropped, &pool_tx) {
             break;
-        }
-
-        // Beside the named pipe, skip the drain below. It never yields, so on a one-core host
-        // (Azure Functions EP1) it would hold the only worker thread and starve the pipe. Each
-        // async read instead counts against tokio's cooperative budget, which yields regularly.
-        #[cfg(all(windows, feature = "windows-pipes"))]
-        if matches!(policy, UdpErrorPolicy::BesideNamedPipe) {
-            continue;
         }
 
         // Drain any packets already in the kernel buffer without going
@@ -553,7 +499,6 @@ async fn read_loop(
             dropped, queue_capacity
         );
     }
-    exit
 }
 
 /// Sends a packet to the channel. Returns `false` if the channel is closed
@@ -756,6 +701,76 @@ async fn create_udp_socket(
     tokio::net::UdpSocket::from_std(std_socket)
 }
 
+/// Reads UDP beside the named pipe into the processing queue. It does the same job as
+/// `read_loop`, so keep the two in step, but differs in two ways:
+/// - It reads only with async `recv_from` and skips `read_loop`'s `try_recv_from` drain. That
+///   drain never yields, so on a one-core host (Azure Functions EP1) it would hold the only
+///   worker thread and starve the pipe. Each async read counts against tokio's cooperative
+///   budget, which yields regularly.
+/// - Like the trace agent's accept loops, it skips connection-level errors, and it logs and
+///   skips errors about one bad datagram, as `read_loop` does. Any other error ends the loop
+///   with that error, and `spin_named_pipe` then stops DogStatsD.
+#[cfg(all(windows, feature = "windows-pipes"))]
+async fn udp_read_loop_beside_pipe(
+    socket: tokio::net::UdpSocket,
+    tx: tokio::sync::mpsc::Sender<Packet>,
+    stop: tokio_util::sync::CancellationToken,
+    buf_size: usize,
+    queue_capacity: usize,
+    mut pool_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    pool_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+) -> std::io::Result<()> {
+    let mut dropped: u64 = 0;
+    let mut exit = Ok(());
+    while !stop.is_cancelled() {
+        // Get a buffer from the pool, or allocate if the pool is empty (cold start).
+        let mut buf = pool_rx.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
+
+        let result = tokio::select! {
+            r = socket.recv_from(&mut buf) => r,
+            _ = stop.cancelled() => {
+                let _ = pool_tx.send(buf);
+                break;
+            }
+        };
+        match result {
+            Ok((0, _)) => {
+                let _ = pool_tx.send(buf);
+            }
+            Ok((len, src)) => {
+                let packet = Packet {
+                    buf,
+                    len,
+                    source: MessageSource::Network(src),
+                };
+                if !try_send_packet(&tx, packet, &mut dropped, &pool_tx) {
+                    break;
+                }
+            }
+            Err(e) if is_connection_error(&e) => {
+                debug!("DogStatsD UDP read skipped a connection error: {}", e);
+                let _ = pool_tx.send(buf);
+            }
+            Err(e) if is_datagram_error(&e) => {
+                error!("DogStatsD read error: {}", e);
+                let _ = pool_tx.send(buf);
+            }
+            Err(e) => {
+                let _ = pool_tx.send(buf);
+                exit = Err(e);
+                break;
+            }
+        }
+    }
+    if dropped > 0 {
+        error!(
+            "DogStatsD UDP reader exiting, {} total packets dropped (queue capacity: {})",
+            dropped, queue_capacity
+        );
+    }
+    exit
+}
+
 /// Both ends of the processing queue and the buffer pool, handed to `spin_named_pipe`.
 #[cfg(all(windows, feature = "windows-pipes"))]
 struct QueueEnds {
@@ -794,17 +809,9 @@ async fn spin_named_pipe(
     if let Some(socket) = udp_socket {
         let (tx, stop, pool_tx) = (tx.clone(), stop.clone(), pool_tx.clone());
         transports.spawn(async move {
-            let result = read_loop(
-                BufferReader::UdpSocket(socket),
-                tx,
-                stop,
-                buf_size,
-                queue_size,
-                pool_rx,
-                pool_tx,
-                UdpErrorPolicy::BesideNamedPipe,
-            )
-            .await;
+            let result =
+                udp_read_loop_beside_pipe(socket, tx, stop, buf_size, queue_size, pool_rx, pool_tx)
+                    .await;
             ("UDP", result)
         });
     }
