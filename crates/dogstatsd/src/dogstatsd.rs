@@ -421,6 +421,9 @@ impl DogStatsD {
 /// Uses `is_cancelled()` as a fast-path check at the top of each iteration,
 /// and `tokio::select!` on the async `read_into()` to ensure the reader exits
 /// promptly even on a quiet socket (where `read_into` would block forever).
+///
+/// With a Windows named pipe, UDP is read by `udp_read_loop_beside_pipe` instead, which does
+/// the same job without the drain; keep the two in step.
 async fn read_loop(
     mut reader: BufferReader,
     tx: tokio::sync::mpsc::Sender<Packet>,
