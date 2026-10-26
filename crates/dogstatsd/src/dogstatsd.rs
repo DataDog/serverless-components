@@ -232,19 +232,26 @@ impl DogStatsD {
                 // share the same VM on certain Windows Azure plans, and only one agent can own
                 // the port. The named pipe is unique per app, so a UDP bind failure is not fatal.
                 let udp_socket = if config.port == 0 {
-                    info!("dogstatsd-udp: UDP is off (port 0), only the named pipe is listening");
+                    info!(
+                        "dogstatsd: starting to listen on named pipe {}; UDP is off (port 0)",
+                        pipe_name_ref
+                    );
                     None
                 } else {
                     match create_udp_socket(&addr, config.so_rcvbuf).await {
                         Ok(socket) => {
-                            info!("dogstatsd-udp: starting to listen on {}", addr);
+                            info!(
+                                "dogstatsd: starting to listen on named pipe {} and UDP {}",
+                                pipe_name_ref, addr
+                            );
                             Some(socket)
                         }
                         Err(e) => {
                             warn!(
-                                "DogStatsD could not bind UDP {}: {}. Named-pipe transport is \
-                                active; metrics sent over UDP will not be received by this agent.",
-                                addr, e
+                                "DogStatsD could not bind UDP {}: {}. Starting to listen on named \
+                                pipe {} only; metrics sent over UDP will not be received by this \
+                                agent.",
+                                addr, e, pipe_name_ref
                             );
                             None
                         }

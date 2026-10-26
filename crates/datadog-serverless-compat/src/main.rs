@@ -105,11 +105,6 @@ pub async fn main() {
         }
     };
     let dd_dogstatsd_port_setting = env::var("DD_DOGSTATSD_PORT").ok();
-    if let Some(ref port) = dd_dogstatsd_port_setting
-        && port.parse::<u16>().is_err()
-    {
-        warn!("DD_DOGSTATSD_PORT={port:?} is not a valid port, so it is ignored");
-    }
     let dd_dogstatsd_port = decide_dogstatsd_port(
         dd_dogstatsd_windows_pipe_name.is_some(),
         dd_dogstatsd_port_setting.as_deref(),
@@ -162,6 +157,13 @@ pub async fn main() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     debug!("Logging subsystem enabled");
+
+    // Logged here, after the subscriber is installed, so the warning isn't dropped.
+    if let Some(ref port) = dd_dogstatsd_port_setting
+        && port.parse::<u16>().is_err()
+    {
+        warn!("DD_DOGSTATSD_PORT={port:?} is not a valid port, so it is ignored");
+    }
 
     let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
 
@@ -253,9 +255,8 @@ pub async fn main() {
                     dd_dogstatsd_windows_pipe_name.clone(),
                 )
                 .await;
-                if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
-                    info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
-                } else {
+                // With a named pipe, the dogstatsd crate logs the pipe and the UDP result.
+                if dd_dogstatsd_windows_pipe_name.is_none() {
                     info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
                 }
             } else {
