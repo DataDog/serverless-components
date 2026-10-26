@@ -36,9 +36,8 @@ const DEFAULT_QUEUE_SIZE: usize = 1024;
 pub struct DogStatsDConfig {
     /// Host to bind UDP socket to (e.g., "127.0.0.1")
     pub host: String,
-    /// Port to bind UDP socket to (e.g., 8125). With a named pipe, a non-zero port also binds
-    /// UDP, best-effort, for clients that can't use the pipe; port 0 turns UDP off, as
-    /// `dogstatsd_port: 0` does in the Datadog Agent.
+    /// Port to bind UDP socket to (e.g., 8125).
+    /// With a named pipe, port 0 turns UDP off.
     pub port: u16,
     /// Optional namespace to prepend to all metric names (e.g., "myapp")
     pub metric_namespace: Option<String>,
@@ -91,8 +90,7 @@ impl Packet {
         &self.buf[..self.len]
     }
 
-    /// Whether the buffer came from the reader's pool and should go back to it. Named-pipe
-    /// messages bring their own right-sized buffers, which must not be reused for UDP reads.
+    /// Named-pipe messages and UDP messages use different buffers.
     fn is_pooled(&self) -> bool {
         match self.source {
             MessageSource::Network(_) => true,

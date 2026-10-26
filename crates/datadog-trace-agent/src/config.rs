@@ -178,9 +178,9 @@ impl Config {
                 None
             }
         };
-        // Reported as `statsd_port` in /info, so it follows the DogStatsD listener's rule in
-        // datadog-serverless-compat: with a named pipe, UDP is off (0) unless DD_DOGSTATSD_PORT
-        // is set.
+        // Reported as `statsd_port` in /info.
+        // We duplicate decide_dogstatsd_port logic from datadog-serverless-compat here,
+        // until it can be moved to the datadog-agent-config crate.
         let dd_dogstatsd_port: u16 = match env::var("DD_DOGSTATSD_PORT")
             .ok()
             .and_then(|port| port.parse::<u16>().ok())

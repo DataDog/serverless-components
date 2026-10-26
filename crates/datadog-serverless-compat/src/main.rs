@@ -254,7 +254,6 @@ pub async fn main() {
                 )
                 .await;
                 if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
-                    // The dogstatsd crate logs whether the best-effort UDP bind succeeded.
                     info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
                 } else {
                     info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
@@ -466,9 +465,7 @@ async fn start_dogstatsd_listener(
     tokio::spawn(async move {
         dogstatsd_client.spin().await;
         if !spin_cancel_token.is_cancelled() {
-            error!(
-                "dogstatsd: listener stopped unexpectedly; custom metrics are no longer received"
-            );
+            error!("dogstatsd: listener stopped unexpectedly.");
         }
     });
 
@@ -574,12 +571,11 @@ struct EnabledMetricsComponents {
 
 /// Chooses the DogStatsD UDP port; 0 means UDP is off.
 ///
-/// Without a named pipe, UDP is the only transport: `DD_DOGSTATSD_PORT`, else 8125.
-///
-/// With a named pipe, UDP is off unless `DD_DOGSTATSD_PORT` is set. Function apps on one
-/// Windows instance share ports, and a binary without a pipe panics if another one owns 8125,
-/// so a binary with a pipe must not take it by default. Callers whose clients still send UDP,
-/// such as datadog-serverless-compat-java, set the port.
+/// UDP behavior varies depending on named pipe availability/use.
+/// On Linux, we depend on UDP. On Windows, we want to use a named pipe.
+/// If we are using a named pipe, UDP is off by default. (port=0)
+/// If we are using a named pipe AND `DD_DOGSTATSD_PORT` is non-zero and valid,
+/// then we also listen on UDP for backwards compatibility with older clients.
 fn decide_dogstatsd_port(has_pipe: bool, configured_port: Option<&str>) -> u16 {
     match configured_port.and_then(|port| port.parse::<u16>().ok()) {
         Some(port) => port,
