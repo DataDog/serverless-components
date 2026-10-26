@@ -17,9 +17,9 @@ homepage = "https://github.com/DataDog/serverless-components"
 repository = "https://github.com/DataDog/serverless-components"
 
 [workspace.dependencies]
-libdd-common = { version = "5.2.0", default-features = false }
-libdd-trace-obfuscation = { version = "6.0.0", default-features = false }
-libdd-trace-utils = { version = "10.1.0", default-features = false }
+libdd-common = { version = "9.0.0", default-features = false }
+libdd-trace-obfuscation = { version = "11.0.0", default-features = false }
+libdd-trace-utils = { version = "15.0.0", default-features = false }
 
 [profile.release]
 opt-level = "z"
