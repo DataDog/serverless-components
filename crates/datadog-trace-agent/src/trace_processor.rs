@@ -217,6 +217,19 @@ impl ServerlessTraceProcessor {
     /// Chunks are never removed or reordered: unrescued chunks stay in the
     /// payload for the backend to handle.
     fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
+        self.apply_error_rescue_with_clock(payload, config, || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64)
+        });
+    }
+
+    fn apply_error_rescue_with_clock<F: FnOnce() -> i64>(
+        &self,
+        payload: &mut TracerPayloadCollection,
+        config: &Config,
+        read_clock: F,
+    ) {
         let mut state = self.lock_sampler();
         // Skip all view construction when the sampler is disabled by config
         // (target_tps <= 0): nothing can be rescued.
@@ -227,15 +240,12 @@ impl ServerlessTraceProcessor {
         // requests deliver timestamps in lock-acquisition order, and clamp so a
         // backward wall-clock step cannot move the sampler's rolling window
         // backwards, which would undercount TPS and rescue too many chunks.
-        let now_unix_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
-        let now_unix_secs = state.clamp_timestamp(now_unix_secs);
+        let now_unix_secs = state.clamp_timestamp(read_clock());
         self.rescue_with_sampler(payload, config, now_unix_secs, &mut state.sampler);
     }
 
-    /// Test-only variant that injects a synthetic timestamp so tests can
-    /// exercise the rolling window without sleeping.
+    /// Test-only variant that injects a synthetic clock reading through the
+    /// production clamp path, exercising the rolling window without sleeping.
     #[cfg(test)]
     fn apply_error_rescue_at(
         &self,
@@ -243,11 +253,7 @@ impl ServerlessTraceProcessor {
         config: &Config,
         now_unix_secs: i64,
     ) {
-        let mut state = self.lock_sampler();
-        if state.sampler.is_disabled() {
-            return;
-        }
-        self.rescue_with_sampler(payload, config, now_unix_secs, &mut state.sampler);
+        self.apply_error_rescue_with_clock(payload, config, || now_unix_secs);
     }
 
     fn rescue_with_sampler(
@@ -1880,6 +1886,80 @@ mod tests {
             !observed.iter().all(|kept| *kept),
             "expected at least one drop"
         );
+    }
+
+    #[test]
+    fn test_error_rescue_clamps_backward_timestamps_across_clones() {
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
+        let clone = processor.clone();
+
+        let chunks = run_rescue(
+            &processor,
+            &config,
+            vec![errored_root_chunk(0x10000, 0)],
+            RESCUE_NOW,
+        );
+        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
+        assert_eq!(processor.lock_sampler().last_sampler_timestamp, RESCUE_NOW);
+
+        let chunks = run_rescue(
+            &clone,
+            &config,
+            vec![errored_root_chunk(0x10001, 0)],
+            RESCUE_NOW - 40,
+        );
+        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
+        assert_eq!(clone.lock_sampler().last_sampler_timestamp, RESCUE_NOW);
+    }
+
+    #[test]
+    fn test_error_rescue_reads_clock_under_lock() {
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
+        let mut payload = TracerPayloadCollection::V07(vec![pb::TracerPayload {
+            chunks: vec![errored_root_chunk(0x10000, 0)],
+            ..Default::default()
+        }]);
+        let mut clock_called = false;
+
+        processor.apply_error_rescue_with_clock(&mut payload, &config, || {
+            clock_called = true;
+            assert!(matches!(
+                processor.error_rescue_state.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            RESCUE_NOW
+        });
+
+        assert!(clock_called);
+        assert_eq!(processor.lock_sampler().last_sampler_timestamp, RESCUE_NOW);
+    }
+
+    #[test]
+    fn test_disabled_error_rescue_does_not_read_clock() {
+        for mode in [ErrorSamplerMode::RateLimited, ErrorSamplerMode::AlwaysKeep] {
+            for target_tps in [0.0, -3.0] {
+                let (config, processor) = rescue_setup(ErrorSamplerConfig {
+                    mode,
+                    target_tps,
+                    extra_sample_rate: 1.0,
+                });
+                let original = pb::TracerPayload {
+                    chunks: vec![errored_root_chunk(0x10000, 0)],
+                    ..Default::default()
+                };
+                let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
+
+                processor.apply_error_rescue_with_clock(&mut payload, &config, || {
+                    panic!("disabled sampler must not read the clock");
+                });
+
+                assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
+                let TracerPayloadCollection::V07(payloads) = payload else {
+                    panic!("disabled rescue must preserve the payload format");
+                };
+                assert_eq!(payloads, vec![original]);
+            }
+        }
     }
 
     #[test]
