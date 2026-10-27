@@ -210,8 +210,8 @@ impl ServerlessTraceProcessor {
     /// Applies the error rescue pass to a payload collection.
     ///
     /// For every eligible V07 chunk containing a non-zero error flag, consults
-    /// the shared sampler. P0 is always eligible; the opt-in feature adds negative
-    /// priorities except the no-priority sentinel and exact manual drops.
+    /// the shared sampler. P0 and no-priority (-128) chunks are always eligible;
+    /// the opt-in feature adds other negative priorities except exact manual drops.
     /// On a keep, stamps the sampler's `_dd.errors_sr` on the chunk's root
     /// span without priority promotion. Retention is decided by the backend.
     /// Chunks are never removed or reordered: unrescued chunks stay in the
@@ -355,8 +355,10 @@ fn span_view(span: &pb::Span) -> SpanView<'_> {
 /// Consults the error sampler for one chunk and, on a keep, stamps the
 /// sampler's `_dd.errors_sr` value on the chunk's root span.
 ///
-/// P0 chunks are candidates. With the feature enabled, negative priorities also
-/// qualify except the no-priority sentinel and priority -1 with chunk DM -4.
+/// P0 and no-priority (-128) chunks are candidates. No priority means a missing
+/// sampling decision, not an explicit drop, matching Go's baseline eligibility.
+/// With the feature enabled, other negative priorities also qualify except
+/// priority -1 with chunk DM -4.
 /// Only promoted chunk tags are consulted, never span metadata. The chunk
 /// must contain at least one span with a non-zero error flag; HTTP status or
 /// error metadata alone does not qualify. The root is resolved with
@@ -372,9 +374,9 @@ fn sample_and_stamp(
     tracer_drop_enabled: bool,
 ) {
     let eligible = chunk.priority == 0
+        || chunk.priority == i32::from(i8::MIN)
         || (tracer_drop_enabled
             && chunk.priority < 0
-            && chunk.priority != i32::from(i8::MIN)
             && !(chunk.priority == -1
                 && chunk.tags.get(DECISION_MAKER_KEY).map(String::as_str)
                     == Some(MANUAL_DECISION_MAKER)));
@@ -1376,9 +1378,9 @@ mod tests {
                         let mut chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
                         let expected = error != 0
                             && (priority == 0
+                                || priority == -128
                                 || (feature
                                     && priority < 0
-                                    && priority != -128
                                     && !(priority == -1 && dm == Some("-4"))));
                         assert_eq!(
                             errors_sr(&chunks[0].spans[0]),
@@ -1558,9 +1560,9 @@ mod tests {
     fn test_non_automatic_drop_priorities_are_never_rescued() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
 
-        // With the feature off, all negative and positive priorities,
-        // including the no-priority sentinel, are out of scope.
-        let priorities = [-1_i32, -5, 1, 2, i8::MIN as i32];
+        // With the feature off, explicit negative drops and positive keeps
+        // are out of scope. The no-priority sentinel is not an explicit drop.
+        let priorities = [-1_i32, -5, 1, 2];
         let chunks = run_rescue(
             &processor,
             &config,
@@ -1709,11 +1711,12 @@ mod tests {
                     vec![
                         errored_root_chunk(0xe000, 0),
                         errored_root_chunk(0xe001, -1),
+                        errored_root_chunk(0xe002, i32::from(i8::MIN)),
                     ],
                     RESCUE_NOW,
                 );
 
-                assert_eq!(chunks.len(), 2, "chunks still forwarded");
+                assert_eq!(chunks.len(), 3, "chunks still forwarded");
                 for chunk in &chunks {
                     assert_eq!(
                         errors_sr(root(chunk)),
@@ -1819,8 +1822,9 @@ mod tests {
         let processor_clone = processor.clone();
 
         // Ten errored chunks with the same signature but distinct IDs: five
-        // through the original, five through the clone. All must draw from the
-        // same budget, matching a standalone sampler fed the same sequence.
+        // through the original, five through the clone. Mix P0, explicit drops,
+        // and no-priority chunks. All must draw from the same budget, matching
+        // a standalone sampler fed the same sequence.
         let ids: Vec<u64> = (0..10_u64).map(|i| 0x33_0000 + i).collect();
         let mut observed = Vec::new();
         for (i, id) in ids.iter().enumerate() {
@@ -1834,19 +1838,15 @@ mod tests {
             let excluded = run_rescue(
                 target,
                 &config,
-                vec![
-                    manual,
-                    healthy,
-                    errored_root_chunk(*id, -128),
-                    errored_root_chunk(*id, 1),
-                ],
+                vec![manual, healthy, errored_root_chunk(*id, 1)],
                 RESCUE_NOW,
             );
             assert_eq!(rescued_count(&excluded), 0);
+            let priority = [0, -1, i32::from(i8::MIN)][i % 3];
             let chunks = run_rescue(
                 target,
                 &config,
-                vec![errored_root_chunk(*id, if i % 2 == 0 { 0 } else { -1 })],
+                vec![errored_root_chunk(*id, priority)],
                 RESCUE_NOW,
             );
             observed.push(errors_sr(root(&chunks[0])).is_some());
@@ -2133,7 +2133,7 @@ mod tests {
             (0, None, true),
             (-1, Some("-3"), true),
             (-1, Some("-4"), false),
-            (-128, None, false),
+            (-128, None, true),
         ] {
             let (tx, mut rx) = mpsc::channel(1);
             let res = processor
