@@ -17,7 +17,12 @@ use tracing::{debug, error, trace};
 
 // Windows-specific imports
 #[cfg(all(windows, feature = "windows-pipes"))]
-use {std::sync::Arc, tokio::io::AsyncReadExt, tokio::net::windows::named_pipe::ServerOptions};
+use {
+    std::sync::Arc,
+    tokio::io::AsyncReadExt,
+    tokio::net::windows::named_pipe::ServerOptions,
+    tracing::{info, warn},
+};
 
 // Default buffer size for receiving DogStatsD packets (one read call).
 // Used for both UDP recv_from and Windows named pipe reads.
@@ -31,7 +36,8 @@ const DEFAULT_QUEUE_SIZE: usize = 1024;
 pub struct DogStatsDConfig {
     /// Host to bind UDP socket to (e.g., "127.0.0.1")
     pub host: String,
-    /// Port to bind UDP socket to (e.g., 8125), will be 0 if we're using a Named Pipe
+    /// Port to bind UDP socket to (e.g., 8125).
+    /// With a named pipe, port 0 turns UDP off.
     pub port: u16,
     /// Optional namespace to prepend to all metric names (e.g., "myapp")
     pub metric_namespace: Option<String>,
@@ -83,6 +89,15 @@ impl Packet {
     fn data(&self) -> &[u8] {
         &self.buf[..self.len]
     }
+
+    /// Named-pipe messages and UDP messages use different buffers.
+    fn is_pooled(&self) -> bool {
+        match self.source {
+            MessageSource::Network(_) => true,
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            MessageSource::NamedPipe(_) => false,
+        }
+    }
 }
 
 // BufferReader abstracts transport methods for metric data.
@@ -93,13 +108,42 @@ enum BufferReader {
     /// Mirror reader for testing - replays a fixed buffer
     #[allow(dead_code)]
     MirrorTest(Vec<u8>, SocketAddr),
+}
 
-    /// Windows named pipe reader (Windows-only transport)
+/// How DogStatsD receives packets.
+enum Transport {
+    /// One reader task for a single transport: UDP, or the test mirror.
+    Reader(BufferReader),
+
+    /// Windows named pipe, plus UDP when it bound. `udp_socket` is `None` when the port is 0
+    /// or another agent on a shared host already owns it. See `spin_named_pipe`.
     #[cfg(all(windows, feature = "windows-pipes"))]
     NamedPipe {
         pipe_name: Arc<String>,
-        receiver: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>,
+        udp_socket: Option<tokio::net::UdpSocket>,
     },
+}
+
+/// Errors about a peer, not the socket. On a Windows UDP socket, `ConnectionReset` reports an
+/// ICMP Port Unreachable reply to an earlier send.
+#[cfg(all(windows, feature = "windows-pipes"))]
+fn is_connection_error(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// Windows `recvfrom` errors that concern one datagram, not the socket: `WSAEMSGSIZE` (10040),
+/// a datagram larger than the buffer, and `WSAENETRESET` (10052), which on a datagram socket
+/// means its time to live expired. Rust maps neither to an `ErrorKind`.
+#[cfg(all(windows, feature = "windows-pipes"))]
+fn is_datagram_error(e: &std::io::Error) -> bool {
+    const WSAEMSGSIZE: i32 = 10040;
+    const WSAENETRESET: i32 = 10052;
+    matches!(e.raw_os_error(), Some(WSAEMSGSIZE | WSAENETRESET))
 }
 
 impl BufferReader {
@@ -117,21 +161,6 @@ impl BufferReader {
                 buf[..len].copy_from_slice(&data[..len]);
                 Ok((len, MessageSource::Network(*addr)))
             }
-            #[cfg(all(windows, feature = "windows-pipes"))]
-            BufferReader::NamedPipe {
-                pipe_name,
-                receiver,
-            } => match receiver.lock().await.recv().await {
-                Some(data) => {
-                    let len = data.len().min(buf.len());
-                    buf[..len].copy_from_slice(&data[..len]);
-                    Ok((len, MessageSource::NamedPipe(pipe_name.clone())))
-                }
-                None => Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionReset,
-                    "named pipe channel closed",
-                )),
-            },
         }
     }
 
@@ -156,7 +185,7 @@ impl BufferReader {
 pub struct DogStatsD {
     cancel_token: tokio_util::sync::CancellationToken,
     aggregator_handle: AggregatorHandle,
-    buffer_reader: BufferReader,
+    transport: Transport,
     metric_namespace: Option<String>,
     buf_size: usize,
     queue_size: usize,
@@ -165,7 +194,9 @@ pub struct DogStatsD {
 impl DogStatsD {
     /// Creates a new DogStatsD server instance.
     ///
-    /// The server will bind to either a UDP socket or Windows named pipe based on the config.
+    /// Binds UDP on `config.port`. With a Windows named pipe configured, also listens on the
+    /// pipe; then port 0 turns UDP off and a failed bind is logged, not fatal. Without a pipe,
+    /// panics if the UDP bind fails.
     /// Metrics received will be forwarded to the provided aggregator_handle.
     #[must_use]
     pub async fn new(
@@ -191,28 +222,46 @@ impl DogStatsD {
             None => DEFAULT_BUFFER_SIZE,
         };
 
-        let buffer_reader = if let Some(pipe_name_ref) = pipe_name_opt {
-            // Windows named pipe transport
+        let addr = format!("{}:{}", config.host, config.port);
+
+        let transport = if let Some(pipe_name_ref) = pipe_name_opt {
+            // Windows named pipe transport, plus UDP for clients without named-pipe support
             #[cfg(all(windows, feature = "windows-pipes"))]
             {
-                let pipe_name = Arc::new(pipe_name_ref.clone());
+                // UDP bind is best-effort when a named pipe is configured. Multiple Azure apps
+                // share the same VM on certain Windows Azure plans, and only one agent can own
+                // the port. The named pipe is unique per app, so a UDP bind failure is not fatal.
+                let udp_socket = if config.port == 0 {
+                    info!(
+                        "dogstatsd: starting to listen on named pipe {}; UDP is off (port 0)",
+                        pipe_name_ref
+                    );
+                    None
+                } else {
+                    match create_udp_socket(&addr, config.so_rcvbuf).await {
+                        Ok(socket) => {
+                            info!(
+                                "dogstatsd: starting to listen on named pipe {} and UDP {}",
+                                pipe_name_ref, addr
+                            );
+                            Some(socket)
+                        }
+                        Err(e) => {
+                            warn!(
+                                "DogStatsD could not bind UDP {}: {}. Starting to listen on named \
+                                pipe {} only; metrics sent over UDP will not be received by this \
+                                agent.",
+                                addr, e, pipe_name_ref
+                            );
+                            None
+                        }
+                    }
+                };
 
-                // Create channel for receiving data from client handlers
-                let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-                let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
-
-                // Spawn server accept loop
-                let server_pipe_name = pipe_name.clone();
-                let server_cancel = cancel_token.clone();
-                let pipe_buf_size = buf_size;
-                tokio::spawn(async move {
-                    run_named_pipe_server(server_pipe_name, sender, server_cancel, pipe_buf_size)
-                        .await;
-                });
-
-                BufferReader::NamedPipe {
-                    pipe_name,
-                    receiver,
+                // The pipe server starts in `spin`, where the processing queue exists.
+                Transport::NamedPipe {
+                    pipe_name: Arc::new(pipe_name_ref.clone()),
+                    udp_socket,
                 }
             }
             #[cfg(not(all(windows, feature = "windows-pipes")))]
@@ -225,14 +274,14 @@ impl DogStatsD {
                 );
             }
         } else {
-            // UDP socket for all platforms
-            let addr = format!("{}:{}", config.host, config.port);
+            // UDP socket for all platforms. Without a named pipe, UDP is the only transport, so a
+            // bind failure is fatal.
             // TODO (UDS socket)
             #[allow(clippy::expect_used)]
             let socket = create_udp_socket(&addr, config.so_rcvbuf)
                 .await
                 .expect("couldn't create UDP socket");
-            BufferReader::UdpSocket(socket)
+            Transport::Reader(BufferReader::UdpSocket(socket))
         };
 
         let queue_size = match config.queue_size {
@@ -250,7 +299,7 @@ impl DogStatsD {
         DogStatsD {
             cancel_token,
             aggregator_handle,
-            buffer_reader,
+            transport,
             metric_namespace: config.metric_namespace.clone(),
             buf_size,
             queue_size,
@@ -269,11 +318,14 @@ impl DogStatsD {
     ///
     /// If the queue fills up, the reader drops packets rather
     /// than blocking.
+    ///
+    /// With a Windows named pipe, the pipe server and the UDP reader each feed the queue from
+    /// their own task. See `spin_named_pipe`.
     pub async fn spin(self) {
         let DogStatsD {
             cancel_token,
             aggregator_handle,
-            buffer_reader,
+            transport,
             metric_namespace,
             buf_size,
             queue_size,
@@ -283,39 +335,71 @@ impl DogStatsD {
         // Buffer pool: processor returns used buffers, reader reuses them.
         // Avoids a heap allocation + zero-fill per packet in steady state.
         let (pool_tx, pool_rx) = tokio::sync::mpsc::unbounded_channel();
-        let reader_pool_tx = pool_tx.clone();
 
-        let reader_token = cancel_token.clone();
-        tokio::spawn(async move {
-            read_loop(
-                buffer_reader,
-                tx,
-                reader_token,
-                buf_size,
-                queue_size,
-                pool_rx,
-                reader_pool_tx,
-            )
-            .await;
-        });
+        match transport {
+            Transport::Reader(buffer_reader) => {
+                let reader_pool_tx = pool_tx.clone();
+                let reader_token = cancel_token.clone();
+                tokio::spawn(async move {
+                    read_loop(
+                        buffer_reader,
+                        tx,
+                        reader_token,
+                        buf_size,
+                        queue_size,
+                        pool_rx,
+                        reader_pool_tx,
+                    )
+                    .await;
+                });
 
-        process_loop(
-            &mut rx,
-            &cancel_token,
-            &aggregator_handle,
-            metric_namespace.as_deref(),
-            pool_tx,
-        )
-        .await;
+                process_loop(
+                    &mut rx,
+                    &cancel_token,
+                    &aggregator_handle,
+                    metric_namespace.as_deref(),
+                    pool_tx,
+                )
+                .await;
+            }
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            Transport::NamedPipe {
+                pipe_name,
+                udp_socket,
+            } => {
+                spin_named_pipe(
+                    pipe_name,
+                    udp_socket,
+                    QueueEnds {
+                        tx,
+                        rx,
+                        pool_tx,
+                        pool_rx,
+                    },
+                    &cancel_token,
+                    &aggregator_handle,
+                    metric_namespace.as_deref(),
+                    buf_size,
+                    queue_size,
+                )
+                .await;
+            }
+        }
     }
 
     /// Process a single buffer from the transport. Used by tests via `MirrorTest`.
     #[cfg(test)]
     async fn consume_statsd(&mut self) {
         let mut buf = vec![0u8; self.buf_size];
+        // Only one variant exists without the Windows named pipe feature.
+        #[allow(clippy::infallible_destructuring_match)]
+        let reader = match &mut self.transport {
+            Transport::Reader(reader) => reader,
+            #[cfg(all(windows, feature = "windows-pipes"))]
+            Transport::NamedPipe { .. } => panic!("consume_statsd needs a single reader"),
+        };
         #[allow(clippy::expect_used)]
-        let (len, src) = self
-            .buffer_reader
+        let (len, src) = reader
             .read_into(&mut buf)
             .await
             .expect("didn't receive data");
@@ -341,6 +425,9 @@ impl DogStatsD {
 /// Uses `is_cancelled()` as a fast-path check at the top of each iteration,
 /// and `tokio::select!` on the async `read_into()` to ensure the reader exits
 /// promptly even on a quiet socket (where `read_into` would block forever).
+///
+/// With a Windows named pipe, UDP is read by `udp_read_loop_beside_pipe` instead, which does
+/// the same job without the drain; keep the two in step.
 async fn read_loop(
     mut reader: BufferReader,
     tx: tokio::sync::mpsc::Sender<Packet>,
@@ -448,8 +535,8 @@ fn try_send_packet(
 }
 
 /// Receives packets from the channel, parses them, and forwards metrics
-/// to the aggregator. After processing each packet, returns the buffer to
-/// the pool for reuse by the reader. On cancellation, drains any remaining
+/// to the aggregator. After processing each packet, returns a pooled buffer
+/// to the pool for reuse by the reader. On cancellation, drains any remaining
 /// buffered packets before exiting so no already-read data is lost.
 async fn process_loop(
     rx: &mut tokio::sync::mpsc::Receiver<Packet>,
@@ -464,7 +551,9 @@ async fn process_loop(
                 match packet {
                     Some(packet) => {
                         process_packet(packet.data(), &packet.source, aggregator, namespace);
-                        let _ = pool.send(packet.buf);
+                        if packet.is_pooled() {
+                            let _ = pool.send(packet.buf);
+                        }
                     }
                     None => break,
                 }
@@ -472,7 +561,9 @@ async fn process_loop(
             _ = cancel.cancelled() => {
                 while let Ok(packet) = rx.try_recv() {
                     process_packet(packet.data(), &packet.source, aggregator, namespace);
-                    let _ = pool.send(packet.buf);
+                    if packet.is_pooled() {
+                        let _ = pool.send(packet.buf);
+                    }
                 }
                 break;
             }
@@ -617,15 +708,163 @@ async fn create_udp_socket(
     tokio::net::UdpSocket::from_std(std_socket)
 }
 
+/// Reads UDP beside the named pipe. Same job as `read_loop`; keep the two in step. It differs
+/// in two ways:
+/// - No `try_recv_from` drain. The drain never yields, so on a one-core host it would starve
+///   the pipe task; async `recv_from` yields under tokio's cooperative budget.
+/// - It skips peer and single-datagram errors and returns any other error, which makes
+///   `spin_named_pipe` stop DogStatsD.
+#[cfg(all(windows, feature = "windows-pipes"))]
+async fn udp_read_loop_beside_pipe(
+    socket: tokio::net::UdpSocket,
+    tx: tokio::sync::mpsc::Sender<Packet>,
+    stop: tokio_util::sync::CancellationToken,
+    buf_size: usize,
+    queue_capacity: usize,
+    mut pool_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    pool_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+) -> std::io::Result<()> {
+    let mut dropped: u64 = 0;
+    let mut exit = Ok(());
+    while !stop.is_cancelled() {
+        // Get a buffer from the pool, or allocate if the pool is empty (cold start).
+        let mut buf = pool_rx.try_recv().unwrap_or_else(|_| vec![0u8; buf_size]);
+
+        let result = tokio::select! {
+            r = socket.recv_from(&mut buf) => r,
+            _ = stop.cancelled() => {
+                let _ = pool_tx.send(buf);
+                break;
+            }
+        };
+        match result {
+            Ok((0, _)) => {
+                let _ = pool_tx.send(buf);
+            }
+            Ok((len, src)) => {
+                let packet = Packet {
+                    buf,
+                    len,
+                    source: MessageSource::Network(src),
+                };
+                if !try_send_packet(&tx, packet, &mut dropped, &pool_tx) {
+                    break;
+                }
+            }
+            Err(e) if is_connection_error(&e) => {
+                debug!("DogStatsD UDP read skipped a connection error: {}", e);
+                let _ = pool_tx.send(buf);
+            }
+            Err(e) if is_datagram_error(&e) => {
+                error!("DogStatsD read error: {}", e);
+                let _ = pool_tx.send(buf);
+            }
+            Err(e) => {
+                let _ = pool_tx.send(buf);
+                exit = Err(e);
+                break;
+            }
+        }
+    }
+    if dropped > 0 {
+        error!(
+            "DogStatsD UDP reader exiting, {} total packets dropped (queue capacity: {})",
+            dropped, queue_capacity
+        );
+    }
+    exit
+}
+
+/// Both ends of the processing queue and the buffer pool, handed to `spin_named_pipe`.
+#[cfg(all(windows, feature = "windows-pipes"))]
+struct QueueEnds {
+    tx: tokio::sync::mpsc::Sender<Packet>,
+    rx: tokio::sync::mpsc::Receiver<Packet>,
+    pool_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    pool_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+}
+
+/// Runs the named pipe server and, when it bound, the UDP reader, each in its own task feeding
+/// the processing queue. This follows the trace agent's TCP and named-pipe listeners: heavy UDP
+/// traffic can't starve the pipe, and if either transport stops on its own, DogStatsD logs an
+/// error and stops completely instead of running with one transport.
+#[cfg(all(windows, feature = "windows-pipes"))]
+#[allow(clippy::too_many_arguments)]
+async fn spin_named_pipe(
+    pipe_name: Arc<String>,
+    udp_socket: Option<tokio::net::UdpSocket>,
+    queue: QueueEnds,
+    cancel_token: &tokio_util::sync::CancellationToken,
+    aggregator: &AggregatorHandle,
+    namespace: Option<&str>,
+    buf_size: usize,
+    queue_size: usize,
+) {
+    let QueueEnds {
+        tx,
+        mut rx,
+        pool_tx,
+        pool_rx,
+    } = queue;
+    // Cancelled by the caller's token, or here when a transport stops on its own.
+    let stop = cancel_token.child_token();
+    let mut transports = tokio::task::JoinSet::new();
+
+    if let Some(socket) = udp_socket {
+        let (tx, stop, pool_tx) = (tx.clone(), stop.clone(), pool_tx.clone());
+        transports.spawn(async move {
+            let result =
+                udp_read_loop_beside_pipe(socket, tx, stop, buf_size, queue_size, pool_rx, pool_tx)
+                    .await;
+            ("UDP", result)
+        });
+    }
+    {
+        let stop = stop.clone();
+        transports.spawn(async move {
+            run_named_pipe_server(pipe_name, tx, stop, buf_size).await;
+            ("named pipe", Ok(()))
+        });
+    }
+
+    let supervise = async {
+        while let Some(joined) = transports.join_next().await {
+            if stop.is_cancelled() {
+                continue;
+            }
+            match joined {
+                Ok((transport, Err(e))) => {
+                    error!("DogStatsD {transport} listener failed: {e}. Stopping DogStatsD.")
+                }
+                Ok((transport, Ok(()))) => {
+                    error!(
+                        "DogStatsD {transport} listener stopped unexpectedly. Stopping DogStatsD."
+                    )
+                }
+                Err(e) => error!("DogStatsD listener task failed: {e}. Stopping DogStatsD."),
+            }
+            stop.cancel();
+        }
+    };
+
+    tokio::join!(
+        supervise,
+        process_loop(&mut rx, &stop, aggregator, namespace, pool_tx)
+    );
+}
+
 /// Named Pipe server - accepts client connections and forwards metrics.
 ///
 /// Uses a multi-instance approach (like winio in the main agent):
 /// - Creates new server instance for each client
 /// - Spawns task to handle each client
+///
+/// Clients send complete messages straight into the processing queue. When the queue is full,
+/// messages are dropped, as the UDP reader does.
 #[cfg(all(windows, feature = "windows-pipes"))]
 async fn run_named_pipe_server(
     pipe_name: Arc<String>,
-    sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    sender: tokio::sync::mpsc::Sender<Packet>,
     cancel_token: tokio_util::sync::CancellationToken,
     buf_size: usize,
 ) {
@@ -672,6 +911,7 @@ async fn run_named_pipe_server(
             // Byte mode requires manual buffering to handle messages split across reads
             // so let's track where we're writing each read in the buffer
             let mut start_write_index = 0;
+            let mut dropped: u64 = 0;
 
             loop {
                 let read_result = tokio::select! {
@@ -702,12 +942,26 @@ async fn run_named_pipe_server(
 
                 if complete_message_size > 0 {
                     // Send complete messages
-                    match sender_clone.send(buf[..complete_message_size].to_vec()) {
+                    let packet = Packet {
+                        buf: buf[..complete_message_size].to_vec(),
+                        len: complete_message_size,
+                        source: MessageSource::NamedPipe(pipe_name_clone.clone()),
+                    };
+                    match sender_clone.try_send(packet) {
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            dropped += 1;
+                            if dropped.is_power_of_two() {
+                                debug!(
+                                    "DogStatsD queue full, {} messages from '{}' dropped so far",
+                                    dropped, pipe_name_clone
+                                );
+                            }
+                        }
                         Err(e) => {
                             error!("Failed to send data from '{}': {}", pipe_name_clone, e);
                             break;
                         }
-                        Ok(_) => {
+                        Ok(()) => {
                             if std::str::from_utf8(&buf[..complete_message_size]).is_ok() {
                                 debug!(
                                     "Sent {} bytes from '{}'",
@@ -728,6 +982,12 @@ async fn run_named_pipe_server(
                     // Keep incomplete data in the buffer
                     buf.copy_within(complete_message_size..end_index, 0);
                 }
+            }
+            if dropped > 0 {
+                error!(
+                    "DogStatsD named pipe client on '{}' disconnected, {} messages dropped",
+                    pipe_name_clone, dropped
+                );
             }
             // Server instance is dropped here, automatically cleaned up
         });
@@ -891,10 +1151,10 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         let mut dogstatsd = DogStatsD {
             cancel_token,
             aggregator_handle: handle.clone(),
-            buffer_reader: BufferReader::MirrorTest(
+            transport: Transport::Reader(BufferReader::MirrorTest(
                 payload.as_bytes().to_vec(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
-            ),
+            )),
             metric_namespace: None,
             buf_size: custom_buf_size,
             queue_size: DEFAULT_QUEUE_SIZE,
@@ -951,10 +1211,10 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         let mut dogstatsd = DogStatsD {
             cancel_token,
             aggregator_handle: handle.clone(),
-            buffer_reader: BufferReader::MirrorTest(
+            transport: Transport::Reader(BufferReader::MirrorTest(
                 statsd_string.as_bytes().to_vec(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
-            ),
+            )),
             metric_namespace,
             buf_size: DEFAULT_BUFFER_SIZE,
             queue_size: DEFAULT_QUEUE_SIZE,

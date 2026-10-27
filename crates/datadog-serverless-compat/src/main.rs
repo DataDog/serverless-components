@@ -104,14 +104,11 @@ pub async fn main() {
             None
         }
     };
-    let dd_dogstatsd_port: u16 = if dd_dogstatsd_windows_pipe_name.is_some() {
-        0 // Override to 0 when using Windows named pipe
-    } else {
-        env::var("DD_DOGSTATSD_PORT")
-            .ok()
-            .and_then(|port| port.parse::<u16>().ok())
-            .unwrap_or(DEFAULT_DOGSTATSD_PORT)
-    };
+    let dd_dogstatsd_port_setting = env::var("DD_DOGSTATSD_PORT").ok();
+    let dd_dogstatsd_port = decide_dogstatsd_port(
+        dd_dogstatsd_windows_pipe_name.is_some(),
+        dd_dogstatsd_port_setting.as_deref(),
+    );
     let dd_site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
     let dd_use_dogstatsd = env::var("DD_USE_DOGSTATSD")
         .map(|val| val.to_lowercase() != "false")
@@ -160,6 +157,13 @@ pub async fn main() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     debug!("Logging subsystem enabled");
+
+    // Logged here, after the subscriber is installed, so the warning isn't dropped.
+    if let Some(ref port) = dd_dogstatsd_port_setting
+        && port.parse::<u16>().is_err()
+    {
+        warn!("DD_DOGSTATSD_PORT={port:?} is not a valid port, so it is ignored");
+    }
 
     let env_verifier = Arc::new(env_verifier::ServerlessEnvVerifier::default());
 
@@ -251,9 +255,8 @@ pub async fn main() {
                     dd_dogstatsd_windows_pipe_name.clone(),
                 )
                 .await;
-                if let Some(ref windows_pipe_name) = dd_dogstatsd_windows_pipe_name {
-                    info!("dogstatsd-pipe: starting to listen on pipe {windows_pipe_name}");
-                } else {
+                // With a named pipe, the dogstatsd crate logs the pipe and the UDP result.
+                if dd_dogstatsd_windows_pipe_name.is_none() {
                     info!("dogstatsd-udp: starting to listen on port {dd_dogstatsd_port}");
                 }
             } else {
@@ -459,8 +462,12 @@ async fn start_dogstatsd_listener(
     )
     .await;
 
+    let spin_cancel_token = dogstatsd_cancel_token.clone();
     tokio::spawn(async move {
         dogstatsd_client.spin().await;
+        if !spin_cancel_token.is_cancelled() {
+            error!("dogstatsd: listener stopped unexpectedly.");
+        }
     });
 
     dogstatsd_cancel_token
@@ -561,6 +568,21 @@ struct EnabledMetricsComponents {
     start_dogstatsd_listener: bool,
     start_instance_metrics_collector: bool,
     start_cpu_metrics_collector: bool,
+}
+
+/// Chooses the DogStatsD UDP port; 0 means UDP is off.
+///
+/// UDP behavior varies depending on named pipe availability/use.
+/// On Linux, we depend on UDP. On Windows, we want to use a named pipe.
+/// If we are using a named pipe, UDP is off by default. (port=0)
+/// If we are using a named pipe AND `DD_DOGSTATSD_PORT` is non-zero and valid,
+/// then we also listen on UDP for backwards compatibility with older clients.
+fn decide_dogstatsd_port(has_pipe: bool, configured_port: Option<&str>) -> u16 {
+    match configured_port.and_then(|port| port.parse::<u16>().ok()) {
+        Some(port) => port,
+        None if has_pipe => 0,
+        None => DEFAULT_DOGSTATSD_PORT,
+    }
 }
 
 /// Determines which components should be started based on configuration.
@@ -773,6 +795,35 @@ mod metrics_components_tests {
             assert_eq!(
                 &actual, expected,
                 "case (dd_use_dogstatsd={dogstatsd}, instance_metric_enabled={instance}, dd_enhanced_metrics={enhanced})"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod dogstatsd_port_tests {
+    use super::{DEFAULT_DOGSTATSD_PORT, decide_dogstatsd_port};
+
+    #[test]
+    fn test_decide_dogstatsd_port() {
+        let cases: &[(bool, Option<&str>, u16)] = &[
+            // Without a pipe, UDP is the only transport.
+            (false, None, DEFAULT_DOGSTATSD_PORT),
+            (false, Some("18125"), 18125),
+            (false, Some("not-a-port"), DEFAULT_DOGSTATSD_PORT),
+            // With a pipe, UDP stays off unless a port is set, so this binary doesn't take
+            // 8125 from a neighbor without a pipe.
+            (true, None, 0),
+            (true, Some("not-a-port"), 0),
+            (true, Some("8125"), 8125),
+            (true, Some("0"), 0),
+        ];
+
+        for (has_pipe, configured_port, expected) in cases {
+            assert_eq!(
+                decide_dogstatsd_port(*has_pipe, *configured_port),
+                *expected,
+                "case (has_pipe={has_pipe}, DD_DOGSTATSD_PORT={configured_port:?})"
             );
         }
     }
