@@ -22,33 +22,20 @@ const DEFAULT_APM_RECEIVER_PORT: u16 = 8126;
 /// Default error rescue budget: error traces per second, matching the Go agent's `ErrorTPS`.
 const DEFAULT_ERROR_SAMPLER_TPS: f64 = 10.0;
 
-/// Parses the error rescue sampler settings from the environment.
+/// Parses the rate-limited error rescue budget from the environment.
 ///
-/// - `DD_APM_ERROR_SAMPLER_MODE`: `rate_limited` (default) or `always_keep`.
-///   Surrounding whitespace and casing are normalized; any other value warns
-///   and falls back to `rate_limited`.
-/// - `DD_APM_ERROR_TPS`: target error traces per second, default 10. Parsed as
-///   `f64`; non-finite or unparsable values warn and fall back to the default.
-///   A finite value <= 0 disables rescue in either mode.
+/// `DD_APM_ERROR_TPS` sets the target error traces per second, default 10. Parsed
+/// as `f64`; non-finite or unparsable values warn and fall back to the default.
+/// A finite value <= 0 disables rescue.
 ///
-/// `extra_sample_rate` is fixed at 1.0 and intentionally not configurable.
-/// Startup stays operational when either optional setting is malformed.
+/// The strategy is fixed to `RateLimited`, and `extra_sample_rate` is fixed at
+/// 1.0. Startup stays operational when the optional TPS setting is malformed.
 fn parse_error_sampler_config() -> ErrorSamplerConfig {
     let mut config = ErrorSamplerConfig {
         mode: ErrorSamplerMode::RateLimited,
         target_tps: DEFAULT_ERROR_SAMPLER_TPS,
         extra_sample_rate: 1.0,
     };
-
-    if let Ok(raw) = env::var("DD_APM_ERROR_SAMPLER_MODE") {
-        match raw.trim().to_lowercase().as_str() {
-            "rate_limited" => config.mode = ErrorSamplerMode::RateLimited,
-            "always_keep" => config.mode = ErrorSamplerMode::AlwaysKeep,
-            _ => {
-                warn!("Invalid DD_APM_ERROR_SAMPLER_MODE {raw:?}; using default mode rate_limited");
-            }
-        }
-    }
 
     if let Ok(raw) = env::var("DD_APM_ERROR_TPS") {
         match raw.trim().parse::<f64>() {
@@ -184,8 +171,8 @@ pub struct Config {
     pub additional_metric_tags_cardinality_limit: Option<usize>,
     /// Whether the agent should compute trace stats
     pub agent_stats_computation_enabled: bool,
-    /// Error rescue sampler settings, parsed from `DD_APM_ERROR_SAMPLER_MODE`
-    /// and `DD_APM_ERROR_TPS`. `extra_sample_rate` is fixed at 1.0 and not
+    /// Rate-limited error rescue settings, with the budget parsed from
+    /// `DD_APM_ERROR_TPS`. `extra_sample_rate` is fixed at 1.0 and not
     /// configurable. See `parse_error_sampler_config` for the defaults.
     pub error_sampler: ErrorSamplerConfig,
     /// Opt-in eligibility for tracer-dropped errors, independent of sampler enablement.
@@ -1014,39 +1001,29 @@ mod tests {
     fn test_tracer_drop_feature_does_not_enable_sampler_or_stats() {
         for feature in [None, Some("error_rare_sample_tracer_drop"), Some("other")] {
             for (tps, expected_tps) in [(None, 10.0), (Some("0"), 0.0), (Some("-1"), -1.0)] {
-                for mode in [None, Some("always_keep")] {
-                    for stats in ["true", "false"] {
-                        temp_env::with_vars(
-                            [
-                                ("DD_API_KEY", Some("test")),
-                                ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
-                                ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
-                                ("WEBSITE_SITE_NAME", Some("test")),
-                                ("DD_APM_FEATURES", feature),
-                                ("DD_APM_ERROR_TPS", tps),
-                                ("DD_APM_ERROR_SAMPLER_MODE", mode),
-                                ("DD_AGENT_STATS_COMPUTATION_ENABLED", Some(stats)),
-                            ],
-                            || {
-                                let config = config::Config::new().unwrap();
-                                assert_eq!(
-                                    config.error_rare_sample_tracer_drop,
-                                    feature == Some("error_rare_sample_tracer_drop")
-                                );
-                                assert_eq!(config.error_sampler.target_tps, expected_tps);
-                                assert_eq!(config.error_sampler.extra_sample_rate, 1.0);
-                                assert_eq!(
-                                    config.error_sampler.mode,
-                                    if mode.is_some() {
-                                        ErrorSamplerMode::AlwaysKeep
-                                    } else {
-                                        ErrorSamplerMode::RateLimited
-                                    }
-                                );
-                                assert_eq!(config.agent_stats_computation_enabled, stats == "true");
-                            },
-                        );
-                    }
+                for stats in ["true", "false"] {
+                    temp_env::with_vars(
+                        [
+                            ("DD_API_KEY", Some("test")),
+                            ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
+                            ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
+                            ("WEBSITE_SITE_NAME", Some("test")),
+                            ("DD_APM_FEATURES", feature),
+                            ("DD_APM_ERROR_TPS", tps),
+                            ("DD_AGENT_STATS_COMPUTATION_ENABLED", Some(stats)),
+                        ],
+                        || {
+                            let config = config::Config::new().unwrap();
+                            assert_eq!(
+                                config.error_rare_sample_tracer_drop,
+                                feature == Some("error_rare_sample_tracer_drop")
+                            );
+                            assert_eq!(config.error_sampler.target_tps, expected_tps);
+                            assert_eq!(config.error_sampler.extra_sample_rate, 1.0);
+                            assert_eq!(config.error_sampler.mode, ErrorSamplerMode::RateLimited);
+                            assert_eq!(config.agent_stats_computation_enabled, stats == "true");
+                        },
+                    );
                 }
             }
         }
@@ -1068,7 +1045,6 @@ mod tests {
                         ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
                         ("WEBSITE_SITE_NAME", Some("test")),
                         ("DD_APM_ERROR_TPS", None),
-                        ("DD_APM_ERROR_SAMPLER_MODE", None),
                     ],
                     || {
                         assert!(!config::Config::new().unwrap().error_rare_sample_tracer_drop);
@@ -1098,7 +1074,6 @@ mod tests {
                 ("WEBSITE_SITE_NAME", Some("my-azure-function")),
                 ("DD_APM_FEATURES", None),
                 ("DD_APM_ERROR_TPS", None),
-                ("DD_APM_ERROR_SAMPLER_MODE", None),
             ],
             || {
                 let config = config::Config::new().unwrap();
@@ -1109,55 +1084,46 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_error_sampler_mode_normalization() {
-        for (raw, expected) in [
-            ("always_keep", ErrorSamplerMode::AlwaysKeep),
-            ("ALWAYS_KEEP", ErrorSamplerMode::AlwaysKeep),
-            ("  Always_Keep  ", ErrorSamplerMode::AlwaysKeep),
-            ("rate_limited", ErrorSamplerMode::RateLimited),
-            ("RATE_LIMITED", ErrorSamplerMode::RateLimited),
-            (" Rate_Limited ", ErrorSamplerMode::RateLimited),
+    fn test_error_sampler_mode_env_is_ignored() {
+        for raw in [
+            "always_keep",
+            "ALWAYS_KEEP",
+            "  Always_Keep  ",
+            "rate_limited",
+            "RATE_LIMITED",
+            " Rate_Limited ",
+            "bogus",
+            "",
+            "always-keep",
         ] {
-            temp_env::with_vars(
-                [
-                    ("DD_API_KEY", Some("_not_a_real_key_")),
-                    ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
-                    ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
-                    ("WEBSITE_SITE_NAME", Some("my-azure-function")),
-                    ("DD_APM_FEATURES", None),
-                    ("DD_APM_ERROR_TPS", None),
-                    ("DD_APM_ERROR_SAMPLER_MODE", Some(raw)),
-                ],
-                || {
-                    let config = config::Config::new().unwrap();
-                    assert_eq!(
-                        config.error_sampler.mode, expected,
-                        "mode {raw:?} should parse to {expected:?}"
-                    );
-                },
-            );
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_error_sampler_invalid_mode_falls_back_to_default() {
-        for raw in ["bogus", "", "always-keep"] {
-            temp_env::with_vars(
-                [
-                    ("DD_API_KEY", Some("_not_a_real_key_")),
-                    ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
-                    ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
-                    ("WEBSITE_SITE_NAME", Some("my-azure-function")),
-                    ("DD_APM_FEATURES", None),
-                    ("DD_APM_ERROR_TPS", None),
-                    ("DD_APM_ERROR_SAMPLER_MODE", Some(raw)),
-                ],
-                || {
-                    let config = config::Config::new().unwrap();
-                    assert_rate_limited_default(&config.error_sampler);
-                },
-            );
+            for (tps, expected_tps) in [
+                (None, 10.0),
+                (Some("5.5"), 5.5),
+                (Some("0"), 0.0),
+                (Some("-1"), -1.0),
+            ] {
+                temp_env::with_vars(
+                    [
+                        ("DD_API_KEY", Some("_not_a_real_key_")),
+                        ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
+                        ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
+                        ("WEBSITE_SITE_NAME", Some("my-azure-function")),
+                        ("DD_APM_FEATURES", None),
+                        ("DD_APM_ERROR_TPS", tps),
+                        ("DD_APM_ERROR_SAMPLER_MODE", Some(raw)),
+                    ],
+                    || {
+                        let config = config::Config::new().unwrap();
+                        assert_eq!(
+                            config.error_sampler.mode,
+                            ErrorSamplerMode::RateLimited,
+                            "mode setting {raw:?} must not change the strategy with TPS {tps:?}"
+                        );
+                        assert_eq!(config.error_sampler.target_tps, expected_tps);
+                        assert_eq!(config.error_sampler.extra_sample_rate, 1.0);
+                    },
+                );
+            }
         }
     }
 
@@ -1172,7 +1138,6 @@ mod tests {
                     ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
                     ("WEBSITE_SITE_NAME", Some("my-azure-function")),
                     ("DD_APM_FEATURES", None),
-                    ("DD_APM_ERROR_SAMPLER_MODE", None),
                     ("DD_APM_ERROR_TPS", Some(raw)),
                 ],
                 || {
@@ -1198,7 +1163,6 @@ mod tests {
                     ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
                     ("WEBSITE_SITE_NAME", Some("my-azure-function")),
                     ("DD_APM_FEATURES", Some("error_rare_sample_tracer_drop")),
-                    ("DD_APM_ERROR_SAMPLER_MODE", None),
                     ("DD_APM_ERROR_TPS", Some(raw)),
                 ],
                 || {
