@@ -1469,10 +1469,8 @@ async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
         let chunk = &chunks_by_root_name[name];
         let eligible = error != 0
             && (priority == 0
-                || (feature
-                    && priority < 0
-                    && priority != -128
-                    && !(priority == -1 && dm == Some("-4"))));
+                || priority == -128
+                || (feature && priority < 0 && !(priority == -1 && dm == Some("-4"))));
         assert_eq!(
             errors_sr_of(name),
             eligible.then_some(1.0),
