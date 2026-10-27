@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
 
 use async_trait::async_trait;
-use datadog_agent_trace_sampler::{ErrorsSampler, SampleDecision, SpanView, TraceView};
+use datadog_agent_trace_sampler::{
+    ErrorSamplerConfig, ErrorsSampler, SampleDecision, SpanView, TraceView,
+};
 use http_body_util::BodyExt;
 use hyper::{StatusCode, http};
 use libdd_common::http_common;
@@ -144,49 +145,64 @@ impl TraceChunkProcessor for ChunkProcessor {
 /// handing their pieces to the flusher) at once
 const MAX_IN_FLIGHT_ENQUEUES: usize = 10;
 
+/// Error rescue sampler and its monotonic timestamp floor, shared under one mutex.
+pub struct ErrorRescueState {
+    sampler: ErrorsSampler,
+    last_sampler_timestamp: i64,
+}
+
+impl ErrorRescueState {
+    fn new(config: ErrorSamplerConfig) -> Self {
+        Self {
+            sampler: ErrorsSampler::new(config),
+            last_sampler_timestamp: i64::MIN,
+        }
+    }
+
+    /// Records a timestamp without moving the sampler's rolling window backwards.
+    fn clamp_timestamp(&mut self, now_unix_secs: i64) -> i64 {
+        self.last_sampler_timestamp = self.last_sampler_timestamp.max(now_unix_secs);
+        self.last_sampler_timestamp
+    }
+}
+
 #[derive(Clone)]
 pub struct ServerlessTraceProcessor {
     pub stats_concentrator: Option<StatsConcentratorHandle>,
     enqueue_permits: Arc<tokio::sync::Semaphore>,
-    /// Shared error rescue sampler. The `Arc` means processor clones (one per
-    /// connection) share a single sampler state and TPS budget for the whole
-    /// process lifetime.
-    error_sampler: Arc<Mutex<ErrorsSampler>>,
-    /// Last timestamp handed to the sampler, shared across clones. Clamps the
-    /// clock so a backward wall-clock step cannot move sampler bucket IDs
-    /// backwards. Updated only under the sampler lock.
-    last_sampler_timestamp: Arc<AtomicI64>,
+    /// Processor clones and independently constructed processors using this
+    /// `Arc` share one TPS budget and timestamp floor under the same lock.
+    error_rescue_state: Arc<Mutex<ErrorRescueState>>,
 }
 
 impl ServerlessTraceProcessor {
     #[allow(clippy::must_use_candidate)]
     pub fn new(
         stats_concentrator: Option<StatsConcentratorHandle>,
-        error_sampler: Arc<Mutex<ErrorsSampler>>,
+        error_rescue_state: Arc<Mutex<ErrorRescueState>>,
     ) -> Self {
         ServerlessTraceProcessor {
             stats_concentrator,
             enqueue_permits: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_ENQUEUES)),
-            error_sampler,
-            last_sampler_timestamp: Arc::new(AtomicI64::new(i64::MIN)),
+            error_rescue_state,
         }
     }
 
-    /// Builds the error rescue sampler from parsed config settings.
+    /// Builds the shared error rescue state from parsed config settings.
     #[must_use]
-    pub fn new_error_sampler(config: &Config) -> Arc<Mutex<ErrorsSampler>> {
+    pub fn new_error_sampler(config: &Config) -> Arc<Mutex<ErrorRescueState>> {
         if config.error_rare_sample_tracer_drop && config.error_sampler.target_tps <= 0.0 {
             warn!(
                 "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue"
             );
         }
-        Arc::new(Mutex::new(ErrorsSampler::new(config.error_sampler)))
+        Arc::new(Mutex::new(ErrorRescueState::new(config.error_sampler)))
     }
 
-    /// Locks the shared sampler, recovering from a poisoned guard (a panic in
-    /// another thread while holding the lock) instead of panicking on unlock.
-    fn lock_sampler(&self) -> MutexGuard<'_, ErrorsSampler> {
-        self.error_sampler
+    /// Locks the shared sampler and timestamp floor, recovering from a poisoned
+    /// guard (a panic in another thread while holding the lock).
+    fn lock_sampler(&self) -> MutexGuard<'_, ErrorRescueState> {
+        self.error_rescue_state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
@@ -201,10 +217,10 @@ impl ServerlessTraceProcessor {
     /// Chunks are never removed or reordered: unrescued chunks stay in the
     /// payload for the backend to handle.
     fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
-        let mut sampler = self.lock_sampler();
+        let mut state = self.lock_sampler();
         // Skip all view construction when the sampler is disabled by config
         // (target_tps <= 0): nothing can be rescued.
-        if sampler.is_disabled() {
+        if state.sampler.is_disabled() {
             return;
         }
         // Read the clock while holding the sampler lock so that concurrent
@@ -214,8 +230,8 @@ impl ServerlessTraceProcessor {
         let now_unix_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
-        let now_unix_secs = self.clamp_sampler_timestamp(now_unix_secs);
-        self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
+        let now_unix_secs = state.clamp_timestamp(now_unix_secs);
+        self.rescue_with_sampler(payload, config, now_unix_secs, &mut state.sampler);
     }
 
     /// Test-only variant that injects a synthetic timestamp so tests can
@@ -227,22 +243,11 @@ impl ServerlessTraceProcessor {
         config: &Config,
         now_unix_secs: i64,
     ) {
-        let mut sampler = self.lock_sampler();
-        if sampler.is_disabled() {
+        let mut state = self.lock_sampler();
+        if state.sampler.is_disabled() {
             return;
         }
-        self.rescue_with_sampler(payload, config, now_unix_secs, &mut sampler);
-    }
-
-    /// Clamps the timestamp so it never moves backwards relative to the last
-    /// one handed to the shared sampler, and records it as the new floor. Must
-    /// be called while holding the sampler lock, alongside the clock read, so
-    /// concurrent requests cannot interleave a read with the clamp.
-    fn clamp_sampler_timestamp(&self, now_unix_secs: i64) -> i64 {
-        let previous = self
-            .last_sampler_timestamp
-            .fetch_max(now_unix_secs, Ordering::Relaxed);
-        now_unix_secs.max(previous)
+        self.rescue_with_sampler(payload, config, now_unix_secs, &mut state.sampler);
     }
 
     fn rescue_with_sampler(
@@ -590,8 +595,8 @@ mod tests {
         config::{Config, Tags},
         peer_tags::peer_tag_keys,
         trace_processor::{
-            self, MAX_IN_FLIGHT_ENQUEUES, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY, TraceProcessor,
-            encoded_size, split_oversized_payloads,
+            self, ErrorRescueState, MAX_IN_FLIGHT_ENQUEUES, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY,
+            TraceProcessor, encoded_size, split_oversized_payloads,
         },
     };
     use datadog_agent_trace_sampler::{
@@ -666,7 +671,7 @@ mod tests {
         }
     }
 
-    fn default_error_sampler() -> Arc<std::sync::Mutex<ErrorsSampler>> {
+    fn default_error_sampler() -> Arc<std::sync::Mutex<ErrorRescueState>> {
         sampler_for(&ErrorSamplerConfig::default())
     }
 
@@ -1171,8 +1176,8 @@ mod tests {
         }
     }
 
-    fn sampler_for(config: &ErrorSamplerConfig) -> Arc<std::sync::Mutex<ErrorsSampler>> {
-        Arc::new(std::sync::Mutex::new(ErrorsSampler::new(*config)))
+    fn sampler_for(config: &ErrorSamplerConfig) -> Arc<std::sync::Mutex<ErrorRescueState>> {
+        Arc::new(std::sync::Mutex::new(ErrorRescueState::new(*config)))
     }
 
     /// Builds the standard rescue test fixture: a config with the given
@@ -1878,18 +1883,32 @@ mod tests {
     }
 
     #[test]
+    fn test_independent_processors_share_sampler_timestamp_floor() {
+        let sampler = sampler_for(&rate_limited_sampler_config(1.0));
+        let first = trace_processor::ServerlessTraceProcessor::new(None, Arc::clone(&sampler));
+        let second = trace_processor::ServerlessTraceProcessor::new(None, sampler);
+
+        assert_eq!(first.lock_sampler().last_sampler_timestamp, i64::MIN);
+        assert_eq!(first.lock_sampler().clamp_timestamp(200), 200);
+        assert_eq!(second.lock_sampler().clamp_timestamp(50), 200);
+        assert_eq!(second.lock_sampler().clamp_timestamp(300), 300);
+        assert_eq!(first.lock_sampler().clamp_timestamp(250), 300);
+    }
+
+    #[test]
     fn test_sampler_timestamp_clamp_never_moves_backwards() {
         let (_config, processor) = rescue_setup(rate_limited_sampler_config(1.0));
         // A clone shares the clamp floor with the original.
         let clone = processor.clone();
 
-        assert_eq!(processor.clamp_sampler_timestamp(100), 100);
+        assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
+        assert_eq!(processor.lock_sampler().clamp_timestamp(100), 100);
         // Backward timestamps, through either instance, are clamped to the
         // last value seen; forward ones update the floor.
-        assert_eq!(clone.clamp_sampler_timestamp(50), 100);
-        assert_eq!(processor.clamp_sampler_timestamp(100), 100);
-        assert_eq!(clone.clamp_sampler_timestamp(200), 200);
-        assert_eq!(processor.clamp_sampler_timestamp(199), 200);
+        assert_eq!(clone.lock_sampler().clamp_timestamp(50), 100);
+        assert_eq!(processor.lock_sampler().clamp_timestamp(100), 100);
+        assert_eq!(clone.lock_sampler().clamp_timestamp(200), 200);
+        assert_eq!(processor.lock_sampler().clamp_timestamp(199), 200);
     }
 
     #[test]
