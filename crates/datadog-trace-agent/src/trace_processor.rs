@@ -160,6 +160,7 @@ impl ServerlessTraceProcessor {
                     service_version: Some(tracer_payload.app_version.clone()),
                     process_tags: None,
                     container_id: Some(tracer_payload.container_id.clone()),
+                    threadlocal_metadata: None,
                 });
                 for chunk in &tracer_payload.chunks {
                     if let Err(e) = concentrator.add_chunk(chunk.clone(), Arc::clone(&metadata)) {
