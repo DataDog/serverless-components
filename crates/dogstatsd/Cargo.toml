@@ -27,10 +27,17 @@ regex = { version = "1.10.6", default-features = false }
 zstd = { version = "0.13.3", default-features = false }
 
 [dev-dependencies]
+# default-features = false drops rayon, so the benches run on one thread; the
+# `set_var` calls in the benches rely on that.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 http = "1"
 mockito = { version = "1.5.0", default-features = false }
 proptest = "1.4.0"
 tracing-test = { version = "0.2.5", default-features = false }
+
+[[bench]]
+name = "hotpath"
+harness = false
 
 [features]
 default = []
