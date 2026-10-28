@@ -521,13 +521,12 @@ impl TraceProcessor for ServerlessTraceProcessor {
             Self::send_to_concentrator(concentrator, &payload);
         }
 
-        // Error rescue runs after stats submission so the concentrator observes every
-        // submitted chunk before rescue stamping, and before payload splitting so
-        // the newly inserted metric is included in the recomputed outbound size. It is
-        // gated on agent stats computation, independently of tracer-drop eligibility.
-        if config.agent_stats_computation_enabled {
-            self.apply_error_rescue(&mut payload, &config);
-        }
+        // Error rescue is independent of agent stats computation: eligible errored
+        // chunks can arrive whether or not the agent computes stats. Run it after
+        // conditional stats submission so the concentrator observes chunks before
+        // rescue stamping, and before payload splitting so the inserted metric is
+        // included in the recomputed outbound size.
+        self.apply_error_rescue(&mut payload, &config);
 
         let pieces: Vec<(TracerPayloadCollection, usize)> = match payload {
             TracerPayloadCollection::V07(payloads) => {
@@ -1638,59 +1637,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rescue_is_noop_when_agent_stats_disabled() {
-        let config = Config {
-            agent_stats_computation_enabled: false,
-            error_rare_sample_tracer_drop: true,
-            ..rescue_config(always_keep_sampler_config())
-        };
-        let (tx, mut rx): (
-            Sender<trace_utils::SendData>,
-            Receiver<trace_utils::SendData>,
-        ) = mpsc::channel(1);
-        let request = errored_request(-1, Some("-3"));
-
-        let trace_processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
-        let res = trace_processor
-            .process_traces(
-                Arc::new(config),
-                request,
-                tx,
-                Arc::new(create_test_metadata()),
-            )
-            .await;
-        assert!(res.is_ok());
-
-        let send_data = rx.recv().await.expect("payload forwarded");
-        let payloads = send_data.get_payloads();
-        let TracerPayloadCollection::V07(tracer_payloads) = payloads else {
-            panic!("expected V07 payload");
-        };
-        let chunk = &tracer_payloads[0].chunks[0];
-        assert_eq!(chunk.priority, -1);
-        assert_eq!(
-            chunk
-                .tags
-                .get(super::DECISION_MAKER_KEY)
-                .map(String::as_str),
-            Some("-3")
-        );
-        assert_eq!(
-            chunk.spans[0]
-                .meta
-                .get(super::DECISION_MAKER_KEY)
-                .map(String::as_str),
-            Some("-3")
-        );
-        for span in &chunk.spans {
-            assert_eq!(
-                errors_sr(span),
-                None,
-                "rescue must be a no-op when agent stats computation is disabled"
+    async fn test_rescue_stamps_eligible_chunks_when_agent_stats_disabled() {
+        for feature in [false, true] {
+            let config = Arc::new(Config {
+                agent_stats_computation_enabled: false,
+                error_rare_sample_tracer_drop: feature,
+                ..rescue_config(always_keep_sampler_config())
+            });
+            let (stats_tx, mut stats_rx) = tokio::sync::mpsc::unbounded_channel();
+            let processor = trace_processor::ServerlessTraceProcessor::new(
+                Some(super::StatsConcentratorHandle::new(stats_tx)),
+                sampler_for(&config.error_sampler),
             );
+            for (priority, dm, rescued) in [
+                (0, None, true),
+                (-128, None, true),
+                (-1, None, feature),
+                (-1, Some("-3"), feature),
+                (-1, Some("-4"), false),
+                (1, None, false),
+                (2, None, false),
+            ] {
+                let (tx, mut rx) = mpsc::channel(1);
+                let res = processor
+                    .process_traces(
+                        config.clone(),
+                        errored_request(priority, dm),
+                        tx,
+                        Arc::new(create_test_metadata()),
+                    )
+                    .await;
+                assert!(res.is_ok());
+                assert!(
+                    matches!(
+                        stats_rx.try_recv(),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                    ),
+                    "stats must not be submitted when agent stats computation is disabled"
+                );
+
+                let send_data = rx.recv().await.expect("payload forwarded");
+                let TracerPayloadCollection::V07(payloads) = send_data.get_payloads() else {
+                    panic!("expected V07 payload");
+                };
+                let chunk = &payloads[0].chunks[0];
+                assert_eq!(
+                    errors_sr(&chunk.spans[0]),
+                    rescued.then_some(1.0),
+                    "feature={feature} priority={priority} dm={dm:?}"
+                );
+                assert_eq!(chunk.priority, priority, "priority must not be promoted");
+                assert_eq!(
+                    chunk
+                        .tags
+                        .get(super::DECISION_MAKER_KEY)
+                        .map(String::as_str),
+                    dm
+                );
+                assert_eq!(
+                    chunk.spans[0]
+                        .meta
+                        .get(super::DECISION_MAKER_KEY)
+                        .map(String::as_str),
+                    dm
+                );
+            }
         }
     }
 
