@@ -1345,7 +1345,7 @@ mod tests {
     #[test]
     fn test_tracer_drop_rescue_eligibility_matrix() {
         for feature in [false, true] {
-            for priority in [0, -1, -2, -127, i32::from(i8::MIN), 1, 2] {
+            for priority in [0, -1, -2, -127, -5, i32::from(i8::MIN), 1, 2] {
                 for dm in [
                     None,
                     Some(""),
@@ -1368,6 +1368,19 @@ mod tests {
                         chunk.spans[0]
                             .meta
                             .insert("http.status_code".into(), "500".into());
+                        chunk.spans[0]
+                            .meta
+                            .insert("error.type".into(), "Error".into());
+                        chunk.spans[0]
+                            .metrics
+                            .insert("_sampling_priority_v1".into(), f64::from(priority));
+                        chunk.spans[0].metrics.insert("_sample_rate".into(), 0.25);
+                        chunk.spans[0]
+                            .metrics
+                            .insert("_dd.span_sampling.rule".into(), 1.0);
+                        chunk.spans[1].meta.insert("keep".into(), "me".into());
+                        chunk.origin = "synthetics".into();
+                        chunk.tags.insert("origin".into(), "synthetics".into());
                         if let Some(dm) = dm {
                             chunk
                                 .tags
@@ -1375,6 +1388,7 @@ mod tests {
                         }
                         let original = chunk.clone();
                         let mut chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
+                        assert_eq!(chunks.len(), 1, "chunk must still be forwarded");
                         let expected = error != 0
                             && (priority == 0
                                 || priority == -128
@@ -1462,26 +1476,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rescue_stamps_actual_root_when_error_is_on_child() {
-        let (config, processor) = rescue_setup(always_keep_sampler_config());
-
-        // Healthy root first, errored child second: only the root may be stamped.
-        let spans = vec![
-            test_span(0xfeed, 0x101, 0, 0),
-            test_span(0xfeed, 0x102, 0x101, 1),
-        ];
-        let chunks = run_rescue(&processor, &config, vec![test_chunk(spans, 0)], RESCUE_NOW);
-
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(errors_sr(&chunks[0].spans[0]), Some(1.0), "root stamped");
-        assert_eq!(
-            errors_sr(&chunks[0].spans[1]),
-            None,
-            "errored child must not be stamped"
-        );
-    }
-
-    #[test]
     fn test_rescue_uses_resolved_root_not_first_span() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
 
@@ -1530,54 +1524,6 @@ mod tests {
                 errors_sr(root(chunk)),
                 if is_last { Some(1.0) } else { None },
                 "chunk {i}: only the errored chunk may be rescued"
-            );
-        }
-    }
-
-    #[test]
-    fn test_http_500_metadata_alone_is_not_an_error() {
-        let (config, processor) = rescue_setup(always_keep_sampler_config());
-
-        let mut span = test_span(0xc0de, 0xc0de + 1, 0, 0);
-        span.meta
-            .insert("http.status_code".to_string(), "500".to_string());
-        span.meta
-            .insert("error.type".to_string(), "Error".to_string());
-
-        let chunks = run_rescue(
-            &processor,
-            &config,
-            vec![test_chunk(vec![span], 0)],
-            RESCUE_NOW,
-        );
-
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(errors_sr(root(&chunks[0])), None);
-    }
-
-    #[test]
-    fn test_non_automatic_drop_priorities_are_never_rescued() {
-        let (config, processor) = rescue_setup(always_keep_sampler_config());
-
-        // With the feature off, explicit negative drops and positive keeps
-        // are out of scope. The no-priority sentinel is not an explicit drop.
-        let priorities = [-1_i32, -5, 1, 2];
-        let chunks = run_rescue(
-            &processor,
-            &config,
-            priorities
-                .into_iter()
-                .map(|p| errored_root_chunk(0x1000 + u64::from(p.unsigned_abs()), p))
-                .collect(),
-            RESCUE_NOW,
-        );
-
-        for chunk in &chunks {
-            assert_eq!(
-                errors_sr(root(chunk)),
-                None,
-                "priority {} must not be rescued",
-                chunk.priority
             );
         }
     }
@@ -2019,97 +1965,6 @@ mod tests {
             "",
             "both empty stays empty"
         );
-    }
-
-    #[test]
-    fn test_rescue_preserves_chunk_metadata_and_span_order() {
-        let (config, processor) = rescue_setup(always_keep_sampler_config());
-
-        let mut root_span = test_span(0x501d, 0x502, 0, 0);
-        root_span
-            .metrics
-            .insert("_sampling_priority_v1".to_string(), 0.0);
-        root_span.metrics.insert("_sample_rate".to_string(), 0.25);
-        root_span
-            .metrics
-            .insert("_dd.span_sampling.rule".to_string(), 1.0);
-        let mut child = test_span(0x501d, 0x503, 0x502, 1);
-        child.meta.insert("keep".to_string(), "me".to_string());
-
-        let mut chunk = test_chunk(vec![root_span, child], 0);
-        chunk.tags.insert("_dd.p.dm".to_string(), "-4".to_string());
-        chunk
-            .tags
-            .insert("origin".to_string(), "synthetics".to_string());
-        chunk.origin = "synthetics".to_string();
-
-        let chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
-
-        assert_eq!(chunks.len(), 1);
-        let rescued = &chunks[0];
-        assert_eq!(rescued.priority, 0, "priority preserved");
-        assert_eq!(rescued.origin, "synthetics", "origin preserved");
-        assert_eq!(
-            rescued.tags.get("_dd.p.dm").map(String::as_str),
-            Some("-4"),
-            "decision maker preserved"
-        );
-        assert_eq!(
-            rescued.tags.get("origin").map(String::as_str),
-            Some("synthetics")
-        );
-        assert_eq!(
-            rescued.spans[0]
-                .metrics
-                .get("_dd.span_sampling.rule")
-                .copied(),
-            Some(1.0),
-            "single-span sampling metrics preserved"
-        );
-        assert_eq!(
-            rescued.spans[0]
-                .metrics
-                .get("_sampling_priority_v1")
-                .copied(),
-            Some(0.0),
-            "sampling priority metric preserved"
-        );
-        assert_eq!(
-            errors_sr(&rescued.spans[0]),
-            Some(1.0),
-            "root stamped despite existing metrics"
-        );
-        assert_eq!(
-            rescued.spans[1].meta.get("keep").map(String::as_str),
-            Some("me"),
-            "span metadata and order preserved"
-        );
-        assert_eq!(rescued.spans.len(), 2, "no spans added or removed");
-    }
-
-    #[test]
-    fn test_probabilistic_decision_maker_chunk_gets_no_workaround() {
-        // A priority-0 chunk carrying the chunk-level probabilistic decision
-        // maker (`_dd.p.dm = "-9"`) is rescued like any other automatic-drop
-        // chunk: priority and decision maker are preserved untouched. The
-        // backend resolves such chunks to the `probabilistic` ingestion reason
-        // before checking `_dd.errors_sr`, so it may still drop them; SCL does
-        // not work around that limitation.
-        let (config, processor) = rescue_setup(always_keep_sampler_config());
-
-        let mut chunk = errored_root_chunk(0x600d, 0);
-        chunk.tags.insert("_dd.p.dm".to_string(), "-9".to_string());
-
-        let chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
-
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].priority, 0, "priority preserved, no promotion");
-        assert_eq!(
-            chunks[0].tags.get("_dd.p.dm").map(String::as_str),
-            Some("-9"),
-            "probabilistic decision maker preserved, no rewrite"
-        );
-        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
     }
 
     #[test]
