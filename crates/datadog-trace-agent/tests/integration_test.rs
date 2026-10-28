@@ -101,7 +101,7 @@ pub fn create_mini_agent_with_real_flushers(
         config: config.clone(),
         trace_processor: Arc::new(ServerlessTraceProcessor::new(
             Some(stats_concentrator_handle.clone()),
-            ServerlessTraceProcessor::new_error_sampler(&config),
+            ServerlessTraceProcessor::new_error_rescue_state(&config),
         )),
         trace_flusher: Arc::new(ServerlessTraceFlusher::new(
             aggregator.clone(),
@@ -298,7 +298,7 @@ async fn test_mini_agent_tcp_handles_requests() {
         config: config.clone(),
         trace_processor: Arc::new(ServerlessTraceProcessor::new(
             None,
-            ServerlessTraceProcessor::new_error_sampler(&config),
+            ServerlessTraceProcessor::new_error_rescue_state(&config),
         )),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
@@ -415,7 +415,7 @@ async fn test_mini_agent_named_pipe_handles_requests() {
         config: config.clone(),
         trace_processor: Arc::new(ServerlessTraceProcessor::new(
             None,
-            ServerlessTraceProcessor::new_error_sampler(&config),
+            ServerlessTraceProcessor::new_error_rescue_state(&config),
         )),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),
@@ -588,7 +588,7 @@ async fn test_mini_agent_tcp_proxies_dsm_requests() {
         config: config.clone(),
         trace_processor: Arc::new(ServerlessTraceProcessor::new(
             None,
-            ServerlessTraceProcessor::new_error_sampler(&config),
+            ServerlessTraceProcessor::new_error_rescue_state(&config),
         )),
         trace_flusher: Arc::new(MockTraceFlusher),
         stats_processor: Arc::new(MockStatsProcessor),

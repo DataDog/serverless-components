@@ -190,7 +190,7 @@ impl ServerlessTraceProcessor {
 
     /// Builds the shared error rescue state from parsed config settings.
     #[must_use]
-    pub fn new_error_sampler(config: &Config) -> Arc<Mutex<ErrorRescueState>> {
+    pub fn new_error_rescue_state(config: &Config) -> Arc<Mutex<ErrorRescueState>> {
         if config.error_rare_sample_tracer_drop && config.error_sampler.target_tps <= 0.0 {
             warn!(
                 "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue"
@@ -1379,7 +1379,7 @@ mod tests {
         let warning = "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue";
         let mut config = rescue_config(rate_limited_sampler_config(0.0));
         config.error_rare_sample_tracer_drop = true;
-        let _state = trace_processor::ServerlessTraceProcessor::new_error_sampler(&config);
+        let _state = trace_processor::ServerlessTraceProcessor::new_error_rescue_state(&config);
         logs_assert(|lines| {
             let count = lines.iter().filter(|line| line.contains(warning)).count();
             if count == 1 {
