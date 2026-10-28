@@ -1529,57 +1529,46 @@ mod tests {
     }
 
     #[test]
-    fn test_tracer_drop_empty_and_fallback_root() {
-        let (mut config, processor) = rescue_setup(always_keep_sampler_config());
-        config.error_rare_sample_tracer_drop = true;
-        let chunks = run_rescue(
-            &processor,
-            &config,
-            vec![
-                test_chunk(vec![], -1),
-                test_chunk(vec![test_span(1, 2, 3, 1), test_span(1, 3, 2, 0)], -1),
-            ],
-            RESCUE_NOW,
-        );
-        assert_eq!(chunks.len(), 2);
-        assert!(chunks[0].spans.is_empty());
-        assert_eq!(errors_sr(&chunks[1].spans[0]), None);
-        assert_eq!(errors_sr(&chunks[1].spans[1]), Some(1.0));
-        assert_eq!(chunks[1].priority, -1);
-    }
+    fn test_empty_chunk_and_fallback_root() {
+        for (feature, priority) in [(false, 0), (true, -1)] {
+            let (mut config, processor) = rescue_setup(always_keep_sampler_config());
+            config.error_rare_sample_tracer_drop = feature;
+            let context = format!("feature={feature} priority={priority}");
 
-    #[test]
-    fn test_empty_chunk_does_not_panic_and_stays_unchanged() {
-        let (config, processor) = rescue_setup(always_keep_sampler_config());
+            // Eligible empty chunks return at the no-error guard before root resolution.
+            // The cyclic chunk has no parent_id 0, so the last span is the fallback root.
+            let cyclic = test_chunk(
+                vec![
+                    test_span(0xd00d, 0xd01, 0xd02, 1),
+                    test_span(0xd00d, 0xd02, 0xd01, 0),
+                ],
+                priority,
+            );
+            let chunks = run_rescue(
+                &processor,
+                &config,
+                vec![test_chunk(vec![], priority), cyclic],
+                RESCUE_NOW,
+            );
 
-        // An empty chunk cannot be scored: root resolution fails and it must be
-        // left unchanged without panicking. For non-empty chunks,
-        // `get_root_span_index` always resolves (falling back to the last span
-        // when no span has parent_id 0), so the cyclic chunk below exercises
-        // the fallback path and gets stamped on the resolved fallback root.
-        let cyclic = test_chunk(
-            vec![
-                test_span(0xd00d, 0xd01, 0xd02, 1),
-                test_span(0xd00d, 0xd02, 0xd01, 0),
-            ],
-            0,
-        );
-
-        let chunks = run_rescue(
-            &processor,
-            &config,
-            vec![test_chunk(vec![], 0), cyclic],
-            RESCUE_NOW,
-        );
-
-        assert_eq!(chunks.len(), 2);
-        assert!(chunks[0].spans.is_empty(), "empty chunk unchanged");
-        assert_eq!(
-            errors_sr(&chunks[1].spans[1]),
-            Some(1.0),
-            "fallback root (last span) stamped"
-        );
-        assert_eq!(errors_sr(&chunks[1].spans[0]), None);
+            assert_eq!(chunks.len(), 2, "{context}");
+            assert!(
+                chunks[0].spans.is_empty(),
+                "empty chunk unchanged: {context}"
+            );
+            assert_eq!(chunks[0].priority, priority, "{context}");
+            assert_eq!(chunks[1].priority, priority, "{context}");
+            assert_eq!(
+                errors_sr(&chunks[1].spans[0]),
+                None,
+                "non-root span not stamped: {context}"
+            );
+            assert_eq!(
+                errors_sr(&chunks[1].spans[1]),
+                Some(1.0),
+                "fallback root (last span) stamped: {context}"
+            );
+        }
     }
 
     #[tokio::test]
