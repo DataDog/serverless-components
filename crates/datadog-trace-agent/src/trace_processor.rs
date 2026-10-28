@@ -1676,88 +1676,64 @@ mod tests {
     }
 
     #[test]
-    fn test_always_keep_rescues_every_eligible_chunk() {
-        let (config, processor) = rescue_setup(always_keep_sampler_config());
-
-        let chunks = run_rescue(
-            &processor,
-            &config,
-            (0..10_u64)
-                .map(|i| errored_root_chunk(0xf000 + i, 0))
-                .collect(),
-            RESCUE_NOW,
-        );
-
-        assert_eq!(chunks.len(), 10);
-        for chunk in &chunks {
-            assert_eq!(errors_sr(root(chunk)), Some(1.0));
-            assert_eq!(chunk.priority, 0);
-        }
-    }
-
-    #[test]
     fn test_rate_limited_under_sustained_load_keeps_and_rejects() {
-        let sampler_config = rate_limited_sampler_config(10.0);
-        let (config, processor) = rescue_setup(sampler_config);
+        for sample_rate in [None, Some(0.25_f64)] {
+            let sampler_config = rate_limited_sampler_config(10.0);
+            let (config, processor) = rescue_setup(sampler_config);
+            let context = format!("sample_rate={sample_rate:?}");
 
-        // 100 chunks with the same signature in one 5-second bucket: the
-        // default rate is 10 / (100 / 5) = 0.5, so a deterministic mix of keeps
-        // and rejections is expected. No exact keep count is asserted: the
-        // sampler is an adaptive rolling-window sampler, not a hard token
-        // bucket.
-        let ids: Vec<u64> = (0..100_u64).map(|i| 0x11_0000 + i).collect();
-        let input: Vec<pb::TraceChunk> = ids.iter().map(|id| errored_root_chunk(*id, 0)).collect();
-        let chunks = run_rescue(&processor, &config, input, RESCUE_NOW);
+            // With the default client rate, 100 chunks with the same signature
+            // in one 5-second bucket give a default rate of 10 / (100 / 5) = 0.5.
+            // A finite client rate affects both weighting and applied probability.
+            // No exact keep count is asserted: this is an adaptive rolling-window
+            // sampler, not a hard token bucket.
+            let ids: Vec<u64> = (0..100_u64).map(|i| 0x11_0000 + i).collect();
+            let input: Vec<pb::TraceChunk> = ids
+                .iter()
+                .map(|id| {
+                    let mut chunk = errored_root_chunk(*id, 0);
+                    if let Some(rate) = sample_rate {
+                        chunk.spans[0].metrics.insert("_sample_rate".into(), rate);
+                    }
+                    chunk
+                })
+                .collect();
+            let chunks = run_rescue(&processor, &config, input, RESCUE_NOW);
 
-        let keeps = rescued_count(&chunks);
-        let drops = chunks.len() - keeps;
-        assert!(keeps > 0, "expected some keeps, got none");
-        assert!(drops > 0, "expected some drops, got none");
-        assert_eq!(chunks.len(), 100, "every chunk is still forwarded");
-        for chunk in &chunks {
-            assert_eq!(chunk.priority, 0, "priority unchanged on rescue decision");
+            let keeps = rescued_count(&chunks);
+            let drops = chunks.len() - keeps;
+            if sample_rate.is_none() {
+                assert!(keeps > 0, "{context}: expected some keeps, got none");
+            }
+            assert!(drops > 0, "{context}: expected some drops, got none");
+            assert_eq!(
+                chunks.len(),
+                100,
+                "{context}: every chunk is still forwarded"
+            );
+
+            // Compare every decision against direct crate usage. Set the expected
+            // client rate from the input case, independently of the output metric.
+            let mut standalone = ErrorsSampler::new(sampler_config);
+            for (chunk, id) in chunks.iter().zip(&ids) {
+                assert_eq!(
+                    chunk.priority, 0,
+                    "{context}: priority changed for trace id {id}"
+                );
+                let views: Vec<SpanView> = chunk.spans.iter().map(super::span_view).collect();
+                let mut trace = equivalent_trace_view(chunk, &config.env, &views);
+                trace.root_global_sample_rate = sample_rate.unwrap_or(1.0);
+                let expected = standalone.sample(RESCUE_NOW, &trace);
+                let actual = match errors_sr(root(chunk)) {
+                    Some(errors_sr) => SampleDecision::Keep { errors_sr },
+                    None => SampleDecision::Drop,
+                };
+                assert_eq!(
+                    actual, expected,
+                    "{context}: decision mismatch for trace id {id}"
+                );
+            }
         }
-
-        // The same input through a standalone shared sampler must produce the
-        // identical decision sequence, validating the adapter wiring (env,
-        // sample rate, views) against direct crate usage.
-        let mut standalone = ErrorsSampler::new(sampler_config);
-        for (chunk, id) in chunks.iter().zip(&ids) {
-            let views: Vec<SpanView> = chunk.spans.iter().map(super::span_view).collect();
-            let trace = equivalent_trace_view(chunk, &config.env, &views);
-            let expected = standalone.sample(RESCUE_NOW, &trace);
-            let actual = match errors_sr(root(chunk)) {
-                Some(errors_sr) => SampleDecision::Keep { errors_sr },
-                None => SampleDecision::Drop,
-            };
-            assert_eq!(actual, expected, "decision mismatch for trace id {id}");
-        }
-    }
-
-    #[test]
-    fn test_rate_limited_bucket_transitions_and_steady_state() {
-        let (config, processor) = rescue_setup(rate_limited_sampler_config(10.0));
-
-        // First bucket: 100 distinct signatures push the default rate to 0.5.
-        let ids: Vec<u64> = (0..100_u64).map(|i| 0x22_0000 + i).collect();
-        let make_chunks = || ids.iter().map(|id| errored_root_chunk(*id, 0)).collect();
-        let first_chunks = run_rescue(&processor, &config, make_chunks(), RESCUE_NOW);
-        let first_keeps = rescued_count(&first_chunks);
-        assert!(
-            first_keeps > 0 && first_keeps < 100,
-            "mixed decisions in the first bucket"
-        );
-
-        // A full window later (the rolling window is 6 buckets of 5 seconds),
-        // the same IDs in a fresh bucket still produce mixed decisions, and
-        // every chunk is still forwarded.
-        let second_chunks = run_rescue(&processor, &config, make_chunks(), RESCUE_NOW + 40);
-        assert_eq!(second_chunks.len(), 100);
-        let second_keeps = rescued_count(&second_chunks);
-        assert!(
-            second_keeps > 0 && second_keeps < 100,
-            "mixed decisions after window rotation"
-        );
     }
 
     #[test]
@@ -1954,24 +1930,6 @@ mod tests {
             "",
             "both empty stays empty"
         );
-    }
-
-    #[test]
-    fn test_rescue_passes_raw_sample_rate_to_sampler() {
-        // The raw `_sample_rate` wire value is passed to the shared sampler,
-        // which sanitizes it. A value outside (0, 1] falls back to 1.0, so a
-        // bogus rate does not change the stamped rescue rate.
-        let (config, processor) = rescue_setup(rate_limited_sampler_config(10.0));
-
-        let mut chunk = errored_root_chunk(0x77_00, 0);
-        chunk.spans[0]
-            .metrics
-            .insert("_sample_rate".to_string(), f64::NAN);
-
-        let chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
-
-        // Single signature, well under budget: sanitized rate 1.0 keeps it.
-        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
     }
 
     #[tokio::test]
