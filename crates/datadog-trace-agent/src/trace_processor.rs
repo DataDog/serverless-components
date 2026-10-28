@@ -233,58 +233,48 @@ impl ServerlessTraceProcessor {
         let TracerPayloadCollection::V07(tracer_payloads) = payload else {
             return;
         };
-        // Find candidates and build their sampler views before taking the shared
-        // lock, so requests without eligible errored chunks never contend on it
-        // and the lock is held only for the sampling decisions.
-        let candidates = collect_rescue_candidates(tracer_payloads, config);
-        if candidates.is_empty() {
-            return;
-        }
-        let keeps: Vec<(usize, usize, usize, f64)> = {
-            let mut state = self.lock_sampler();
-            // Nothing can be rescued when the sampler is disabled by config
-            // (target_tps <= 0).
-            if state.sampler.is_disabled() {
-                return;
-            }
-            // Read the clock while holding the sampler lock so that concurrent
-            // requests deliver timestamps in lock-acquisition order, and clamp so a
-            // backward wall-clock step cannot move the sampler's rolling window
-            // backwards, which would undercount TPS and rescue too many chunks.
-            let now_unix_secs = state.clamp_timestamp(read_clock());
-            candidates
-                .iter()
-                .filter_map(|candidate| {
-                    let trace = TraceView {
-                        env: candidate.env,
-                        trace_id: candidate.trace_id,
-                        root_index: candidate.root_index,
-                        root_global_sample_rate: candidate.root_global_sample_rate,
-                        spans: &candidate.spans,
-                    };
-                    match state.sampler.sample(now_unix_secs, &trace) {
-                        SampleDecision::Keep { errors_sr } => Some((
-                            candidate.payload_index,
-                            candidate.chunk_index,
-                            candidate.root_index,
-                            errors_sr,
-                        )),
-                        SampleDecision::Drop => None,
+        let mut state = None;
+        let mut read_clock = Some(read_clock);
+        for tracer_payload in tracer_payloads.iter_mut() {
+            let env = resolve_payload_env(&tracer_payload.env, &config.env);
+            for chunk in &mut tracer_payload.chunks {
+                let Some(root_index) =
+                    rescue_root_index(chunk, config.error_rare_sample_tracer_drop)
+                else {
+                    continue;
+                };
+                // Requests without candidates never take the shared lock.
+                let state = state.get_or_insert_with(|| self.lock_sampler());
+                if let Some(read_clock) = read_clock.take() {
+                    if state.sampler.is_disabled() {
+                        return;
                     }
-                })
-                .collect()
-        };
-        // On a keep, stamp the sampler's `_dd.errors_sr` on the chunk's root span.
-        // Chunks are never removed here: on a Drop decision the unrescued chunk is
-        // forwarded without rescue mutation.
-        for (payload_index, chunk_index, root_index, errors_sr) in keeps {
-            if let Some(root) = tracer_payloads
-                .get_mut(payload_index)
-                .and_then(|tp| tp.chunks.get_mut(chunk_index))
-                .and_then(|chunk| chunk.spans.get_mut(root_index))
-            {
-                root.metrics
-                    .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
+                    // Read once under the lock, and clamp backward wall-clock steps
+                    // so the sampler's rolling window cannot move backwards.
+                    state.clamp_timestamp(read_clock());
+                }
+                let now_unix_secs = state.last_sampler_timestamp;
+                let root = &chunk.spans[root_index];
+                let views: Vec<SpanView> = chunk.spans.iter().map(span_view).collect();
+                let trace = TraceView {
+                    env,
+                    trace_id: root.trace_id,
+                    root_index,
+                    // The shared sampler sanitizes the raw wire rate.
+                    root_global_sample_rate: root
+                        .metrics
+                        .get("_sample_rate")
+                        .copied()
+                        .unwrap_or(1.0),
+                    spans: &views,
+                };
+                if let SampleDecision::Keep { errors_sr } =
+                    state.sampler.sample(now_unix_secs, &trace)
+                    && let Some(root) = chunk.spans.get_mut(root_index)
+                {
+                    root.metrics
+                        .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
+                }
             }
         }
     }
@@ -368,51 +358,6 @@ fn span_view(span: &pb::Span) -> SpanView<'_> {
         http_status_code: span.meta.get("http.status_code").map(String::as_str),
         error_type: span.meta.get("error.type").map(String::as_str),
     }
-}
-
-/// A chunk selected for an error sampler decision, with the sampler's
-/// read-only view of its spans.
-struct RescueCandidate<'a> {
-    payload_index: usize,
-    chunk_index: usize,
-    root_index: usize,
-    env: &'a str,
-    trace_id: u64,
-    root_global_sample_rate: f64,
-    spans: Vec<SpanView<'a>>,
-}
-
-/// Collects the chunks that need an error sampler decision, in payload order.
-fn collect_rescue_candidates<'a>(
-    tracer_payloads: &'a [pb::TracerPayload],
-    config: &'a Config,
-) -> Vec<RescueCandidate<'a>> {
-    let mut candidates = Vec::new();
-    for (payload_index, tracer_payload) in tracer_payloads.iter().enumerate() {
-        // The sampler keys its per-signature rate limits on the env the
-        // tracer reported for this payload, falling back to the agent's
-        // configured env, consistent with how stats are flushed.
-        let env = resolve_payload_env(&tracer_payload.env, &config.env);
-        for (chunk_index, chunk) in tracer_payload.chunks.iter().enumerate() {
-            let Some(root_index) = rescue_root_index(chunk, config.error_rare_sample_tracer_drop)
-            else {
-                continue;
-            };
-            let root = &chunk.spans[root_index];
-            candidates.push(RescueCandidate {
-                payload_index,
-                chunk_index,
-                root_index,
-                env,
-                trace_id: root.trace_id,
-                // The raw `_sample_rate` wire value is passed through: the shared
-                // sampler sanitizes non-finite or out-of-range rates to 1.0 itself.
-                root_global_sample_rate: root.metrics.get("_sample_rate").copied().unwrap_or(1.0),
-                spans: chunk.spans.iter().map(span_view).collect(),
-            });
-        }
-    }
-    candidates
 }
 
 /// Returns the root span index of a chunk that needs an error sampler decision,
@@ -1831,10 +1776,19 @@ mod tests {
     #[test]
     fn test_error_rescue_reads_clock_under_lock() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
-        let mut payload = TracerPayloadCollection::V07(vec![pb::TracerPayload {
-            chunks: vec![errored_root_chunk(0x10000, 0)],
-            ..Default::default()
-        }]);
+        let mut payload = TracerPayloadCollection::V07(vec![
+            pb::TracerPayload {
+                chunks: vec![
+                    errored_root_chunk(0x10000, 1),
+                    errored_root_chunk(0x10001, 0),
+                ],
+                ..Default::default()
+            },
+            pb::TracerPayload {
+                chunks: vec![errored_root_chunk(0x20000, 0)],
+                ..Default::default()
+            },
+        ]);
         let mut clock_called = false;
 
         processor.apply_error_rescue_with_clock(&mut payload, &config, || {
@@ -1848,6 +1802,12 @@ mod tests {
 
         assert!(clock_called);
         assert_eq!(processor.lock_sampler().last_sampler_timestamp, RESCUE_NOW);
+        let TracerPayloadCollection::V07(payloads) = payload else {
+            panic!("expected V07 payload");
+        };
+        assert_eq!(errors_sr(root(&payloads[0].chunks[0])), None);
+        assert_eq!(errors_sr(root(&payloads[0].chunks[1])), Some(1.0));
+        assert_eq!(errors_sr(root(&payloads[1].chunks[0])), Some(1.0));
     }
 
     #[test]
