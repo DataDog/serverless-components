@@ -9,7 +9,6 @@ masked, or unlocked gate.
 PyYAML is a test-only dependency. `on:` is a YAML 1.1 boolean key, so the trigger
 block is read through the `trigger()` helper rather than by key name.
 """
-import copy
 import unittest
 from pathlib import Path
 
@@ -343,6 +342,7 @@ class WorkflowMutationTests(unittest.TestCase):
             checker(doc)
 
     def test_disabled_or_error_masked_offline_tests_are_rejected(self):
+        raw = TESTS.read_text()
         for mutation in ("job-error-mask", "step-error-mask", "conditional-skip"):
             with self.subTest(mutation=mutation):
                 doc = load(TESTS)
@@ -354,7 +354,7 @@ class WorkflowMutationTests(unittest.TestCase):
                 else:
                     offline["if"] = False
                 with self.assertRaises(AssertionError):
-                    assert_tests_workflow(doc, TESTS.read_text())
+                    assert_tests_workflow(doc, raw)
 
     def test_removing_gate_is_rejected(self):
         def mutate(doc):

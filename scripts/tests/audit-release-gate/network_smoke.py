@@ -41,37 +41,41 @@ def registry_package(name, version):
     )
 
 
+def git(repo, *args):
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=GIT_ENV,
+    )
+
+
+def commit_all(repo, message):
+    git(repo, "add", "-A")
+    git(
+        repo,
+        "-c", "user.email=smoke@example.invalid",
+        "-c", "user.name=smoke",
+        "commit", "--quiet", "-m", message,
+    )
+    return git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
 def make_repo(root, lock_text, policy_text=DEFAULT_POLICY):
     repo = Path(root) / "repo"
     repo.mkdir()
     (repo / ".cargo").mkdir()
     (repo / "Cargo.lock").write_text(lock_text)
     (repo / ".cargo" / "audit.toml").write_text(policy_text)
-    for args in (
-        ("init", "--quiet", "--initial-branch=main", str(repo)),
-        ("-C", str(repo), "add", "-A"),
-        (
-            "-C",
-            str(repo),
-            "-c",
-            "user.email=smoke@example.invalid",
-            "-c",
-            "user.name=smoke",
-            "commit",
-            "--quiet",
-            "-m",
-            "smoke fixture",
-        ),
-    ):
-        subprocess.run(["git", *args], check=True, capture_output=True, text=True, env=GIT_ENV)
-    head = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+    subprocess.run(
+        ["git", "init", "--quiet", "--initial-branch=main", str(repo)],
         check=True,
         capture_output=True,
         text=True,
         env=GIT_ENV,
-    ).stdout.strip()
-    return repo, head
+    )
+    return repo, commit_all(repo, "smoke fixture")
 
 
 def run_gate(repo, sha):
@@ -155,39 +159,7 @@ class NetworkSmoke(unittest.TestCase):
             policy += f'    "{advisory}",\n'
         policy += "]\n"
         (repo / ".cargo" / "audit.toml").write_text(policy)
-        subprocess.run(
-            ["git", "-C", str(repo), "add", "-A"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=GIT_ENV,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo),
-                "-c",
-                "user.email=smoke@example.invalid",
-                "-c",
-                "user.name=smoke",
-                "commit",
-                "--quiet",
-                "-m",
-                "ignore the fixture advisories",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=GIT_ENV,
-        )
-        new_head = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=GIT_ENV,
-        ).stdout.strip()
+        new_head = commit_all(repo, "ignore the fixture advisories")
 
         allowed = run_gate(repo, new_head)
         self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)

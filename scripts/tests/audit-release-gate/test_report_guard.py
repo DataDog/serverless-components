@@ -41,9 +41,9 @@ CAPTURED_LOCKFILE = "Cargo.lock"
 MARKERS = ("Fetching", "Loaded", "Updating", "Scanning")
 
 
-def run_guard(log, rc, expected_lockfile=CAPTURED_LOCKFILE, extra=()):
+def run_guard(log, rc, expected_lockfile=CAPTURED_LOCKFILE):
     return subprocess.run(
-        ["bash", str(GUARD), str(log), str(rc), str(expected_lockfile), *extra],
+        ["bash", str(GUARD), str(log), str(rc), str(expected_lockfile)],
         capture_output=True,
         text=True,
         check=False,
@@ -54,13 +54,18 @@ def clean_text():
     return (LOGS / "clean-success.log").read_text()
 
 
-def write_tmp_log(tmp, text, name="log.txt"):
-    path = Path(tmp) / name
+def write_tmp_log(tmp, text):
+    path = Path(tmp) / "log.txt"
     path.write_text(text)
     return path
 
 
 class ReportGuardTests(unittest.TestCase):
+    def assert_rejected(self, text, expected_lockfile=CAPTURED_LOCKFILE):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_guard(write_tmp_log(tmp, text), 0, expected_lockfile)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
     def test_captured_logs_guard_verdicts(self):
         for name, rc, expected in CAPTURED:
             with self.subTest(log=name, rc=rc):
@@ -85,8 +90,7 @@ class ReportGuardTests(unittest.TestCase):
                 mutated = "\n".join(
                     line for line in text.splitlines() if marker not in line
                 )
-                with tempfile.TemporaryDirectory() as tmp:
-                    self.assertEqual(run_guard(write_tmp_log(tmp, mutated + "\n"), 0).returncode, 1)
+                self.assert_rejected(mutated + "\n")
 
     def test_zero_exit_with_hidden_index_diagnostics_is_rejected(self):
         for diagnostic in (
@@ -95,13 +99,10 @@ class ReportGuardTests(unittest.TestCase):
             "error: couldn't check if the package is yanked: fixture miss\n",
         ):
             with self.subTest(diagnostic=diagnostic):
-                text = clean_text() + diagnostic
-                with tempfile.TemporaryDirectory() as tmp:
-                    self.assertEqual(run_guard(write_tmp_log(tmp, text), 0).returncode, 1)
+                self.assert_rejected(clean_text() + diagnostic)
 
     def test_empty_log_with_zero_exit_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_guard(write_tmp_log(tmp, ""), 0).returncode, 1)
+        self.assert_rejected("")
 
     def test_bare_marker_words_are_not_enough(self):
         # The guard must require the substantive marker lines, not the words
@@ -112,28 +113,23 @@ class ReportGuardTests(unittest.TestCase):
             "Updating something else\n"
             "Scanning something else\n"
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_guard(write_tmp_log(tmp, text), 0).returncode, 1)
+        self.assert_rejected(text)
 
     def test_zero_advisory_count_is_rejected(self):
         text = clean_text().replace("Loaded 1380 security advisories", "Loaded 0 security advisories")
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_guard(write_tmp_log(tmp, text), 0).returncode, 1)
+        self.assert_rejected(text)
 
     def test_missing_advisory_count_is_rejected(self):
         text = clean_text().replace("Loaded 1380 security advisories", "Loaded some security advisories")
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_guard(write_tmp_log(tmp, text), 0).returncode, 1)
+        self.assert_rejected(text)
 
     def test_zero_dependency_count_is_rejected(self):
         text = clean_text().replace("(1 crate dependencies)", "(0 crate dependencies)")
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_guard(write_tmp_log(tmp, text), 0).returncode, 1)
+        self.assert_rejected(text)
 
     def test_missing_dependency_count_is_rejected(self):
         text = clean_text().replace("(1 crate dependencies)", "(several crate dependencies)")
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_guard(write_tmp_log(tmp, text), 0).returncode, 1)
+        self.assert_rejected(text)
 
     def test_out_of_order_markers_are_rejected(self):
         text = clean_text()
@@ -142,8 +138,7 @@ class ReportGuardTests(unittest.TestCase):
         loaded = next(line for line in lines if "Loaded" in line)
         reordered = [line for line in lines if line is not fetch]
         reordered.insert(reordered.index(loaded) + 1, fetch)
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_guard(write_tmp_log(tmp, "\n".join(reordered) + "\n"), 0).returncode, 1)
+        self.assert_rejected("\n".join(reordered) + "\n")
 
     def test_wrong_expected_lockfile_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,8 +154,7 @@ class ReportGuardTests(unittest.TestCase):
             "Scanning Cargo.lock for vulnerabilities",
             "Scanning /a/b/Cargo.lock for vulnerabilities",
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(run_guard(write_tmp_log(tmp, text), 0, "/b/Cargo.lock").returncode, 1)
+        self.assert_rejected(text, "/b/Cargo.lock")
 
     def test_absolute_expected_lockfile_is_accepted(self):
         text = clean_text().replace(

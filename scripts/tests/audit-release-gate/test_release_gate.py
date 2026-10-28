@@ -158,14 +158,14 @@ class GateHarness:
                     continue
         return str(shim)
 
-    def run_gate(self, script=None, expected_sha=None, sentinel=None, cwd=None, **env_overrides):
+    def run_gate(self, script=None, expected_sha=None, sentinel=None, **env_overrides):
         script = script or GATE
         expected_sha = expected_sha if expected_sha is not None else self.head_sha
         sentinel = sentinel or self.sentinel
         command = f'"{script}" "{expected_sha}" && touch "{sentinel}"'
         return subprocess.run(
             ["bash", "-c", command],
-            cwd=str(cwd or self.repo),
+            cwd=str(self.repo),
             env=self.env(**env_overrides),
             capture_output=True,
             text=True,
@@ -173,10 +173,10 @@ class GateHarness:
             timeout=120,
         )
 
-    def run_raw(self, args, cwd=None, **env_overrides):
+    def run_raw(self, args, **env_overrides):
         return subprocess.run(
             ["bash", *[str(arg) for arg in args]],
-            cwd=str(cwd or self.repo),
+            cwd=str(self.repo),
             env=self.env(**env_overrides),
             capture_output=True,
             text=True,
