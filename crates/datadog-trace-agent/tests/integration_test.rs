@@ -1445,34 +1445,25 @@ async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
         }
     }
 
-    let names: Vec<_> = error_rescue_cases()
-        .into_iter()
-        .map(|case| case.0)
-        .collect();
-    for name in names.iter().copied() {
-        assert!(
-            chunks_by_root_name.contains_key(name),
-            "expected chunk {name} to be forwarded to the backend, got: {:?}",
-            chunks_by_root_name.keys().collect::<Vec<_>>()
-        );
-    }
-
-    let errors_sr_of = |name: &str| -> Option<f64> {
-        chunks_by_root_name[name]
+    let cases = error_rescue_cases();
+    for &(name, priority, error, dm, on_child) in &cases {
+        let chunk = chunks_by_root_name.get(name).unwrap_or_else(|| {
+            panic!(
+                "expected chunk {name} to be forwarded to the backend, got: {:?}",
+                chunks_by_root_name.keys().collect::<Vec<_>>()
+            )
+        });
+        let errors_sr = chunk
             .spans
             .iter()
             .find(|s| s.parent_id == 0)
-            .and_then(|root| root.metrics.get("_dd.errors_sr").copied())
-    };
-
-    for (name, priority, error, dm, on_child) in error_rescue_cases() {
-        let chunk = &chunks_by_root_name[name];
+            .and_then(|root| root.metrics.get("_dd.errors_sr").copied());
         let eligible = error != 0
             && (priority == 0
                 || priority == -128
                 || (feature && priority < 0 && !(priority == -1 && dm == Some("-4"))));
         assert_eq!(
-            errors_sr_of(name),
+            errors_sr,
             eligible.then_some(1.0),
             "{name}, feature={feature}"
         );
@@ -1512,7 +1503,11 @@ async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
         })
         .collect();
 
-    for name in names.into_iter().chain(["manual_child_span"]) {
+    for name in cases
+        .into_iter()
+        .map(|case| case.0)
+        .chain(["manual_child_span"])
+    {
         let group = all_groups
             .iter()
             .find(|g| g.name == name)

@@ -241,7 +241,7 @@ impl ServerlessTraceProcessor {
         // backward wall-clock step cannot move the sampler's rolling window
         // backwards, which would undercount TPS and rescue too many chunks.
         let now_unix_secs = state.clamp_timestamp(read_clock());
-        self.rescue_with_sampler(payload, config, now_unix_secs, &mut state.sampler);
+        Self::rescue_with_sampler(payload, config, now_unix_secs, &mut state.sampler);
     }
 
     /// Test-only variant that injects a synthetic clock reading through the
@@ -257,7 +257,6 @@ impl ServerlessTraceProcessor {
     }
 
     fn rescue_with_sampler(
-        &self,
         payload: &mut TracerPayloadCollection,
         config: &Config,
         now_unix_secs: i64,
