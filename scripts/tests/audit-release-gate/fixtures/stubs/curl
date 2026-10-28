@@ -1,38 +1,13 @@
 #!/usr/bin/env bash
-#
-# Test double for curl used by the audit release gate tests.
-#
-# It copies the fixture archive to the gate's requested --output path so the
-# gate's download, checksum, extraction, and installation flow is exercised
-# without network access. FAKE_CURL_MODE=fail simulates a download failure.
-# FAKE_CURL_RECORD captures the full argument list so tests can assert the
-# reviewed network time bounds are present.
+# curl double for test_release_gate.py: records argv (one arg per line), then
+# copies FAKE_ARCHIVE to the --output path. FAKE_CURL_FAIL simulates a failure.
 set -euo pipefail
-
-output=""
-previous=""
-for argument in "$@"; do
-  case "$previous" in
-    -o | --output) output="$argument" ;;
-  esac
-  previous="$argument"
+{ printf -- '---\n'; printf 'arg=%s\n' "$@"; } >>"$FAKE_CURL_RECORD"
+[ -z "${FAKE_CURL_FAIL:-}" ] || { echo 'curl: (22) fixture download failure' >&2; exit 22; }
+output="" previous=""
+for arg in "$@"; do
+  [ "$previous" != --output ] || output="$arg"
+  previous="$arg"
 done
-
-if [ -n "${FAKE_CURL_RECORD:-}" ]; then
-  printf '%s\n' "$*" >>"$FAKE_CURL_RECORD"
-fi
-
-case "${FAKE_CURL_MODE:-ok}" in
-  ok) ;;
-  fail)
-    printf 'curl: (22) fixture download failure\n' >&2
-    exit 22
-    ;;
-  *)
-    printf 'curl stub: unknown FAKE_CURL_MODE\n' >&2
-    exit 64
-    ;;
-esac
-
-[ -n "$output" ] || { printf 'curl stub: no --output argument\n' >&2; exit 2; }
-cp "${FAKE_CURL_SOURCE:?FAKE_CURL_SOURCE must point at the fixture archive}" "$output"
+[ -n "$output" ] || { echo 'curl stub: missing --output' >&2; exit 2; }
+cp -- "$FAKE_ARCHIVE" "$output"

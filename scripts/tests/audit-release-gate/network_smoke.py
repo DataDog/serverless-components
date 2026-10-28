@@ -1,19 +1,8 @@
-"""Opt-in network smoke suite for the cargo-audit release gate.
+"""Opt-in real-scanner tests; excluded from offline test_*.py discovery.
 
-This suite is not part of the deterministic offline run. It downloads the real
-pinned cargo-audit archive, verifies its reviewed checksum, installs it, clones a
-fresh RustSec advisory database, updates the crates.io index, and scans small
-fixture lockfiles. It requires a working Rust toolchain and network access.
-
-Run it from the repository root with:
-
-    python3 scripts/tests/audit-release-gate/network_smoke.py
-
-It never publishes, signs, uploads, or pushes anything, and it never asserts that
-the repository's own Cargo.lock passes: that lock is expected to be blocked while
-unfixed advisories remain.
-
-The file is deliberately named so that `unittest discover -p 'test_*.py'` skips it.
+Run from the repository root with cargo and network access. Each gate invocation
+uses the real pinned download, checksum, fresh advisory DB and crates.io index.
+Only temporary fixture lockfiles are scanned; nothing is published or uploaded.
 """
 import os
 import re
@@ -22,148 +11,82 @@ import tempfile
 import unittest
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[2]
-GATE = REPO / "scripts" / "cargo-audit-release-gate.sh"
-
-SCANNER_VERSION_LINE = "cargo-audit-audit 0.22.2"
-ADVISORY_DB_URL = "https://github.com/RustSec/advisory-db.git"
-LOCK_HEADER = 'version = 3\n\n[[package]]\nname = "smoke-fixture"\nversion = "0.1.0"\n'
-DEFAULT_POLICY = "[advisories]\nignore = []\n"
-
+GATE = Path(__file__).resolve().parents[2] / "cargo-audit-release-gate.sh"
+VERSION = "cargo-audit-audit 0.22.2"
+TRUSTED_DB = "https://github.com/RustSec/advisory-db.git"
+LOCK = 'version = 3\n\n[[package]]\nname = "smoke-fixture"\nversion = "0.1.0"\n'
 GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
 
 
-def registry_package(name, version):
-    return (
-        f'\n[[package]]\nname = "{name}"\nversion = "{version}"\n'
-        'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
-    )
-
-
 def git(repo, *args):
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=GIT_ENV,
-    )
+    return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                          capture_output=True, text=True, env=GIT_ENV).stdout.strip()
 
 
 def commit_all(repo, message):
     git(repo, "add", "-A")
-    git(
-        repo,
-        "-c", "user.email=smoke@example.invalid",
-        "-c", "user.name=smoke",
-        "commit", "--quiet", "-m", message,
-    )
-    return git(repo, "rev-parse", "HEAD").stdout.strip()
+    git(repo, "-c", "user.email=smoke@example.invalid", "-c", "user.name=smoke",
+        "commit", "--quiet", "-m", message)
+    return git(repo, "rev-parse", "HEAD")
 
 
-def make_repo(root, lock_text, policy_text=DEFAULT_POLICY):
+def registry_package(name, version):
+    return (f'\n[[package]]\nname = "{name}"\nversion = "{version}"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
+
+
+def make_repo(root, lock):
     repo = Path(root) / "repo"
-    repo.mkdir()
-    (repo / ".cargo").mkdir()
-    (repo / "Cargo.lock").write_text(lock_text)
-    (repo / ".cargo" / "audit.toml").write_text(policy_text)
-    subprocess.run(
-        ["git", "init", "--quiet", "--initial-branch=main", str(repo)],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=GIT_ENV,
-    )
+    (repo / ".cargo").mkdir(parents=True)
+    (repo / "Cargo.lock").write_text(lock)
+    (repo / ".cargo" / "audit.toml").write_text("[advisories]\nignore = []\n")
+    git(repo, "init", "--quiet", "--initial-branch=main")
     return repo, commit_all(repo, "smoke fixture")
-
-
-def run_gate(repo, sha):
-    return subprocess.run(
-        ["bash", str(GATE), sha],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=900,
-    )
 
 
 class NetworkSmoke(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory(prefix="audit-gate-smoke.")
-        self.addCleanup(self._tmp.cleanup)
+        tmp = tempfile.TemporaryDirectory(prefix="audit-gate-smoke.")
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
 
     def assert_scanner_identity(self, output):
-        self.assertIn(f"scanner-version: {SCANNER_VERSION_LINE}", output)
-        revision = re.search(r"^advisory-db-revision: ([0-9a-f]{40,64})$", output, re.MULTILINE)
-        self.assertIsNotNone(revision, output)
-        self.assertIn(f"advisory-db-origin: {ADVISORY_DB_URL}", output)
-        # A per-execution fetch must be visible in the displayed log.
+        self.assertIn(f"scanner-version: {VERSION}", output)
+        self.assertIn(f"advisory-db-origin: {TRUSTED_DB}", output)
         self.assertIn("Fetching advisory database", output)
-        # The real scanner must report a nonzero advisory count and scan the
-        # absolute lockfile path with a nonzero crate dependency count. This is
-        # the runtime proof for the structured report-guard contract.
-        self.assertIsNotNone(
-            re.search(r"^\s*Loaded [1-9][0-9]* security advisories", output, re.MULTILINE),
-            output,
-        )
-        self.assertIsNotNone(
-            re.search(
-                r"^\s*Scanning /.*/Cargo\.lock for vulnerabilities \([1-9][0-9]* crate dependencies\)$",
-                output,
-                re.MULTILINE,
-            ),
-            output,
+        self.assertRegex(output, r"(?m)^advisory-db-revision: (?:[0-9a-f]{40}|[0-9a-f]{64})$")
+        self.assertRegex(output, r"(?m)^\s*Loaded [1-9][0-9]* security advisories")
+        self.assertRegex(
+            output, r"(?m)^\s*Scanning /.*/Cargo\.lock for vulnerabilities "
+            r"\([1-9][0-9]* crate dependencies\)$",
         )
 
-    def test_clean_fixture_passes_and_refreshes(self):
-        repo, head = make_repo(self._tmp.name, LOCK_HEADER)
-        first = run_gate(repo, head)
-        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-        self.assertIn("result: PASS", first.stdout)
-        self.assert_scanner_identity(first.stdout)
-
-        # Retrying the gate re-fetches advisory data instead of reusing state.
-        second = run_gate(repo, head)
-        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
-        self.assert_scanner_identity(second.stdout)
-
-    def test_vulnerable_fixture_blocks_publication(self):
-        lock = LOCK_HEADER + registry_package("openssl", "0.10.38")
-        repo, head = make_repo(self._tmp.name, lock)
-        result = run_gate(repo, head)
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("result: FAIL", result.stdout + result.stderr)
-        self.assertRegex(result.stdout, r"RUSTSEC-\d{4}-\d{4}")
+    def scan(self, repo, sha, accepted=True):
+        result = subprocess.run(["bash", str(GATE), sha], cwd=repo, capture_output=True,
+                                text=True, timeout=900)
+        self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
+        self.assertIn("result: PASS" if accepted else "result: FAIL", result.stdout + result.stderr)
         self.assert_scanner_identity(result.stdout)
+        return result.stdout
 
-    def test_informational_warning_fixture_passes(self):
-        lock = LOCK_HEADER + registry_package("paste", "1.0.15")
-        repo, head = make_repo(self._tmp.name, lock)
-        result = run_gate(repo, head)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("allowed warning found", result.stdout)
+    def test_clean_fixture_and_retry_refresh(self):
+        repo, sha = make_repo(self.root, LOCK)
+        self.scan(repo, sha)
+        # A retry must fetch again, not authorize from inherited state.
+        self.scan(repo, sha)
 
-    def test_existing_ignore_policy_is_honored(self):
-        lock = LOCK_HEADER + registry_package("openssl", "0.10.38")
-        repo, head = make_repo(self._tmp.name, lock)
+    def test_findings_block_until_ignore_policy_is_committed(self):
+        repo, sha = make_repo(self.root, LOCK + registry_package("openssl", "0.10.38"))
+        blocked = self.scan(repo, sha, accepted=False)
+        advisories = sorted(set(re.findall(r"RUSTSEC-\d{4}-\d{4}", blocked)))
+        self.assertTrue(advisories, blocked)
+        ignores = ",\n".join(f'    "{advisory}"' for advisory in advisories)
+        (repo / ".cargo" / "audit.toml").write_text(f"[advisories]\nignore = [\n{ignores}\n]\n")
+        self.scan(repo, commit_all(repo, "ignore the fixture advisories"))
 
-        blocked = run_gate(repo, head)
-        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        advisories = sorted(set(re.findall(r"RUSTSEC-\d{4}-\d{4}", blocked.stdout)))
-        self.assertTrue(advisories, blocked.stdout)
-
-        policy = "[advisories]\nignore = [\n"
-        for advisory in advisories:
-            policy += f'    "{advisory}",\n'
-        policy += "]\n"
-        (repo / ".cargo" / "audit.toml").write_text(policy)
-        new_head = commit_all(repo, "ignore the fixture advisories")
-
-        allowed = run_gate(repo, new_head)
-        self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
-        self.assertIn("result: PASS", allowed.stdout)
+    def test_informational_warning_passes(self):
+        repo, sha = make_repo(self.root, LOCK + registry_package("paste", "1.0.15"))
+        self.assertIn("allowed warning found", self.scan(repo, sha))
 
 
 if __name__ == "__main__":

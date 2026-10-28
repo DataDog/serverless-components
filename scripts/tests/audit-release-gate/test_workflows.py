@@ -1,656 +1,251 @@
 """Offline structural tests for the release-gate workflows.
 
-These tests parse the real workflow YAML and assert that the strict cargo-audit
-gate runs inside each protected job, before that job's first publication side
-effect, against the exact source revision that produced the artifacts. They also
-run a set of negative mutations to prove the checks reject an absent, reordered,
-masked, or unlocked gate.
+These tests parse the real workflow YAML and check that the strict cargo-audit
+gate runs unconditionally inside each protected job, before that job's first
+publication effect, against the exact source revision that produced the
+artifacts. One table of negative mutations proves the checks reject
+representative regressions. Expected pins, refs, conditions, and commands are
+literals reviewed together with the workflows, never values read from them.
 
-PyYAML is a test-only dependency. `on:` is a YAML 1.1 boolean key, so the trigger
-block is read through the `trigger()` helper rather than by key name.
+PyYAML is a test-only dependency. YAML 1.1 parses the `on:` key as boolean True,
+so `load()` stores the trigger block back under "on".
 """
+import shlex
 import unittest
 from pathlib import Path
 
 import yaml
 
-HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[2]
-WORKFLOWS = REPO / ".github" / "workflows"
-PUBLISH = WORKFLOWS / "publish.yml"
-RELEASE = WORKFLOWS / "release-datadog-serverless-compat.yml"
-BUILD = WORKFLOWS / "build-datadog-serverless-compat.yml"
-TESTS = WORKFLOWS / "audit-release-gate-tests.yml"
+WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
+PUBLISH = "publish.yml"
+RELEASE = "release-datadog-serverless-compat.yml"
+BUILD = "build-datadog-serverless-compat.yml"
 
-CHECKOUT_PIN = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
-RUST_SETUP_PIN = "actions-rust-lang/setup-rust-toolchain@9399c7bb15d4c7d47b27263d024f0a4978346ba4"
-GH_RELEASE_PIN = "softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631"
-GATE_CALL = "cargo-audit-release-gate.sh"
-GATE_COMMAND = './scripts/cargo-audit-release-gate.sh "$GITHUB_SHA"'
+CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+RUST_SETUP = "actions-rust-lang/setup-rust-toolchain@9399c7bb15d4c7d47b27263d024f0a4978346ba4"
+GH_RELEASE = "softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631"
+PINS = {pin.split("@")[0]: pin for pin in (CHECKOUT, RUST_SETUP, GH_RELEASE)}
 SOURCE_REF = "${{ github.sha }}"
-BUILD_ONLY_CONDITION = "${{ inputs.publish == 'Build and Publish' }}"
-DOWNLOAD_ARTIFACT_PREFIX = "actions/download-artifact@"
-EXTERNAL_ARTIFACT_SELECTORS = ("run-id", "repository", "github-token")
+GATE_COMMAND = './scripts/cargo-audit-release-gate.sh "$GITHUB_SHA"'
+BUILD_ONLY = "${{ inputs.publish == 'Build and Publish' }}"
+CROSS_RUN_SELECTORS = {"run-id", "repository", "github-token"}
+SHELL_SEPARATORS = {"&&", "||", ";", "|"}
 
 
-def load(path):
-    with path.open(encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+def load(name):
+    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+    if True in doc:
+        doc["on"] = doc.pop(True)
+    return doc
 
 
-def trigger(doc):
-    for key in ("on", True):
-        if key in doc:
-            return doc[key]
-    raise AssertionError("workflow has no trigger block")
-
-
-def step_run(step):
+def run_of(step):
     return str(step.get("run", ""))
 
 
-def find_step(steps, predicate):
-    for index, step in enumerate(steps):
-        if predicate(step):
-            return index, step
-    return None, None
-
-
-def normalized_run(step):
-    return " ".join(step_run(step).split())
-
-
-def assert_no_failure_masks(doc):
-    for job_name, job in doc["jobs"].items():
-        if job.get("continue-on-error"):
-            raise AssertionError(f"job '{job_name}' sets continue-on-error")
-        job_condition = str(job.get("if", ""))
-        if "always(" in job_condition or "cancelled(" in job_condition:
-            raise AssertionError(f"job '{job_name}' has an error-masking condition")
-        for step in job.get("steps", []):
-            if step.get("continue-on-error"):
-                raise AssertionError(f"job '{job_name}' has a step with continue-on-error")
-            condition = str(step.get("if", ""))
-            if "always(" in condition or "cancelled(" in condition:
-                raise AssertionError(f"job '{job_name}' has an error-masking step condition")
-
-
-def assert_same_run_artifact_downloads(steps, where):
-    # Downloading artifacts with a run id, repository, or explicit token could
-    # pull artifacts produced by a different run than the gated source revision.
-    for step in steps:
-        if not str(step.get("uses", "")).startswith(DOWNLOAD_ARTIFACT_PREFIX):
-            continue
-        with_block = step.get("with", {}) or {}
-        for selector in EXTERNAL_ARTIFACT_SELECTORS:
-            if selector in with_block:
-                raise AssertionError(
-                    f"{where}: artifact download must come from the current run, not '{selector}'"
-                )
-
-
-def assert_gate_step(step, where):
-    if step is None:
-        raise AssertionError(f"{where}: strict cargo-audit gate is missing")
-    if "if" in step:
-        raise AssertionError(f"{where}: gate step must be unconditional")
-    if "continue-on-error" in step:
-        raise AssertionError(f"{where}: gate step must not ignore failures")
-    run = normalized_run(step)
-    if run != GATE_COMMAND:
-        raise AssertionError(
-            f"{where}: gate step must run exactly '{GATE_COMMAND}', found '{run}'"
-        )
-    shell = step.get("shell")
-    if shell is not None and str(shell) not in ("bash", "bash {0}"):
-        raise AssertionError(f"{where}: gate step must use the reviewed bash shell, found '{shell}'")
-    if step.get("working-directory") != "source":
-        raise AssertionError(f"{where}: gate step must run from the source checkout")
-
-
-def assert_checkout_ref(step, where):
-    if step is None:
-        raise AssertionError(f"{where}: checkout is missing")
-    if step.get("uses") != CHECKOUT_PIN:
-        raise AssertionError(f"{where}: checkout is not pinned to the reviewed commit")
-    if step.get("with", {}).get("ref") != SOURCE_REF:
-        raise AssertionError(f"{where}: checkout does not pin ref {SOURCE_REF}")
-
-
-def assert_source_checkout(step, where):
-    assert_checkout_ref(step, where)
-    if step.get("with", {}).get("path") != "source":
-        raise AssertionError(f"{where}: checkout does not use path 'source'")
-
-
-def assert_rust_setup(step, where):
-    if step is None:
-        raise AssertionError(f"{where}: Rust toolchain setup is missing")
-    if step.get("uses") != RUST_SETUP_PIN:
-        raise AssertionError(f"{where}: Rust setup is not pinned to the reviewed commit")
-    if step.get("with", {}).get("cache") is not False:
-        raise AssertionError(f"{where}: Rust setup must disable the toolchain cache")
-
-
-def assert_package_job(doc):
-    package = doc["jobs"]["package"]
-    steps = package["steps"]
-    _, checkout = find_step(steps, lambda s: str(s.get("uses", "")).startswith("actions/checkout@"))
-    assert_checkout_ref(checkout, "package")
-    index, upload = find_step(
-        steps, lambda s: str(s.get("uses", "")).startswith("actions/upload-artifact@")
-    )
-    if index is None:
-        raise AssertionError("package job must upload the npm packages it produces")
-    if upload.get("with", {}).get("name") != "npm-packages":
-        raise AssertionError("package job must upload the 'npm-packages' artifact")
-
-
-def assert_publish_workflow(doc):
-    assert_no_failure_masks(doc)
-    publish = doc["jobs"]["publish"]
-    if publish.get("environment") != "Production":
-        raise AssertionError("publish job must keep the Production environment approval")
-    if publish.get("needs") != "package":
-        raise AssertionError("publish job must depend on the package job")
-    condition = " ".join(str(publish.get("if", "")).split())
-    if condition != BUILD_ONLY_CONDITION:
-        raise AssertionError("publish job must keep the build-only condition")
-
-    assert_package_job(doc)
-
-    steps = publish["steps"]
-    assert_same_run_artifact_downloads(steps, "publish")
-    artifact_names = [
-        step.get("with", {}).get("name")
-        for step in steps
-        if str(step.get("uses", "")).startswith(DOWNLOAD_ARTIFACT_PREFIX)
-    ]
-    if "npm-packages" not in artifact_names:
-        raise AssertionError("publish job must download the artifact produced in the same run")
-    _, checkout = find_step(steps, lambda s: str(s.get("uses", "")).startswith("actions/checkout@"))
-    assert_source_checkout(checkout, "publish")
-
-    _, rust = find_step(
-        steps,
-        lambda s: str(s.get("uses", "")).startswith("actions-rust-lang/setup-rust-toolchain@"),
-    )
-    assert_rust_setup(rust, "publish")
-
-    gate_index, gate_step = find_step(steps, lambda s: GATE_CALL in step_run(s))
-    assert_gate_step(gate_step, "publish")
-
-    publish_index, publisher = find_step(steps, lambda s: "npm publish" in step_run(s))
-    if publish_index is None:
-        raise AssertionError("publish job has no npm publish step")
-    if "if" in publisher:
-        raise AssertionError("npm publish step must not be conditional")
-    if gate_index > publish_index:
-        raise AssertionError("strict cargo-audit gate must run before the first npm publish")
-
-    permissions = doc.get("permissions", {})
-    if permissions.get("contents") != "read":
-        raise AssertionError("publish workflow must grant only contents: read")
-    if permissions.get("id-token") != "write":
-        raise AssertionError("publish workflow must keep id-token: write for provenance")
-
-    inputs = trigger(doc).get("workflow_dispatch", {}).get("inputs", {}) or {}
-    for name in inputs:
-        if "skip" in name.lower() or "bypass" in name.lower():
-            raise AssertionError(f"publish workflow must not expose a bypass input: {name}")
-
-
-def assert_release_workflow(doc):
-    assert_no_failure_masks(doc)
-    release = doc["jobs"]["release"]
-    if release.get("permissions", {}).get("contents") != "write":
-        raise AssertionError("release job must keep contents: write")
-    if release.get("needs") != "build":
-        raise AssertionError("release job must depend on the build job")
-    # This freezes the reviewed release flow: the strict cargo-audit gate plus a
-    # draft release is the release check, so no additional protected environment
-    # (and therefore no extra manual approval) is introduced. This is an
-    # invariant of the reviewed change, not a claim that environments are unsafe.
-    if "environment" in release:
-        raise AssertionError("release job must not add an extra protected environment approval")
-
-    steps = release["steps"]
-    assert_same_run_artifact_downloads(steps, "release")
-    _, checkout = find_step(steps, lambda s: str(s.get("uses", "")).startswith("actions/checkout@"))
-    assert_source_checkout(checkout, "release")
-
-    _, rust = find_step(
-        steps,
-        lambda s: str(s.get("uses", "")).startswith("actions-rust-lang/setup-rust-toolchain@"),
-    )
-    assert_rust_setup(rust, "release")
-
-    gate_index, gate_step = find_step(steps, lambda s: GATE_CALL in step_run(s))
-    assert_gate_step(gate_step, "release")
-
-    zip_index, _ = find_step(steps, lambda s: step_run(s).strip().startswith("zip "))
-    if zip_index is None:
-        raise AssertionError("release job has no zip step")
-    release_index, gh_release = find_step(
-        steps, lambda s: str(s.get("uses", "")).startswith("softprops/action-gh-release@")
-    )
-    if release_index is None:
-        raise AssertionError("release job has no action-gh-release step")
-    if gate_index > zip_index or gate_index > release_index:
-        raise AssertionError("strict cargo-audit gate must run before the zip and the draft release")
-
-    if gh_release.get("uses") != GH_RELEASE_PIN:
-        raise AssertionError("action-gh-release pin changed")
-    if gh_release.get("with", {}).get("draft") is not True:
-        raise AssertionError("draft release behavior changed")
-    if "if" in gh_release:
-        raise AssertionError("the draft release step must not be conditional")
-
-    if doc.get("permissions") != {}:
-        raise AssertionError("release workflow top-level permissions must stay empty")
-
-
-def assert_build_workflow(doc):
-    builds = []
-    checkouts = []
-    for job_name, job in doc["jobs"].items():
-        for step in job.get("steps", []):
-            run = step_run(step)
-            if "cargo build --release -p datadog-serverless-compat" in run:
-                builds.append((job_name, run))
-            if "cargo-audit" in run:
-                raise AssertionError("the shared build workflow must not run audits")
-            if str(step.get("uses", "")).startswith("actions/checkout@"):
-                checkouts.append(step)
-
-    if len(builds) != 5:
-        raise AssertionError(f"expected 5 release builds, found {len(builds)}")
-    for job_name, run in builds:
-        if "--locked" not in run:
-            raise AssertionError(f"release build in job '{job_name}' is not --locked")
-
-    if len(checkouts) != 2:
-        raise AssertionError(f"expected 2 producer checkouts, found {len(checkouts)}")
-    for checkout in checkouts:
-        assert_checkout_ref(checkout, "build producer")
-
-
-def assert_tests_workflow(doc, raw):
-    assert_no_failure_masks(doc)
-    if "if" in doc["jobs"]["offline"]:
-        raise AssertionError("offline gate tests must run unconditionally")
-    if doc.get("permissions") != {"contents": "read"}:
-        raise AssertionError("tests workflow must grant only contents: read")
-    if "id-token" in raw:
-        raise AssertionError("tests workflow must not request OIDC")
-
-    for job_name, job in doc["jobs"].items():
-        if "environment" in job:
-            raise AssertionError(f"tests job '{job_name}' must not use a protected environment")
-
-    for forbidden in ("npm publish", "action-gh-release", "gh workflow run", "git push"):
-        if forbidden in raw:
-            raise AssertionError(f"tests workflow must not publish or dispatch: {forbidden}")
-
-    triggers = trigger(doc)
-    if "workflow_dispatch" not in triggers:
-        raise AssertionError("tests workflow needs workflow_dispatch for the opt-in network smoke")
-    inputs = triggers["workflow_dispatch"].get("inputs", {}) or {}
-    if "network_smoke" not in inputs:
-        raise AssertionError("workflow_dispatch must expose the opt-in network_smoke input")
-
-    pull_request = triggers.get("pull_request")
-    if not pull_request or "paths" not in pull_request:
-        raise AssertionError("pull_request trigger must be limited to relevant paths")
-    for required in ("scripts/cargo-audit-release-gate.sh", "scripts/tests/audit-release-gate/**"):
-        if required not in pull_request["paths"]:
-            raise AssertionError(f"pull_request paths must include {required}")
-
-    if "unittest discover" not in raw:
-        raise AssertionError("tests workflow must run the deterministic offline suite")
-
-    smoke = doc["jobs"].get("network-smoke")
-    if smoke is None:
-        raise AssertionError("tests workflow is missing the opt-in network smoke job")
-    condition = str(smoke.get("if", ""))
-    if "workflow_dispatch" not in condition or "inputs.network_smoke" not in condition:
-        raise AssertionError("network smoke job must be gated behind workflow_dispatch and inputs.network_smoke")
-
-
-class WorkflowStructureTests(unittest.TestCase):
-    def test_publish_workflow(self):
-        assert_publish_workflow(load(PUBLISH))
-
-    def test_release_workflow(self):
-        assert_release_workflow(load(RELEASE))
-
-    def test_build_workflow(self):
-        assert_build_workflow(load(BUILD))
-
-    def test_tests_workflow(self):
-        assert_tests_workflow(load(TESTS), TESTS.read_text())
-
-
-class WorkflowMutationTests(unittest.TestCase):
-    def mutated(self, path, mutate):
-        doc = load(path)
-        mutate(doc)
-        return doc
-
-    def assert_rejected(self, checker, doc, message):
-        with self.assertRaises(AssertionError, msg=message):
-            checker(doc)
-
-    def test_disabled_or_error_masked_offline_tests_are_rejected(self):
-        raw = TESTS.read_text()
-        for mutation in ("job-error-mask", "step-error-mask", "conditional-skip"):
-            with self.subTest(mutation=mutation):
-                doc = load(TESTS)
-                offline = doc["jobs"]["offline"]
-                if mutation == "job-error-mask":
-                    offline["continue-on-error"] = True
-                elif mutation == "step-error-mask":
-                    offline["steps"][-1]["continue-on-error"] = True
-                else:
-                    offline["if"] = False
-                with self.assertRaises(AssertionError):
-                    assert_tests_workflow(doc, raw)
-
-    def test_removing_gate_is_rejected(self):
-        def mutate(doc):
-            steps = doc["jobs"]["publish"]["steps"]
-            steps[:] = [step for step in steps if GATE_CALL not in step_run(step)]
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "gate removal must be rejected"
-        )
-
-    def test_reordering_gate_after_publish_is_rejected(self):
-        def mutate(doc):
-            steps = doc["jobs"]["publish"]["steps"]
-            gate = next(step for step in steps if GATE_CALL in step_run(step))
-            steps.remove(gate)
-            steps.append(gate)
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "gate reorder must be rejected"
-        )
-
-    def test_continue_on_error_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["publish"]["steps"]:
-                if GATE_CALL in step_run(step):
-                    step["continue-on-error"] = True
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "continue-on-error must be rejected"
-        )
-
-    def test_always_condition_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["publish"]["steps"]:
-                if "npm publish" in step_run(step):
-                    step["if"] = "always()"
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "always() must be rejected"
-        )
-
-    def test_unpinned_source_ref_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["publish"]["steps"]:
-                if str(step.get("uses", "")).startswith("actions/checkout@"):
-                    step["with"]["ref"] = "main"
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "floating source ref must be rejected"
-        )
-
-    def test_missing_locked_flag_is_rejected(self):
-        def mutate(doc):
-            for job in doc["jobs"].values():
-                for step in job.get("steps", []):
-                    if "cargo build --release -p datadog-serverless-compat" in step_run(step):
-                        step["run"] = step_run(step).replace(" --locked", "")
-
-        self.assert_rejected(
-            assert_build_workflow, self.mutated(BUILD, mutate), "unlocked build must be rejected"
-        )
-
-    def test_missing_producer_source_ref_is_rejected(self):
-        def mutate(doc):
-            removed = False
-            for job in doc["jobs"].values():
-                for step in job.get("steps", []):
-                    if str(step.get("uses", "")).startswith("actions/checkout@"):
-                        step.get("with", {}).pop("ref", None)
-                        removed = True
-            self.assertTrue(removed)
-
-        self.assert_rejected(
-            assert_build_workflow, self.mutated(BUILD, mutate), "unpinned producer checkout must be rejected"
-        )
-
-    def test_release_gate_after_draft_is_rejected(self):
-        def mutate(doc):
-            steps = doc["jobs"]["release"]["steps"]
-            gate = next(step for step in steps if GATE_CALL in step_run(step))
-            steps.remove(gate)
-            steps.append(gate)
-
-        self.assert_rejected(
-            assert_release_workflow, self.mutated(RELEASE, mutate), "late release gate must be rejected"
-        )
-
-    def test_non_draft_release_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["release"]["steps"]:
-                if str(step.get("uses", "")).startswith("softprops/action-gh-release@"):
-                    step["with"]["draft"] = False
-
-        self.assert_rejected(
-            assert_release_workflow, self.mutated(RELEASE, mutate), "draft change must be rejected"
-        )
-
-    def test_tests_workflow_oidc_is_rejected(self):
-        doc = load(TESTS)
-        doc["permissions"] = {"contents": "read", "id-token": "write"}
-        raw = TESTS.read_text() + "\n# id-token: write\n"
-        self.assert_rejected(
-            lambda candidate: assert_tests_workflow(candidate, raw), doc, "OIDC must be rejected"
-        )
-
-    # --- gate command masking ---------------------------------------------
-
-    def mutate_gate_run(self, doc, replacement):
-        for step in doc["jobs"]["publish"]["steps"]:
-            if GATE_CALL in step_run(step):
-                step["run"] = replacement(step_run(step))
-                return
-        raise AssertionError("gate step not found")
-
-    def test_gate_or_true_masking_is_rejected(self):
-        self.assert_rejected(
-            assert_publish_workflow,
-            self.mutated(PUBLISH, lambda doc: self.mutate_gate_run(doc, lambda run: run + " || true")),
-            "|| true masking must be rejected",
-        )
-
-    def test_gate_exit_zero_masking_is_rejected(self):
-        self.assert_rejected(
-            assert_publish_workflow,
-            self.mutated(PUBLISH, lambda doc: self.mutate_gate_run(doc, lambda run: run + "; exit 0")),
-            "; exit 0 masking must be rejected",
-        )
-
-    def test_gate_set_plus_e_masking_is_rejected(self):
-        self.assert_rejected(
-            assert_publish_workflow,
-            self.mutated(PUBLISH, lambda doc: self.mutate_gate_run(doc, lambda run: "set +e\n" + run)),
-            "set +e masking must be rejected",
-        )
-
-    def test_gate_missing_expected_sha_is_rejected(self):
-        self.assert_rejected(
-            assert_publish_workflow,
-            self.mutated(
-                PUBLISH,
-                lambda doc: self.mutate_gate_run(doc, lambda run: "./scripts/cargo-audit-release-gate.sh"),
-            ),
-            "unbound gate command must be rejected",
-        )
-
-    def test_gate_conditional_false_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["publish"]["steps"]:
-                if GATE_CALL in step_run(step):
-                    step["if"] = False
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "conditional gate must be rejected"
-        )
-
-    def test_gate_condition_expression_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["publish"]["steps"]:
-                if GATE_CALL in step_run(step):
-                    step["if"] = "${{ false }}"
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "gate expression must be rejected"
-        )
-
-    def test_gate_shell_change_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["publish"]["steps"]:
-                if GATE_CALL in step_run(step):
-                    step["shell"] = "sh"
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "non-bash gate shell must be rejected"
-        )
-
-    def test_gate_working_directory_change_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["publish"]["steps"]:
-                if GATE_CALL in step_run(step):
-                    step["working-directory"] = "."
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "wrong gate directory must be rejected"
-        )
-
-    # --- job-level and artifact boundaries --------------------
-
-    def test_publish_job_continue_on_error_is_rejected(self):
-        def mutate(doc):
-            doc["jobs"]["publish"]["continue-on-error"] = True
-
-        self.assert_rejected(
-            assert_publish_workflow,
-            self.mutated(PUBLISH, mutate),
-            "job-level continue-on-error must be rejected",
-        )
-
-    def test_publish_job_build_only_condition_removed_is_rejected(self):
-        def mutate(doc):
-            doc["jobs"]["publish"].pop("if", None)
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "missing build-only condition must be rejected"
-        )
-
-    def test_publish_job_build_only_condition_replaced_is_rejected(self):
-        def mutate(doc):
-            doc["jobs"]["publish"]["if"] = "always()"
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "always() build condition must be rejected"
-        )
-
-    def test_publisher_cancelled_condition_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["publish"]["steps"]:
-                if "npm publish" in step_run(step):
-                    step["if"] = "cancelled()"
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "cancelled() masking must be rejected"
-        )
-
-    def test_npm_publish_condition_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["publish"]["steps"]:
-                if "npm publish" in step_run(step):
-                    step["if"] = "${{ always() }}"
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "conditional publish must be rejected"
-        )
-
-    def test_external_artifact_selectors_are_rejected(self):
-        for selector in EXTERNAL_ARTIFACT_SELECTORS:
-            with self.subTest(selector=selector):
-                def mutate(doc, selector=selector):
-                    for step in doc["jobs"]["publish"]["steps"]:
-                        if str(step.get("uses", "")).startswith(DOWNLOAD_ARTIFACT_PREFIX):
-                            step.setdefault("with", {})[selector] = "from-elsewhere"
-                            return
-                    raise AssertionError("no download-artifact step")
-
-                self.assert_rejected(
-                    assert_publish_workflow,
-                    self.mutated(PUBLISH, mutate),
-                    f"artifact selector {selector} must be rejected",
-                )
-
-    def test_release_external_artifact_selector_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["release"]["steps"]:
-                if str(step.get("uses", "")).startswith(DOWNLOAD_ARTIFACT_PREFIX):
-                    step.setdefault("with", {})["run-id"] = "1234"
-                    return
-            raise AssertionError("no download-artifact step")
-
-        self.assert_rejected(
-            assert_release_workflow, self.mutated(RELEASE, mutate), "release artifact selector must be rejected"
-        )
-
-    def test_package_checkout_ref_change_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["package"]["steps"]:
-                if str(step.get("uses", "")).startswith("actions/checkout@"):
-                    step["with"]["ref"] = "main"
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "floating package checkout must be rejected"
-        )
-
-    def test_package_artifact_name_change_is_rejected(self):
-        def mutate(doc):
-            for step in doc["jobs"]["package"]["steps"]:
-                if str(step.get("uses", "")).startswith("actions/upload-artifact@"):
-                    step["with"]["name"] = "other-packages"
-
-        self.assert_rejected(
-            assert_publish_workflow, self.mutated(PUBLISH, mutate), "renamed package artifact must be rejected"
-        )
-
-    def test_release_needs_change_is_rejected(self):
-        def mutate(doc):
-            doc["jobs"]["release"]["needs"] = None
-
-        self.assert_rejected(
-            assert_release_workflow, self.mutated(RELEASE, mutate), "release dependency change must be rejected"
-        )
-
-    def test_release_extra_environment_is_rejected(self):
-        def mutate(doc):
-            doc["jobs"]["release"]["environment"] = "Production"
-
-        self.assert_rejected(
-            assert_release_workflow, self.mutated(RELEASE, mutate), "extra release approval must be rejected"
-        )
+def action_of(step):
+    return str(step.get("uses", "")).split("@")[0]
+
+
+def runs(text):
+    return lambda step: text in run_of(step)
+
+
+def using(action):
+    return lambda step: action_of(step) == action
+
+
+def first(steps, predicate):
+    return next((index for index, step in enumerate(steps) if predicate(step)), None)
+
+
+def withs(job, action):
+    return [step.get("with") or {} for step in job.get("steps", []) if action_of(step) == action]
+
+
+def shell_commands(run):
+    """Yield the argv of each shell command in a run block, skipping comments."""
+    for line in run.replace("\\\n", " ").splitlines():
+        argv = []
+        for token in shlex.split(line, comments=True) + [";"]:
+            if token in SHELL_SEPARATORS:
+                yield argv
+                argv = []
+            else:
+                argv.append(token)
+
+
+class WorkflowTests(unittest.TestCase):
+    def check_common(self, doc, where):
+        for name, job in doc["jobs"].items():
+            for item in (job, *job.get("steps", [])):
+                self.assertNotIn("continue-on-error", item, f"{where}/{name} ignores errors")
+                action = action_of(item)
+                if action in PINS:
+                    self.assertEqual(item["uses"], PINS[action], f"{where}: {action} pin changed")
+                if action == "actions/download-artifact":
+                    selectors = CROSS_RUN_SELECTORS & set(item.get("with") or {})
+                    self.assertFalse(selectors, f"{where}: cross-run artifact download")
+
+    def check_gated_job(self, job, is_effect, where):
+        steps = job["steps"]
+        gate = first(steps, runs("cargo-audit-release-gate.sh"))
+        self.assertIsNotNone(gate, f"{where}: gate missing")
+        allowed = {"name", "run", "working-directory"}
+        self.assertLessEqual(set(steps[gate]), allowed, f"{where}: gate must be unconditional and unmasked")
+        self.assertEqual(run_of(steps[gate]).strip(), GATE_COMMAND, f"{where}: gate command changed")
+        self.assertEqual(steps[gate].get("working-directory"), "source", f"{where}: gate directory")
+
+        checkout = first(steps, using("actions/checkout"))
+        rust = first(steps, using("actions-rust-lang/setup-rust-toolchain"))
+        self.assertIsNotNone(checkout, f"{where}: source checkout missing")
+        self.assertIsNotNone(rust, f"{where}: Rust setup missing")
+        source = steps[checkout].get("with") or {}
+        self.assertEqual((source.get("ref"), source.get("path")), (SOURCE_REF, "source"), f"{where}: source checkout")
+        self.assertIs((steps[rust].get("with") or {}).get("cache"), False, f"{where}: Rust setup cache")
+        self.assertLess(max(checkout, rust), gate, f"{where}: checkout and Rust setup must precede the gate")
+
+        effect = first(steps, is_effect)
+        self.assertIsNotNone(effect, f"{where}: publication effect missing")
+        self.assertLess(gate, effect, f"{where}: gate must precede the first publication effect")
+        for later in steps[gate:]:
+            self.assertNotIn("if", later, f"{where}: step conditional after the gate")
+
+    def check_publish(self, doc):
+        self.check_common(doc, "publish")
+        self.assertEqual(doc["permissions"], {"contents": "read", "id-token": "write"}, "publish permissions")
+        inputs = doc["on"]["workflow_dispatch"]["inputs"]
+        self.assertEqual(set(inputs), {"publish", "version"}, "publish inputs changed")
+        self.assertEqual(inputs["publish"]["options"], ["Build", "Build and Publish"], "publish options")
+
+        package, publish = doc["jobs"]["package"], doc["jobs"]["publish"]
+        self.assertEqual(publish.get("environment"), "Production", "publish lost Production approval")
+        self.assertEqual(publish.get("needs"), "package", "publish must need package")
+        self.assertEqual(publish.get("if"), BUILD_ONLY, "publish lost the build-only condition")
+        package_refs = [w.get("ref") for w in withs(package, "actions/checkout")]
+        self.assertEqual(package_refs, [SOURCE_REF], "package checkout ref")
+        self.assertIn("npm-packages", [w.get("name") for w in withs(package, "actions/upload-artifact")])
+        self.assertIn("npm-packages", [w.get("name") for w in withs(publish, "actions/download-artifact")])
+        self.check_gated_job(publish, runs("npm publish"), "publish")
+
+    def check_release(self, doc):
+        self.check_common(doc, "release")
+        self.assertEqual(doc["permissions"], {}, "release top-level permissions must stay empty")
+        release = doc["jobs"]["release"]
+        # Reviewed flow: the strict gate plus a draft release is the release
+        # check, so no extra protected environment approval is introduced.
+        self.assertNotIn("environment", release, "release gained a protected environment")
+        self.assertNotIn("if", release, "release job became conditional")
+        self.assertEqual(release.get("needs"), "build", "release must need build")
+        self.assertEqual(release.get("permissions"), {"contents": "write"}, "release job permissions")
+
+        def is_effect(step):
+            return run_of(step).lstrip().startswith("zip ") or action_of(step) == "softprops/action-gh-release"
+
+        self.check_gated_job(release, is_effect, "release")
+        drafts = [w.get("draft") is True for w in withs(release, "softprops/action-gh-release")]
+        self.assertEqual(drafts, [True], "release must stay a single draft")
+
+    def check_build(self, doc):
+        self.check_common(doc, "builder")
+        refs = [w.get("ref") for job in doc["jobs"].values() for w in withs(job, "actions/checkout")]
+        self.assertEqual(refs, [SOURCE_REF, SOURCE_REF], "builder checkouts must pin the run commit")
+        run_blocks = [run_of(step) for job in doc["jobs"].values() for step in job.get("steps", [])]
+        self.assertFalse([run for run in run_blocks if "audit" in run], "builder must not audit")
+        builds = [argv for run in run_blocks for argv in shell_commands(run) if argv[:2] == ["cargo", "build"]]
+        self.assertEqual(len(builds), 5, f"expected 5 release builds, found {builds}")
+        for argv in builds:
+            self.assertLessEqual({"--release", "--locked"}, set(argv), f"unlocked build: {argv}")
+
+    def test_real_publish_workflow(self):
+        self.check_publish(load(PUBLISH))
+
+    def test_real_release_workflow(self):
+        self.check_release(load(RELEASE))
+
+    def test_real_build_workflow(self):
+        self.check_build(load(BUILD))
+
+    def test_mutations_are_rejected(self):
+        checks = {PUBLISH: self.check_publish, RELEASE: self.check_release, BUILD: self.check_build}
+        for context, name, mutate, reason in MUTATIONS:
+            with self.subTest(context):
+                doc = load(name)
+                mutate(doc)  # LookupError or KeyError here means the mutation target moved.
+                with self.assertRaisesRegex(AssertionError, reason):
+                    checks[name](doc)
+
+
+# Mutation helpers fail loudly when their target is absent or already holds the
+# requested value, so a case cannot pass by mutating nothing.
+def step(doc, job, predicate):
+    matches = [s for s in doc["jobs"][job]["steps"] if predicate(s)]
+    if len(matches) != 1:
+        raise LookupError(f"mutation target in job '{job}' matched {len(matches)} steps")
+    return matches[0]
+
+
+def put(target, key, value):
+    if target.get(key) == value:
+        raise LookupError(f"'{key}' already equals {value!r}")
+    target[key] = value
+
+
+def edit_run(target, old, new):
+    if old not in run_of(target):
+        raise LookupError(f"'{old}' not found in run block")
+    target["run"] = run_of(target).replace(old, new)
+
+
+def move_to_end(doc, job, predicate):
+    steps = doc["jobs"][job]["steps"]
+    steps.append(steps.pop(steps.index(step(doc, job, predicate))))
+
+
+GATE = runs("cargo-audit-release-gate.sh")
+BUILDER = "build-datadog-serverless-compat"
+MACOS_BUILD = runs("datadog-serverless-compat --locked")
+
+# (context, workflow, mutation, expected rejection reason)
+MUTATIONS = [
+    ("publish gate removed", PUBLISH,
+     lambda d: d["jobs"]["publish"]["steps"].remove(step(d, "publish", GATE)), "gate missing"),
+    ("publish gate moved after npm publish", PUBLISH,
+     lambda d: move_to_end(d, "publish", GATE), "gate must precede"),
+    ("release gate moved after the zip and draft release", RELEASE,
+     lambda d: move_to_end(d, "release", GATE), "gate must precede"),
+    ("publish gate masked with || true", PUBLISH,
+     lambda d: edit_run(step(d, "publish", GATE), '"$GITHUB_SHA"', '"$GITHUB_SHA" || true'), "gate command"),
+    ("publish gate skipped with if: false", PUBLISH,
+     lambda d: put(step(d, "publish", GATE), "if", False), "unconditional and unmasked"),
+    ("release gate ignores its own failure", RELEASE,
+     lambda d: put(step(d, "release", GATE), "continue-on-error", True), "ignores errors"),
+    ("publish gate no longer bound to the run commit", PUBLISH,
+     lambda d: edit_run(step(d, "publish", GATE), ' "$GITHUB_SHA"', ""), "gate command"),
+    ("publish source checkout floats to main", PUBLISH,
+     lambda d: put(step(d, "publish", using("actions/checkout"))["with"], "ref", "main"), "source checkout"),
+    ("builder setup checkout floats to main", BUILD,
+     lambda d: put(step(d, "setup", using("actions/checkout"))["with"], "ref", "main"), "builder checkouts"),
+    ("publish downloads npm packages from another run", PUBLISH,
+     lambda d: put(step(d, "publish", using("actions/download-artifact"))["with"], "run-id", "1234"),
+     "cross-run artifact"),
+    ("publish loses Production approval", PUBLISH,
+     lambda d: d["jobs"]["publish"].pop("environment"), "Production approval"),
+    ("publish also runs on Build-only dispatches", PUBLISH,
+     lambda d: put(d["jobs"]["publish"], "if", "${{ always() }}"), "build-only condition"),
+    ("npm publish step made conditional", PUBLISH,
+     lambda d: put(step(d, "publish", runs("npm publish")), "if", "${{ always() }}"), "conditional after the gate"),
+    ("draft release becomes public", RELEASE,
+     lambda d: put(step(d, "release", using("softprops/action-gh-release"))["with"], "draft", False),
+     "single draft"),
+    ("i686 backslash-continued build drops --locked", BUILD,
+     lambda d: edit_run(step(d, BUILDER, runs("--target i686-pc-windows-msvc")), "--locked", ""),
+     "unlocked build"),
+    ("macOS build keeps --locked only inside a shell comment", BUILD,
+     lambda d: edit_run(step(d, BUILDER, MACOS_BUILD), "--locked", "# --locked"), "unlocked build"),
+    ("macOS build commented out", BUILD,
+     lambda d: edit_run(step(d, BUILDER, MACOS_BUILD), "cargo", "# cargo"), "expected 5 release builds"),
+]
 
 
 if __name__ == "__main__":

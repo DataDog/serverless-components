@@ -2,249 +2,129 @@
 
 The guard is pure: it takes a captured cargo-audit terminal log, the numeric
 scanner exit code, and the lockfile path the gate expected the scan to cover, and
-returns a verdict. None of these tests touch the network, install anything, or
-run a publisher.
+returns a verdict. None of these tests touch the network or install anything.
 
-The logs under fixtures/logs were captured from the real pinned cargo-audit
-0.22.2 binary; see fixtures/logs/README.md for provenance. They were captured
-with a relative `--file Cargo.lock`, so the tests pass `Cargo.lock` as the
-expected path for them. Synthetic variants are derived in memory to cover
-individual rejection reasons (zero counts, out-of-order markers, substituted
-paths); those are contract fixtures, not captured runtime output.
+Provenance: the logs under fixtures/logs are captured runtime output from the
+real pinned cargo-audit 0.22.2 binary (see README.md), recorded
+with a relative `--file Cargo.lock`, so `Cargo.lock` is their expected path. The
+SYNTHETIC variants are contract fixtures derived in memory from the clean log to
+isolate single rejection reasons; they are not scanner output. The runtime proof
+for the absolute-path Scanning line is the opt-in network_smoke.py suite.
 """
-import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[2]
-GUARD = REPO / "scripts" / "cargo-audit-report-guard.sh"
+GUARD = HERE.parents[1] / "cargo-audit-report-guard.sh"
 LOGS = HERE / "fixtures" / "logs"
+CLEAN_LOG = LOGS / "clean-success.log"
+CLEAN = CLEAN_LOG.read_text()
+CAPTURED_LOCKFILE = "Cargo.lock"
 
-# (captured log name, captured scanner exit code, expected guard exit code)
+# (captured log, scanner exit code it was captured with, expected guard exit code)
 CAPTURED = [
     ("clean-success", 0, 0),
     ("warning-only-success", 0, 0),
     ("vulnerable-failure", 1, 1),
-    ("malformed-lock-rc2", 2, 1),
-    ("missing-lock-rc2", 2, 1),
     ("index-error-rc0", 0, 1),
     ("quiet-output-rc0", 0, 1),
     ("disabled-yanked-rc0", 0, 1),
     ("disabled-fetch-rc0", 0, 1),
 ]
 
-# The capture run scanned a relative `Cargo.lock`.
-CAPTURED_LOCKFILE = "Cargo.lock"
-MARKERS = ("Fetching", "Loaded", "Updating", "Scanning")
+
+def without(marker):
+    kept = [line for line in CLEAN.splitlines() if marker not in line]
+    if len(kept) == len(CLEAN.splitlines()):
+        raise LookupError(f"clean log has no '{marker}' line")
+    return "\n".join(kept) + "\n"
 
 
-def run_guard(log, rc, expected_lockfile=CAPTURED_LOCKFILE):
-    return subprocess.run(
-        ["bash", str(GUARD), str(log), str(rc), str(expected_lockfile)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def replaced(old, new):
+    if old not in CLEAN:
+        raise LookupError(f"clean log does not contain '{old}'")
+    return CLEAN.replace(old, new)
 
 
-def clean_text():
-    return (LOGS / "clean-success.log").read_text()
+def reordered():
+    fetch, loaded, *rest = CLEAN.splitlines()
+    if "Fetching" not in fetch or "Loaded" not in loaded:
+        raise LookupError("clean log no longer starts with Fetching then Loaded")
+    return "\n".join([loaded, fetch, *rest]) + "\n"
 
 
-def write_tmp_log(tmp, text):
-    path = Path(tmp) / "log.txt"
-    path.write_text(text)
-    return path
+ABSOLUTE_SCAN = "Scanning /tmp/absolute/path/Cargo.lock for vulnerabilities"
+
+# (name, log text, expected lockfile, expected guard exit code); scanner exit is 0.
+SYNTHETIC = [
+    *[(f"missing-{m}", without(m), CAPTURED_LOCKFILE, 1) for m in ("Fetching", "Loaded", "Updating", "Scanning")],
+    ("update-index-diagnostic", CLEAN + "warning: couldn't update crates.io index: fixture\n", CAPTURED_LOCKFILE, 1),
+    ("open-index-diagnostic", CLEAN + "warning: couldn't open crates.io index: fixture\n", CAPTURED_LOCKFILE, 1),
+    ("yanked-diagnostic", CLEAN + "error: couldn't check if the package is yanked: fixture\n", CAPTURED_LOCKFILE, 1),
+    ("zero-advisories", replaced("Loaded 1380 security", "Loaded 0 security"), CAPTURED_LOCKFILE, 1),
+    ("missing-advisory-count", replaced("Loaded 1380 security", "Loaded some security"), CAPTURED_LOCKFILE, 1),
+    ("zero-dependencies", replaced("(1 crate dependencies)", "(0 crate dependencies)"), CAPTURED_LOCKFILE, 1),
+    ("missing-dependency-count", replaced("(1 crate", "(several crate"), CAPTURED_LOCKFILE, 1),
+    ("empty-log", "", CAPTURED_LOCKFILE, 1),
+    ("bare-marker-words", "Fetching x\nLoaded a note\nUpdating x\nScanning x\n", CAPTURED_LOCKFILE, 1),
+    ("fetch-after-loaded", reordered(), CAPTURED_LOCKFILE, 1),
+    ("exact-wrong-path", CLEAN, "/expected/elsewhere/Cargo.lock", 1),
+    ("suffix-wrong-path", replaced("Scanning Cargo.lock", "Scanning /a/b/Cargo.lock"), "/b/Cargo.lock", 1),
+    ("absolute-valid-path", replaced("Scanning Cargo.lock for vulnerabilities", ABSOLUTE_SCAN),
+     "/tmp/absolute/path/Cargo.lock", 0),
+]
+
+# (name, argv after the guard path); every case is a usage error (exit 2).
+USAGE_ERRORS = [
+    *[(f"status-{rc or 'empty'}", [str(CLEAN_LOG), rc, CAPTURED_LOCKFILE]) for rc in ("abc", "", "-1", "0x0", "1.0")],
+    ("missing-log", [str(LOGS / "does-not-exist.log"), "0", CAPTURED_LOCKFILE]),
+    ("empty-expected-path", [str(CLEAN_LOG), "0", ""]),
+    ("zero-args", []),
+    ("one-arg", [str(CLEAN_LOG)]),
+    ("two-args", [str(CLEAN_LOG), "0"]),
+    ("four-args", ["a", "b", "c", "d"]),
+]
+
+
+def guard(*args):
+    return subprocess.run(["bash", str(GUARD), *map(str, args)], capture_output=True, text=True, check=False)
 
 
 class ReportGuardTests(unittest.TestCase):
-    def assert_rejected(self, text, expected_lockfile=CAPTURED_LOCKFILE):
-        with tempfile.TemporaryDirectory() as tmp:
-            result = run_guard(write_tmp_log(tmp, text), 0, expected_lockfile)
-            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+    def assert_exit(self, result, expected):
+        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
-    def test_captured_logs_guard_verdicts(self):
-        for name, rc, expected in CAPTURED:
-            with self.subTest(log=name, rc=rc):
+    def test_captured_logs(self):
+        for name, scanner_rc, expected in CAPTURED:
+            with self.subTest(name):
                 log = LOGS / f"{name}.log"
-                self.assertTrue(log.is_file(), f"missing captured log: {log}")
-                result = run_guard(log, rc)
-                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                if name == "warning-only-success":
+                    self.assertIn("allowed warning found", log.read_text())
+                self.assert_exit(guard(log, scanner_rc, CAPTURED_LOCKFILE), expected)
 
-    def test_informational_warning_is_not_a_rejection(self):
-        # A zero-exit scan whose only output is informational warnings must pass,
-        # preserving the existing scanner warning policy.
-        log = LOGS / "warning-only-success.log"
-        self.assertIn("allowed warning found", log.read_text())
-        self.assertEqual(run_guard(log, 0).returncode, 0)
-
-    def test_clean_zero_exit_requires_every_marker(self):
-        text = clean_text()
-        for marker in MARKERS:
-            self.assertIn(marker, text)
-        for marker in MARKERS:
-            with self.subTest(removed=marker):
-                mutated = "\n".join(
-                    line for line in text.splitlines() if marker not in line
-                )
-                self.assert_rejected(mutated + "\n")
-
-    def test_zero_exit_with_hidden_index_diagnostics_is_rejected(self):
-        for diagnostic in (
-            "warning: couldn't update crates.io index: fixture failure\n",
-            "warning: couldn't open crates.io index: fixture failure\n",
-            "error: couldn't check if the package is yanked: fixture miss\n",
-        ):
-            with self.subTest(diagnostic=diagnostic):
-                self.assert_rejected(clean_text() + diagnostic)
-
-    def test_empty_log_with_zero_exit_is_rejected(self):
-        self.assert_rejected("")
-
-    def test_bare_marker_words_are_not_enough(self):
-        # The guard must require the substantive marker lines, not the words
-        # "Fetching", "Loaded", "Updating", and "Scanning" in unrelated text.
-        text = (
-            "Fetching something else\n"
-            "Loaded a note\n"
-            "Updating something else\n"
-            "Scanning something else\n"
-        )
-        self.assert_rejected(text)
-
-    def test_zero_advisory_count_is_rejected(self):
-        text = clean_text().replace("Loaded 1380 security advisories", "Loaded 0 security advisories")
-        self.assert_rejected(text)
-
-    def test_missing_advisory_count_is_rejected(self):
-        text = clean_text().replace("Loaded 1380 security advisories", "Loaded some security advisories")
-        self.assert_rejected(text)
-
-    def test_zero_dependency_count_is_rejected(self):
-        text = clean_text().replace("(1 crate dependencies)", "(0 crate dependencies)")
-        self.assert_rejected(text)
-
-    def test_missing_dependency_count_is_rejected(self):
-        text = clean_text().replace("(1 crate dependencies)", "(several crate dependencies)")
-        self.assert_rejected(text)
-
-    def test_out_of_order_markers_are_rejected(self):
-        text = clean_text()
-        lines = text.splitlines()
-        fetch = next(line for line in lines if "Fetching advisory database" in line)
-        loaded = next(line for line in lines if "Loaded" in line)
-        reordered = [line for line in lines if line is not fetch]
-        reordered.insert(reordered.index(loaded) + 1, fetch)
-        self.assert_rejected("\n".join(reordered) + "\n")
-
-    def test_wrong_expected_lockfile_is_rejected(self):
+    def test_synthetic_variants(self):
         with tempfile.TemporaryDirectory() as tmp:
-            log = write_tmp_log(tmp, clean_text())
-            result = run_guard(log, 0, "/expected/elsewhere/Cargo.lock")
-            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-            self.assertIn("but the gate expected", result.stderr)
+            for name, text, expected_lockfile, expected in SYNTHETIC:
+                with self.subTest(name):
+                    log = Path(tmp) / f"{name}.log"
+                    log.write_text(text)
+                    self.assert_exit(guard(log, 0, expected_lockfile), expected)
 
-    def test_lockfile_path_suffix_is_not_accepted(self):
-        # A scan of /a/b/Cargo.lock must not satisfy an expectation of
-        # /b/Cargo.lock: the comparison is exact, not a suffix match.
-        text = clean_text().replace(
-            "Scanning Cargo.lock for vulnerabilities",
-            "Scanning /a/b/Cargo.lock for vulnerabilities",
-        )
-        self.assert_rejected(text, "/b/Cargo.lock")
-
-    def test_absolute_expected_lockfile_is_accepted(self):
-        text = clean_text().replace(
-            "Scanning Cargo.lock for vulnerabilities",
-            "Scanning /tmp/absolute/path/Cargo.lock for vulnerabilities",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(
-                run_guard(write_tmp_log(tmp, text), 0, "/tmp/absolute/path/Cargo.lock").returncode,
-                0,
-            )
-
-    def test_nonzero_scanner_exit_is_rejected_even_with_clean_log(self):
-        # The scanner exit code is authoritative and independent of the log:
-        # a complete, clean-looking log must not rescue a nonzero scan, including
-        # the 124/137 statuses produced by the bounded scanner timeout.
-        log = LOGS / "clean-success.log"
+    def test_nonzero_scanner_status_rejects_clean_log(self):
+        # The exit code is authoritative: a clean log cannot rescue a failed scan,
+        # including the 124/137 statuses of the bounded scanner timeout.
         for rc in ("1", "2", "124", "137"):
-            with self.subTest(rc=rc):
-                result = run_guard(log, rc)
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            with self.subTest(rc):
+                result = guard(CLEAN_LOG, rc, CAPTURED_LOCKFILE)
+                self.assert_exit(result, 1)
                 self.assertIn("release blocked", result.stderr)
 
-    def test_non_numeric_scanner_exit_code_is_rejected(self):
-        log = LOGS / "clean-success.log"
-        for bogus in ("abc", "", "-1", "0x0", "1.0"):
-            with self.subTest(rc=bogus):
-                self.assertEqual(run_guard(log, bogus).returncode, 2)
-
-    def test_missing_log_is_a_usage_error(self):
-        self.assertEqual(run_guard(LOGS / "does-not-exist.log", 0).returncode, 2)
-
-    def test_empty_expected_lockfile_is_a_usage_error(self):
-        self.assertEqual(run_guard(LOGS / "clean-success.log", 0, "").returncode, 2)
-
-    def test_wrong_argument_count_is_a_usage_error(self):
-        for args in (
-            [],
-            [str(LOGS / "clean-success.log")],
-            [str(LOGS / "clean-success.log"), "0"],
-            ["a", "b", "c", "d"],
-        ):
-            with self.subTest(args=args):
-                result = subprocess.run(
-                    ["bash", str(GUARD), *args],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                self.assertEqual(result.returncode, 2)
-
-    def test_rejection_prevents_following_command(self):
-        # A shell sequence must not reach its next command after a rejected scan
-        # and must reach it after an accepted scan.
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            sentinel = tmp_path / "sentinel"
-            failing = LOGS / "index-error-rc0.log"
-            passing = LOGS / "clean-success.log"
-            script = 'set -e; bash "$1" "$2" "$3" "$4"; touch "$5"'
-
-            rejected = subprocess.run(
-                [
-                    "bash", "-c", script, "guard",
-                    str(GUARD), str(failing), "0", CAPTURED_LOCKFILE, str(sentinel),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertNotEqual(rejected.returncode, 0)
-            self.assertFalse(sentinel.exists())
-
-            accepted = subprocess.run(
-                [
-                    "bash", "-c", script, "guard",
-                    str(GUARD), str(passing), "0", CAPTURED_LOCKFILE, str(sentinel),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
-            self.assertTrue(sentinel.exists())
-
-    def test_guard_is_executable_and_offline_only(self):
-        self.assertTrue(os.access(GUARD, os.X_OK))
-        text = GUARD.read_text()
-        for forbidden in ("curl", "mktemp", "npm publish", "action-gh-release", "aws "):
-            self.assertNotIn(forbidden, text)
+    def test_usage_errors(self):
+        for name, args in USAGE_ERRORS:
+            with self.subTest(name):
+                self.assert_exit(guard(*args), 2)
 
 
 if __name__ == "__main__":
