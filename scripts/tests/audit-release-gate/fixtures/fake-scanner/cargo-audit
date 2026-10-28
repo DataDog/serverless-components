@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+#
+# Test double for the pinned cargo-audit CLI.
+#
+# This file is used only by scripts/tests/audit-release-gate. Production never
+# runs it. It reads FAKE_SCANNER_MODE from the environment so the offline test
+# suite can drive every controlled scenario (clean scan, findings, hidden index
+# error, missing progress markers, fetch failure, wrong advisory origin) without
+# a network or a real scanner.
+#
+# Modes:
+#   success         clean scan, full progress sequence, exit 0
+#   warning         clean scan with an allowed informational warning, exit 0
+#   findings        report a vulnerability, exit 1
+#   index-error     exit 0 while hiding a crates.io index failure
+#   yanked-error    exit 0 while hiding an incomplete yanked check
+#   quiet           exit 0 with no output at all
+#   disabled-yanked exit 0 with the Updating marker absent
+#   disabled-fetch  exit 0 with the Fetching and Updating markers absent
+#   fetch-error     fail to fetch the advisory database, exit 1
+#   config-error    fail to load configuration, exit 1
+#   wrong-origin    exit 0 after creating a database with an untrusted origin
+#   warm-authorize  succeed only when the requested --db already contains a warm
+#                   git database; otherwise simulate an unavailable network
+#                   refresh and exit 1. Used to prove a warm inherited cache is
+#                   not reused by the gate.
+# shellcheck disable=SC2016  # the backticks are literal scanner output, not expansion
+set -uo pipefail
+
+mode="${FAKE_SCANNER_MODE:-success}"
+version_line="${FAKE_SCANNER_VERSION_LINE:-cargo-audit-audit 0.22.2}"
+
+if [ "${1:-}" = "audit" ] && [ "${2:-}" = "--version" ]; then
+  printf '%s\n' "$version_line"
+  exit 0
+fi
+
+db=""
+lockfile=""
+previous=""
+for argument in "$@"; do
+  case "$previous" in
+    --db) db="$argument" ;;
+    --file) lockfile="$argument" ;;
+  esac
+  previous="$argument"
+done
+
+# The pinned scanner echoes the --file argument it was given. Tests can override
+# the echoed path to prove the gate's lockfile binding is enforced end to end.
+scan_path="${FAKE_SCANNER_SCAN_PATH:-$lockfile}"
+
+if [ -n "${FAKE_SCANNER_RECORD:-}" ]; then
+  {
+    printf 'db=%s\n' "$db"
+    printf 'file=%s\n' "$lockfile"
+    printf 'cargo_home=%s\n' "${CARGO_HOME:-}"
+    printf 'args=%s\n' "$*"
+    printf 'mode=%s\n' "$mode"
+  } >>"$FAKE_SCANNER_RECORD"
+fi
+
+make_fake_db() {
+  [ -n "$db" ] || return 0
+  mkdir -p "$db"
+  if [ ! -d "$db/.git" ]; then
+    git -C "$db" init --quiet
+    git -C "$db" remote add origin https://github.com/RustSec/advisory-db.git
+    printf 'fixture advisory database\n' >"$db/README.md"
+    git -C "$db" -c user.email=fixture@example.invalid -c user.name=fixture add README.md
+    git -C "$db" -c user.email=fixture@example.invalid -c user.name=fixture commit --quiet -m 'fixture advisory database'
+  fi
+}
+
+emit_progress() {
+  printf '    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`\n'
+  printf '      Loaded 1380 security advisories (from %s)\n' "$db"
+  printf '    Updating crates.io index\n'
+  printf '    Scanning %s for vulnerabilities (1 crate dependencies)\n' "$scan_path"
+}
+
+case "$mode" in
+  success)
+    make_fake_db
+    emit_progress
+    exit 0
+    ;;
+  warning)
+    make_fake_db
+    emit_progress
+    printf '\nwarning: 1 allowed warning found\n'
+    exit 0
+    ;;
+  findings)
+    make_fake_db
+    emit_progress
+    printf '\nCrate:     openssl\nVersion:   0.10.38\nTitle:     fixture advisory\nID:        RUSTSEC-0000-0000\n'
+    printf '\nerror: 1 vulnerability found!\n'
+    exit 1
+    ;;
+  index-error)
+    make_fake_db
+    emit_progress
+    printf "warning: couldn't update crates.io index: fixture I/O failure\n"
+    exit 0
+    ;;
+  yanked-error)
+    make_fake_db
+    emit_progress
+    printf "error: couldn't check if the package is yanked: fixture index miss\n"
+    exit 0
+    ;;
+  quiet)
+    make_fake_db
+    exit 0
+    ;;
+  disabled-yanked)
+    make_fake_db
+    printf '    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`\n'
+    printf '      Loaded 1380 security advisories (from %s)\n' "$db"
+    printf '    Scanning %s for vulnerabilities (1 crate dependencies)\n' "$scan_path"
+    exit 0
+    ;;
+  disabled-fetch)
+    printf '      Loaded 1380 security advisories (from %s)\n' "$db"
+    printf '    Scanning %s for vulnerabilities (1 crate dependencies)\n' "$scan_path"
+    exit 0
+    ;;
+  fetch-error)
+    printf 'error: failed to fetch advisory database\n' >&2
+    exit 1
+    ;;
+  config-error)
+    printf 'error: failed to load audit configuration\n' >&2
+    exit 1
+    ;;
+  wrong-origin)
+    make_fake_db
+    git -C "$db" remote set-url origin https://example.invalid/advisory-db.git
+    emit_progress
+    exit 0
+    ;;
+  warm-authorize)
+    if [ -n "$db" ] && [ -d "$db/.git" ]; then
+      emit_progress
+      exit 0
+    fi
+    printf 'error: failed to fetch advisory database\n' >&2
+    exit 1
+    ;;
+  *)
+    printf 'fixture scanner: unknown FAKE_SCANNER_MODE=%s\n' "$mode" >&2
+    exit 64
+    ;;
+esac

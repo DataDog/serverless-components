@@ -1,0 +1,5 @@
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 1380 security advisories (from /tmp/cargo-release-preflight-vrpsnQ/rustsec-db)
+    Updating crates.io index
+warning: couldn't update crates.io index: I/O operation failed: failed to obtain lock file '/tmp/gate-fixture-capture/index-home/.package-cache'
+    Scanning Cargo.lock for vulnerabilities (1 crate dependencies)

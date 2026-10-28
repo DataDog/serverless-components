@@ -1,0 +1,16 @@
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 1380 security advisories (from /tmp/cargo-release-preflight-vrpsnQ/rustsec-db)
+    Updating crates.io index
+error: not found: Couldn't load Cargo.lock
+Caused by:
+  -> I/O operation failed: parse error: TOML parse error at line 1, column 5
+  |
+1 | not a valid lockfile = [
+  |     ^
+key with no value, expected `=`
+
+  -> parse error: TOML parse error at line 1, column 5
+  |
+1 | not a valid lockfile = [
+  |     ^
+key with no value, expected `=`

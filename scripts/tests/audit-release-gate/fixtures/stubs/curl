@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#
+# Test double for curl used by the audit release gate tests.
+#
+# It copies the fixture archive to the gate's requested --output path so the
+# gate's download, checksum, extraction, and installation flow is exercised
+# without network access. FAKE_CURL_MODE=fail simulates a download failure.
+# FAKE_CURL_RECORD captures the full argument list so tests can assert the
+# reviewed network time bounds are present.
+set -euo pipefail
+
+output=""
+previous=""
+for argument in "$@"; do
+  case "$previous" in
+    -o | --output) output="$argument" ;;
+  esac
+  previous="$argument"
+done
+
+if [ -n "${FAKE_CURL_RECORD:-}" ]; then
+  printf '%s\n' "$*" >>"$FAKE_CURL_RECORD"
+fi
+
+case "${FAKE_CURL_MODE:-ok}" in
+  ok) ;;
+  fail)
+    printf 'curl: (22) fixture download failure\n' >&2
+    exit 22
+    ;;
+  *)
+    printf 'curl stub: unknown FAKE_CURL_MODE\n' >&2
+    exit 64
+    ;;
+esac
+
+[ -n "$output" ] || { printf 'curl stub: no --output argument\n' >&2; exit 2; }
+cp "${FAKE_CURL_SOURCE:?FAKE_CURL_SOURCE must point at the fixture archive}" "$output"

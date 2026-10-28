@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#
+# Test double for cargo used by the audit release gate tests.
+#
+# The pinned prebuilt cargo-audit shells out to `cargo -V`. FAKE_CARGO_MODE=fail
+# simulates a missing or broken toolchain.
+set -euo pipefail
+
+case "${FAKE_CARGO_MODE:-ok}" in
+  ok) printf 'cargo 1.99.0 (fixture)\n' ;;
+  fail)
+    printf 'error: fixture cargo is unavailable\n' >&2
+    exit 1
+    ;;
+  *)
+    printf 'cargo stub: unknown FAKE_CARGO_MODE\n' >&2
+    exit 64
+    ;;
+esac
