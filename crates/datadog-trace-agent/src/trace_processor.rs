@@ -230,18 +230,63 @@ impl ServerlessTraceProcessor {
         config: &Config,
         read_clock: F,
     ) {
-        let mut state = self.lock_sampler();
-        // Skip all view construction when the sampler is disabled by config
-        // (target_tps <= 0): nothing can be rescued.
-        if state.sampler.is_disabled() {
+        let TracerPayloadCollection::V07(tracer_payloads) = payload else {
+            return;
+        };
+        // Find candidates and build their sampler views before taking the shared
+        // lock, so requests without eligible errored chunks never contend on it
+        // and the lock is held only for the sampling decisions.
+        let candidates = collect_rescue_candidates(tracer_payloads, config);
+        if candidates.is_empty() {
             return;
         }
-        // Read the clock while holding the sampler lock so that concurrent
-        // requests deliver timestamps in lock-acquisition order, and clamp so a
-        // backward wall-clock step cannot move the sampler's rolling window
-        // backwards, which would undercount TPS and rescue too many chunks.
-        let now_unix_secs = state.clamp_timestamp(read_clock());
-        Self::rescue_with_sampler(payload, config, now_unix_secs, &mut state.sampler);
+        let keeps: Vec<(usize, usize, usize, f64)> = {
+            let mut state = self.lock_sampler();
+            // Nothing can be rescued when the sampler is disabled by config
+            // (target_tps <= 0).
+            if state.sampler.is_disabled() {
+                return;
+            }
+            // Read the clock while holding the sampler lock so that concurrent
+            // requests deliver timestamps in lock-acquisition order, and clamp so a
+            // backward wall-clock step cannot move the sampler's rolling window
+            // backwards, which would undercount TPS and rescue too many chunks.
+            let now_unix_secs = state.clamp_timestamp(read_clock());
+            candidates
+                .iter()
+                .filter_map(|candidate| {
+                    let trace = TraceView {
+                        env: candidate.env,
+                        trace_id: candidate.trace_id,
+                        root_index: candidate.root_index,
+                        root_global_sample_rate: candidate.root_global_sample_rate,
+                        spans: &candidate.spans,
+                    };
+                    match state.sampler.sample(now_unix_secs, &trace) {
+                        SampleDecision::Keep { errors_sr } => Some((
+                            candidate.payload_index,
+                            candidate.chunk_index,
+                            candidate.root_index,
+                            errors_sr,
+                        )),
+                        SampleDecision::Drop => None,
+                    }
+                })
+                .collect()
+        };
+        // On a keep, stamp the sampler's `_dd.errors_sr` on the chunk's root span.
+        // Chunks are never removed here: on a Drop decision the unrescued chunk is
+        // forwarded without rescue mutation.
+        for (payload_index, chunk_index, root_index, errors_sr) in keeps {
+            if let Some(root) = tracer_payloads
+                .get_mut(payload_index)
+                .and_then(|tp| tp.chunks.get_mut(chunk_index))
+                .and_then(|chunk| chunk.spans.get_mut(root_index))
+            {
+                root.metrics
+                    .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
+            }
+        }
     }
 
     /// Test-only variant that injects a synthetic clock reading through the
@@ -254,32 +299,6 @@ impl ServerlessTraceProcessor {
         now_unix_secs: i64,
     ) {
         self.apply_error_rescue_with_clock(payload, config, || now_unix_secs);
-    }
-
-    fn rescue_with_sampler(
-        payload: &mut TracerPayloadCollection,
-        config: &Config,
-        now_unix_secs: i64,
-        sampler: &mut ErrorsSampler,
-    ) {
-        let TracerPayloadCollection::V07(tracer_payloads) = payload else {
-            return;
-        };
-        for tracer_payload in tracer_payloads.iter_mut() {
-            // The sampler keys its per-signature rate limits on the env the
-            // tracer reported for this payload, falling back to the agent's
-            // configured env, consistent with how stats are flushed.
-            let env = resolve_payload_env(&tracer_payload.env, &config.env);
-            for chunk in tracer_payload.chunks.iter_mut() {
-                sample_and_stamp(
-                    sampler,
-                    chunk,
-                    env,
-                    now_unix_secs,
-                    config.error_rare_sample_tracer_drop,
-                );
-            }
-        }
     }
 
     fn send_to_concentrator(
@@ -351,8 +370,53 @@ fn span_view(span: &pb::Span) -> SpanView<'_> {
     }
 }
 
-/// Consults the error sampler for one chunk and, on a keep, stamps the
-/// sampler's `_dd.errors_sr` value on the chunk's root span.
+/// A chunk selected for an error sampler decision, with the sampler's
+/// read-only view of its spans.
+struct RescueCandidate<'a> {
+    payload_index: usize,
+    chunk_index: usize,
+    root_index: usize,
+    env: &'a str,
+    trace_id: u64,
+    root_global_sample_rate: f64,
+    spans: Vec<SpanView<'a>>,
+}
+
+/// Collects the chunks that need an error sampler decision, in payload order.
+fn collect_rescue_candidates<'a>(
+    tracer_payloads: &'a [pb::TracerPayload],
+    config: &'a Config,
+) -> Vec<RescueCandidate<'a>> {
+    let mut candidates = Vec::new();
+    for (payload_index, tracer_payload) in tracer_payloads.iter().enumerate() {
+        // The sampler keys its per-signature rate limits on the env the
+        // tracer reported for this payload, falling back to the agent's
+        // configured env, consistent with how stats are flushed.
+        let env = resolve_payload_env(&tracer_payload.env, &config.env);
+        for (chunk_index, chunk) in tracer_payload.chunks.iter().enumerate() {
+            let Some(root_index) = rescue_root_index(chunk, config.error_rare_sample_tracer_drop)
+            else {
+                continue;
+            };
+            let root = &chunk.spans[root_index];
+            candidates.push(RescueCandidate {
+                payload_index,
+                chunk_index,
+                root_index,
+                env,
+                trace_id: root.trace_id,
+                // The raw `_sample_rate` wire value is passed through: the shared
+                // sampler sanitizes non-finite or out-of-range rates to 1.0 itself.
+                root_global_sample_rate: root.metrics.get("_sample_rate").copied().unwrap_or(1.0),
+                spans: chunk.spans.iter().map(span_view).collect(),
+            });
+        }
+    }
+    candidates
+}
+
+/// Returns the root span index of a chunk that needs an error sampler decision,
+/// or `None` when the chunk is not a rescue candidate.
 ///
 /// P0 and no-priority (-128) chunks are candidates. No priority means a missing
 /// sampling decision, not an explicit drop, matching Go's baseline eligibility.
@@ -363,15 +427,8 @@ fn span_view(span: &pb::Span) -> SpanView<'_> {
 /// error metadata alone does not qualify. The root is resolved with
 /// `get_root_span_index`: empty chunks are left unchanged, and non-empty
 /// chunks always resolve a root, falling back to the last span when no span
-/// has `parent_id 0` (e.g. a cyclic chunk). Chunks are never removed here: on
-/// a Drop decision the unrescued chunk is forwarded without rescue mutation.
-fn sample_and_stamp(
-    sampler: &mut ErrorsSampler,
-    chunk: &mut pb::TraceChunk,
-    env: &str,
-    now_unix_secs: i64,
-    tracer_drop_enabled: bool,
-) {
+/// has `parent_id 0` (e.g. a cyclic chunk).
+fn rescue_root_index(chunk: &pb::TraceChunk, tracer_drop_enabled: bool) -> Option<usize> {
     let eligible = chunk.priority == 0
         || chunk.priority == i32::from(i8::MIN)
         || (tracer_drop_enabled
@@ -380,41 +437,19 @@ fn sample_and_stamp(
                 && chunk.tags.get(DECISION_MAKER_KEY).map(String::as_str)
                     == Some(MANUAL_DECISION_MAKER)));
     if !eligible {
-        return;
+        return None;
     }
     // An error anywhere in the chunk makes it a rescue candidate, not just an
     // error on the root span. Checked before the root-span search because
     // non-errored chunks are the common case on this path.
     if !chunk.spans.iter().any(|span| span.error != 0) {
-        return;
+        return None;
     }
-    let Ok(root_index) = trace_utils::get_root_span_index(&chunk.spans) else {
-        // No identifiable root span: leave the chunk unchanged rather than
-        // guessing an index.
-        return;
-    };
-
-    let Some(root) = chunk.spans.get(root_index) else {
-        return;
-    };
-    let views: Vec<SpanView> = chunk.spans.iter().map(span_view).collect();
-    let trace = TraceView {
-        env,
-        trace_id: root.trace_id,
-        root_index,
-        // The raw `_sample_rate` wire value is passed through: the shared
-        // sampler sanitizes non-finite or out-of-range rates to 1.0 itself.
-        root_global_sample_rate: root.metrics.get("_sample_rate").copied().unwrap_or(1.0),
-        spans: &views,
-    };
-    let decision = sampler.sample(now_unix_secs, &trace);
-
-    if let SampleDecision::Keep { errors_sr } = decision
-        && let Some(root) = chunk.spans.get_mut(root_index)
-    {
-        root.metrics
-            .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
-    }
+    // No identifiable root span: leave the chunk unchanged rather than
+    // guessing an index.
+    trace_utils::get_root_span_index(&chunk.spans)
+        .ok()
+        .filter(|&root_index| root_index < chunk.spans.len())
 }
 
 #[async_trait]
@@ -1838,6 +1873,33 @@ mod tests {
 
         assert!(clock_called);
         assert_eq!(processor.lock_sampler().last_sampler_timestamp, RESCUE_NOW);
+    }
+
+    #[test]
+    fn test_error_rescue_without_candidates_skips_sampler() {
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
+        let original = pb::TracerPayload {
+            chunks: vec![
+                // Kept priority: not eligible.
+                errored_root_chunk(0x10000, 1),
+                // Eligible priority but no errored span.
+                test_chunk(vec![test_span(0x20000, 0x20001, 0, 0)], 0),
+                // Negative priority with the tracer-drop feature disabled.
+                errored_root_chunk(0x30000, -1),
+            ],
+            ..Default::default()
+        };
+        let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
+
+        processor.apply_error_rescue_with_clock(&mut payload, &config, || {
+            panic!("a payload without rescue candidates must not consult the sampler");
+        });
+
+        assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
+        let TracerPayloadCollection::V07(payloads) = payload else {
+            panic!("rescue must preserve the payload format");
+        };
+        assert_eq!(payloads, vec![original]);
     }
 
     #[test]
