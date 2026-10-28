@@ -1749,6 +1749,7 @@ mod tests {
         // a standalone sampler fed the same sequence.
         let ids: Vec<u64> = (0..10_u64).map(|i| 0x33_0000 + i).collect();
         let mut observed = Vec::new();
+        let mut standalone = ErrorsSampler::new(sampler_config);
         for (i, id) in ids.iter().enumerate() {
             let target = if i < 5 { &processor } else { &processor_clone };
             let mut manual = errored_root_chunk(*id, -1);
@@ -1771,34 +1772,18 @@ mod tests {
                 vec![errored_root_chunk(*id, priority)],
                 RESCUE_NOW,
             );
-            observed.push(errors_sr(root(&chunks[0])).is_some());
-        }
-
-        let mut standalone = ErrorsSampler::new(sampler_config);
-        let spans = [SpanView {
-            service: "test-service",
-            name: "test-operation",
-            resource: "GET /test",
-            error: true,
-            http_status_code: None,
-            error_type: None,
-        }];
-        for (i, id) in ids.iter().enumerate() {
-            let trace = TraceView {
-                env: &config.env,
-                trace_id: *id,
-                root_index: 0,
-                root_global_sample_rate: 1.0,
-                spans: &spans,
-            };
+            let actual = errors_sr(root(&chunks[0])).is_some();
+            let views: Vec<SpanView> = chunks[0].spans.iter().map(super::span_view).collect();
+            let trace = equivalent_trace_view(&chunks[0], &config.env, &views);
             let expected = matches!(
                 standalone.sample(RESCUE_NOW, &trace),
                 SampleDecision::Keep { .. }
             );
             assert_eq!(
-                observed[i], expected,
+                actual, expected,
                 "clone {i} decision diverged from the shared-budget standalone sampler"
             );
+            observed.push(actual);
         }
         assert!(
             observed.iter().any(|kept| *kept),
