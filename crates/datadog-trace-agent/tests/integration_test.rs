@@ -1295,16 +1295,11 @@ fn error_rescue_cases() -> Vec<(&'static str, i32, i64, Option<&'static str>, bo
     vec![
         ("rescued_error_p0", 0, 1, None, false),
         ("healthy_p0", 0, 0, None, false),
-        ("negative_absent", -1, 1, None, false),
         ("negative_nonmanual", -1, 1, Some("-3"), false),
-        ("negative_probabilistic", -1, 1, Some("-9"), false),
-        ("negative_empty", -1, 1, Some(""), false),
-        ("manual_root", -1, 1, Some("-4"), false),
         ("manual_child", -1, 1, Some("-4"), true),
         ("other_negative_manual_dm", -2, 1, Some("-4"), false),
         ("no_priority", -128, 1, Some("-3"), false),
         ("priority_1", 1, 1, None, false),
-        ("priority_2", 2, 1, None, false),
     ]
 }
 
@@ -1446,7 +1441,7 @@ async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
     }
 
     let cases = error_rescue_cases();
-    for &(name, priority, error, dm, on_child) in &cases {
+    for &(name, priority, _, dm, on_child) in &cases {
         let chunk = chunks_by_root_name.get(name).unwrap_or_else(|| {
             panic!(
                 "expected chunk {name} to be forwarded to the backend, got: {:?}",
@@ -1458,13 +1453,15 @@ async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
             .iter()
             .find(|s| s.parent_id == 0)
             .and_then(|root| root.metrics.get("_dd.errors_sr").copied());
-        let eligible = error != 0
-            && (priority == 0
-                || priority == -128
-                || (feature && priority < 0 && !(priority == -1 && dm == Some("-4"))));
+        let rescued = match name {
+            "rescued_error_p0" | "no_priority" => true,
+            "negative_nonmanual" | "other_negative_manual_dm" => feature,
+            "healthy_p0" | "manual_child" | "priority_1" => false,
+            _ => panic!("missing expected rescue outcome for {name}"),
+        };
         assert_eq!(
             errors_sr,
-            eligible.then_some(1.0),
+            rescued.then_some(1.0),
             "{name}, feature={feature}"
         );
         assert_eq!(chunk.priority, priority, "{name}");

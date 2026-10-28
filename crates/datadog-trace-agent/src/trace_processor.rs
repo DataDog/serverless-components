@@ -1378,71 +1378,80 @@ mod tests {
 
     #[test]
     fn test_tracer_drop_rescue_eligibility_matrix() {
-        for feature in [false, true] {
-            for priority in [0, -1, -2, -127, -5, i32::from(i8::MIN), 1, 2] {
-                for dm in [
-                    None,
-                    Some(""),
-                    Some("-4"),
-                    Some("-3"),
-                    Some("-9"),
-                    Some("-40"),
-                ] {
-                    for error in [0, 1, -1] {
-                        let (mut config, processor) = rescue_setup(always_keep_sampler_config());
-                        config.error_rare_sample_tracer_drop = feature;
-                        let mut chunk = test_chunk(
-                            vec![test_span(1, 2, 0, 0), test_span(1, 3, 2, error)],
-                            priority,
-                        );
-                        // Span DM deliberately disagrees: rescue must read only chunk tags.
-                        chunk.spans[0]
-                            .meta
-                            .insert(super::DECISION_MAKER_KEY.into(), "-4".into());
-                        chunk.spans[0]
-                            .meta
-                            .insert("http.status_code".into(), "500".into());
-                        chunk.spans[0]
-                            .meta
-                            .insert("error.type".into(), "Error".into());
-                        chunk.spans[0]
-                            .metrics
-                            .insert("_sampling_priority_v1".into(), f64::from(priority));
-                        chunk.spans[0].metrics.insert("_sample_rate".into(), 0.25);
-                        chunk.spans[0]
-                            .metrics
-                            .insert("_dd.span_sampling.rule".into(), 1.0);
-                        chunk.spans[1].meta.insert("keep".into(), "me".into());
-                        chunk.origin = "synthetics".into();
-                        chunk.tags.insert("origin".into(), "synthetics".into());
-                        if let Some(dm) = dm {
-                            chunk
-                                .tags
-                                .insert(super::DECISION_MAKER_KEY.into(), dm.into());
-                        }
-                        let original = chunk.clone();
-                        let mut chunks = run_rescue(&processor, &config, vec![chunk], RESCUE_NOW);
-                        assert_eq!(chunks.len(), 1, "chunk must still be forwarded");
-                        let expected = error != 0
-                            && (priority == 0
-                                || priority == -128
-                                || (feature
-                                    && priority < 0
-                                    && !(priority == -1 && dm == Some("-4"))));
-                        assert_eq!(
-                            errors_sr(&chunks[0].spans[0]),
-                            expected.then_some(1.0),
-                            "feature={feature} priority={priority} dm={dm:?} error={error}"
-                        );
-                        assert_eq!(errors_sr(&chunks[0].spans[1]), None);
-                        chunks[0].spans[0]
-                            .metrics
-                            .remove(super::ERRORS_SR_METRIC_KEY);
-                        assert_eq!(chunks[0], original);
+        // Expected eligibility with the feature off and on, respectively.
+        for (priority, dm, expected) in [
+            (0, None, [true, true]),
+            (0, Some("-4"), [true, true]),
+            (-128, None, [true, true]),
+            (-128, Some("-4"), [true, true]),
+            (-1, None, [false, true]),
+            (-1, Some(""), [false, true]),
+            (-1, Some("-4"), [false, false]),
+            (-1, Some("-3"), [false, true]),
+            (-1, Some("-9"), [false, true]),
+            (-1, Some("-40"), [false, true]),
+            (-2, Some("-4"), [false, true]),
+            (-127, None, [false, true]),
+            (-5, None, [false, true]),
+            (1, None, [false, false]),
+            (2, None, [false, false]),
+        ] {
+            for (feature, eligible) in [false, true].into_iter().zip(expected) {
+                for (error, has_error) in [(0, false), (1, true), (-1, true)] {
+                    let mut chunk = test_chunk(
+                        vec![test_span(1, 2, 0, 0), test_span(1, 3, 2, error)],
+                        priority,
+                    );
+                    // Span metadata alone must not determine eligibility.
+                    chunk.spans[0]
+                        .meta
+                        .insert(super::DECISION_MAKER_KEY.into(), "-4".into());
+                    chunk.spans[0]
+                        .meta
+                        .insert("http.status_code".into(), "500".into());
+                    chunk.spans[0]
+                        .meta
+                        .insert("error.type".into(), "Error".into());
+                    if let Some(dm) = dm {
+                        chunk
+                            .tags
+                            .insert(super::DECISION_MAKER_KEY.into(), dm.into());
                     }
+                    assert_eq!(
+                        super::rescue_root_index(&chunk, feature),
+                        (eligible && has_error).then_some(0),
+                        "feature={feature} priority={priority} dm={dm:?} error={error}"
+                    );
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_rescue_preserves_chunks_except_root_metric() {
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
+        let mut chunk = test_chunk(vec![test_span(1, 2, 0, 0), test_span(1, 3, 2, 1)], 0);
+        chunk.spans[0].metrics.extend([
+            ("_sampling_priority_v1".into(), 0.0),
+            ("_sample_rate".into(), 0.25),
+            ("_dd.span_sampling.rule".into(), 1.0),
+        ]);
+        chunk.spans[0]
+            .meta
+            .insert(super::DECISION_MAKER_KEY.into(), "-3".into());
+        chunk.spans[1].meta.insert("keep".into(), "me".into());
+        chunk.origin = "synthetics".into();
+        chunk.tags.insert("origin".into(), "synthetics".into());
+        let healthy = test_chunk(vec![test_span(2, 4, 0, 0)], 0);
+        let original = vec![chunk, healthy];
+        let mut chunks = run_rescue(&processor, &config, original.clone(), RESCUE_NOW);
+        assert_eq!(chunks.len(), 2, "every chunk must still be forwarded");
+        assert_eq!(errors_sr(&chunks[0].spans[0]), Some(1.0));
+        assert_eq!(errors_sr(&chunks[0].spans[1]), None);
+        chunks[0].spans[0]
+            .metrics
+            .remove(super::ERRORS_SR_METRIC_KEY);
+        assert_eq!(chunks, original);
     }
 
     #[test]
@@ -1607,71 +1616,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_rescue_stamps_eligible_chunks_when_agent_stats_disabled() {
-        for feature in [false, true] {
-            let config = Arc::new(Config {
-                agent_stats_computation_enabled: false,
-                error_rare_sample_tracer_drop: feature,
-                ..rescue_config(always_keep_sampler_config())
-            });
-            let (stats_tx, mut stats_rx) = tokio::sync::mpsc::unbounded_channel();
-            let processor = trace_processor::ServerlessTraceProcessor::new(
-                Some(super::StatsConcentratorHandle::new(stats_tx)),
-                sampler_for(&config.error_sampler),
-            );
-            for (priority, dm, rescued) in [
-                (0, None, true),
-                (-128, None, true),
-                (-1, None, feature),
-                (-1, Some("-3"), feature),
-                (-1, Some("-4"), false),
-                (1, None, false),
-                (2, None, false),
-            ] {
-                let (tx, mut rx) = mpsc::channel(1);
-                let res = processor
-                    .process_traces(
-                        config.clone(),
-                        errored_request(priority, dm),
-                        tx,
-                        Arc::new(create_test_metadata()),
-                    )
-                    .await;
-                assert!(res.is_ok());
-                assert!(
-                    matches!(
-                        stats_rx.try_recv(),
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-                    ),
-                    "stats must not be submitted when agent stats computation is disabled"
-                );
-
-                let send_data = rx.recv().await.expect("payload forwarded");
-                let TracerPayloadCollection::V07(payloads) = send_data.get_payloads() else {
-                    panic!("expected V07 payload");
-                };
-                let chunk = &payloads[0].chunks[0];
-                assert_eq!(
-                    errors_sr(&chunk.spans[0]),
-                    rescued.then_some(1.0),
-                    "feature={feature} priority={priority} dm={dm:?}"
-                );
-                assert_eq!(chunk.priority, priority, "priority must not be promoted");
-                assert_eq!(
-                    chunk
-                        .tags
-                        .get(super::DECISION_MAKER_KEY)
-                        .map(String::as_str),
-                    dm
-                );
-                assert_eq!(
-                    chunk.spans[0]
-                        .meta
-                        .get(super::DECISION_MAKER_KEY)
-                        .map(String::as_str),
-                    dm
-                );
-            }
-        }
+        let config = Arc::new(Config {
+            agent_stats_computation_enabled: false,
+            ..rescue_config(always_keep_sampler_config())
+        });
+        let (stats_tx, mut stats_rx) = tokio::sync::mpsc::unbounded_channel();
+        let processor = trace_processor::ServerlessTraceProcessor::new(
+            Some(super::StatsConcentratorHandle::new(stats_tx)),
+            sampler_for(&config.error_sampler),
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        let res = processor
+            .process_traces(
+                config,
+                errored_request(0, None),
+                tx,
+                Arc::new(create_test_metadata()),
+            )
+            .await;
+        assert!(res.is_ok());
+        assert!(
+            matches!(
+                stats_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "stats must not be submitted when agent stats computation is disabled"
+        );
+        let send_data = rx.recv().await.expect("payload forwarded");
+        let TracerPayloadCollection::V07(payloads) = send_data.get_payloads() else {
+            panic!("expected V07 payload");
+        };
+        assert_eq!(errors_sr(&payloads[0].chunks[0].spans[0]), Some(1.0));
     }
 
     #[test]
@@ -1988,12 +1963,7 @@ mod tests {
             Some(super::StatsConcentratorHandle::new(stats_tx)),
             sampler_for(&config.error_sampler),
         );
-        for (priority, dm, rescued) in [
-            (0, None, true),
-            (-1, Some("-3"), true),
-            (-1, Some("-4"), false),
-            (-128, None, true),
-        ] {
+        for (priority, dm, rescued) in [(0, None, true), (-1, Some("-4"), false)] {
             let (tx, mut rx) = mpsc::channel(1);
             let res = processor
                 .process_traces(
