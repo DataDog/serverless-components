@@ -1605,26 +1605,24 @@ mod tests {
                 });
                 config.error_rare_sample_tracer_drop = true;
 
-                let chunks = run_rescue(
-                    &processor,
-                    &config,
-                    vec![
+                let original = pb::TracerPayload {
+                    chunks: vec![
                         errored_root_chunk(0xe000, 0),
                         errored_root_chunk(0xe001, -1),
                         errored_root_chunk(0xe002, i32::from(i8::MIN)),
                     ],
-                    RESCUE_NOW,
-                );
+                    ..Default::default()
+                };
+                let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
+                processor.apply_error_rescue_with_clock(&mut payload, &config, || {
+                    panic!("disabled sampler must not read the clock");
+                });
 
-                assert_eq!(chunks.len(), 3, "chunks still forwarded");
-                for chunk in &chunks {
-                    assert_eq!(
-                        errors_sr(root(chunk)),
-                        None,
-                        "mode {mode:?} tps {tps} priority {}: disabled sampler must not rescue",
-                        chunk.priority
-                    );
-                }
+                assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
+                let TracerPayloadCollection::V07(payloads) = payload else {
+                    panic!("disabled rescue must preserve the payload format");
+                };
+                assert_eq!(payloads, vec![original], "mode={mode:?} tps={tps}");
             }
         }
     }
@@ -1839,34 +1837,6 @@ mod tests {
             panic!("rescue must preserve the payload format");
         };
         assert_eq!(payloads, vec![original]);
-    }
-
-    #[test]
-    fn test_disabled_error_rescue_does_not_read_clock() {
-        for mode in [ErrorSamplerMode::RateLimited, ErrorSamplerMode::AlwaysKeep] {
-            for target_tps in [0.0, -3.0] {
-                let (config, processor) = rescue_setup(ErrorSamplerConfig {
-                    mode,
-                    target_tps,
-                    extra_sample_rate: 1.0,
-                });
-                let original = pb::TracerPayload {
-                    chunks: vec![errored_root_chunk(0x10000, 0)],
-                    ..Default::default()
-                };
-                let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
-
-                processor.apply_error_rescue_with_clock(&mut payload, &config, || {
-                    panic!("disabled sampler must not read the clock");
-                });
-
-                assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
-                let TracerPayloadCollection::V07(payloads) = payload else {
-                    panic!("disabled rescue must preserve the payload format");
-                };
-                assert_eq!(payloads, vec![original]);
-            }
-        }
     }
 
     #[test]
