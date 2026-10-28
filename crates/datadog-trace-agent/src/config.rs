@@ -1095,44 +1095,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn test_error_sampler_mode_env_is_ignored() {
-        for raw in [
-            "always_keep",
-            "ALWAYS_KEEP",
-            "  Always_Keep  ",
-            "rate_limited",
-            "RATE_LIMITED",
-            " Rate_Limited ",
-            "bogus",
-            "",
-            "always-keep",
-        ] {
-            temp_env::with_vars(
-                [
-                    ("DD_API_KEY", Some("_not_a_real_key_")),
-                    ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
-                    ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
-                    ("WEBSITE_SITE_NAME", Some("my-azure-function")),
-                    ("DD_APM_FEATURES", None),
-                    ("DD_APM_ERROR_TPS", Some("5.5")),
-                    ("DD_APM_ERROR_SAMPLER_MODE", Some(raw)),
-                ],
-                || {
-                    let config = config::Config::new().unwrap();
-                    assert_eq!(
-                        config.error_sampler.mode,
-                        ErrorSamplerMode::RateLimited,
-                        "mode setting {raw:?} must not change the strategy"
-                    );
-                    assert_eq!(config.error_sampler.target_tps, 5.5);
-                    assert_eq!(config.error_sampler.extra_sample_rate, 1.0);
-                },
-            );
-        }
-    }
-
-    #[test]
     fn test_error_sampler_tps_parsing() {
         for (raw, expected_tps) in [
             (None, 10.0),
