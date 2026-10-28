@@ -270,9 +270,9 @@ impl ServerlessTraceProcessor {
                 };
                 if let SampleDecision::Keep { errors_sr } =
                     state.sampler.sample(now_unix_secs, &trace)
-                    && let Some(root) = chunk.spans.get_mut(root_index)
                 {
-                    root.metrics
+                    chunk.spans[root_index]
+                        .metrics
                         .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
                 }
             }
@@ -392,9 +392,7 @@ fn rescue_root_index(chunk: &pb::TraceChunk, tracer_drop_enabled: bool) -> Optio
     }
     // No identifiable root span: leave the chunk unchanged rather than
     // guessing an index.
-    trace_utils::get_root_span_index(&chunk.spans)
-        .ok()
-        .filter(|&root_index| root_index < chunk.spans.len())
+    trace_utils::get_root_span_index(&chunk.spans).ok()
 }
 
 #[async_trait]
