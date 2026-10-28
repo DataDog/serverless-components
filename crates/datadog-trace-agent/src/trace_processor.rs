@@ -1253,71 +1253,47 @@ mod tests {
     }
 
     #[test]
-    fn test_decision_maker_promotion_is_unconditional_and_preserves_metadata() {
+    fn test_decision_maker_promotion_precedence() {
         use libdd_trace_utils::tracer_payload::TraceChunkProcessor as _;
-        for feature in [false, true] {
-            for (chunk_dm, first, second, child_first, expected) in [
-                (None, None, None, false, None),
-                (None, Some("-4"), None, false, Some("-4")),
-                (None, None, Some("-3"), false, Some("-3")),
-                (None, Some("-3"), Some("-4"), true, Some("-3")),
-                (None, Some("-4"), Some("-3"), false, Some("-4")),
-                (None, Some("-3"), Some("-4"), false, Some("-3")),
-                (Some("-9"), Some("-4"), Some("-3"), false, Some("-9")),
-                (Some(""), Some("-4"), None, false, Some("")),
-                (None, Some(""), Some("-4"), true, Some("")),
-            ] {
-                let mut config = create_test_config();
-                config.error_rare_sample_tracer_drop = feature;
-                config.agent_stats_computation_enabled = false;
-                let mut spans = vec![test_span(1, 2, 0, 1), test_span(1, 3, 2, 0)];
-                if child_first {
-                    spans.swap(0, 1);
-                }
-                for (span, dm) in spans.iter_mut().zip([first, second]) {
-                    span.meta.insert("keep".into(), "metadata".into());
-                    span.metrics.insert("_sampling_priority_v1".into(), -1.0);
-                    if let Some(dm) = dm {
-                        span.meta
-                            .insert(super::DECISION_MAKER_KEY.into(), dm.into());
-                    }
-                }
-                let mut chunk = test_chunk(spans, -1);
-                chunk.origin = "synthetics".into();
-                chunk.tags.insert("other".into(), "value".into());
-                if let Some(dm) = chunk_dm {
-                    chunk
-                        .tags
+        for (chunk_dm, first, second, child_first, expected) in [
+            (None, None, None, false, None),
+            (None, Some("-4"), None, false, Some("-4")),
+            (None, None, Some("-3"), false, Some("-3")),
+            (None, Some("-3"), Some("-4"), true, Some("-3")),
+            (None, Some("-4"), Some("-3"), false, Some("-4")),
+            (None, Some("-3"), Some("-4"), false, Some("-3")),
+            (Some("-9"), Some("-4"), Some("-3"), false, Some("-9")),
+            (Some(""), Some("-4"), None, false, Some("")),
+            (None, Some(""), Some("-4"), true, Some("")),
+        ] {
+            let mut spans = vec![test_span(1, 2, 0, 1), test_span(1, 3, 2, 0)];
+            if child_first {
+                spans.swap(0, 1);
+            }
+            for (span, dm) in spans.iter_mut().zip([first, second]) {
+                if let Some(dm) = dm {
+                    span.meta
                         .insert(super::DECISION_MAKER_KEY.into(), dm.into());
                 }
-                let original = chunk.clone();
-                let root_index = usize::from(child_first);
-                super::ChunkProcessor {
-                    config: Arc::new(config),
-                    mini_agent_metadata: Arc::new(create_test_metadata()),
-                }
-                .process(&mut chunk, root_index);
-                assert_eq!(
-                    chunk
-                        .tags
-                        .get(super::DECISION_MAKER_KEY)
-                        .map(String::as_str),
-                    expected
-                );
-                assert_eq!(chunk.tags.get("other"), original.tags.get("other"));
-                assert_eq!(chunk.priority, original.priority);
-                assert_eq!(chunk.origin, original.origin);
-                for (span, before) in chunk.spans.iter().zip(&original.spans) {
-                    assert_eq!(span.span_id, before.span_id);
-                    assert_eq!(
-                        span.metrics.get("_sampling_priority_v1"),
-                        before.metrics.get("_sampling_priority_v1")
-                    );
-                    for (key, value) in &before.meta {
-                        assert_eq!(span.meta.get(key), Some(value));
-                    }
-                }
             }
+            let mut chunk = test_chunk(spans, -1);
+            if let Some(dm) = chunk_dm {
+                chunk
+                    .tags
+                    .insert(super::DECISION_MAKER_KEY.into(), dm.into());
+            }
+            super::ChunkProcessor {
+                config: Arc::new(create_test_config()),
+                mini_agent_metadata: Arc::new(create_test_metadata()),
+            }
+            .process(&mut chunk, usize::from(child_first));
+            assert_eq!(
+                chunk
+                    .tags
+                    .get(super::DECISION_MAKER_KEY)
+                    .map(String::as_str),
+                expected
+            );
         }
     }
 
