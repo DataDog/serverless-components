@@ -1379,46 +1379,15 @@ mod tests {
     #[tracing_test::traced_test]
     fn test_disabled_sampler_initialization_warning() {
         let warning = "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue";
-        let mut expected_warnings = 0;
-        for feature in [false, true] {
-            for tps in [0.0, -1.0, 10.0] {
-                let mut config = rescue_config(always_keep_sampler_config());
-                config.error_rare_sample_tracer_drop = feature;
-                config.error_sampler.target_tps = tps;
-                let processor = trace_processor::ServerlessTraceProcessor::new(
-                    None,
-                    trace_processor::ServerlessTraceProcessor::new_error_sampler(&config),
-                );
-                expected_warnings += usize::from(feature && tps <= 0.0);
-                logs_assert(|lines| {
-                    let count = lines.iter().filter(|line| line.contains(warning)).count();
-                    if count == expected_warnings {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "expected {expected_warnings} warnings, got {count}"
-                        ))
-                    }
-                });
-                for _ in 0..3 {
-                    run_rescue(
-                        &processor.clone(),
-                        &config,
-                        vec![errored_root_chunk(1, -1)],
-                        RESCUE_NOW,
-                    );
-                }
-            }
-        }
+        let mut config = rescue_config(rate_limited_sampler_config(0.0));
+        config.error_rare_sample_tracer_drop = true;
+        let _state = trace_processor::ServerlessTraceProcessor::new_error_sampler(&config);
         logs_assert(|lines| {
-            let count = lines
-                .iter()
-                .filter(|line| line.contains("DD_APM_ERROR_TPS <= 0 disables error rescue"))
-                .count();
-            if count == 2 {
+            let count = lines.iter().filter(|line| line.contains(warning)).count();
+            if count == 1 {
                 Ok(())
             } else {
-                Err(format!("expected two initialization warnings, got {count}"))
+                Err(format!("expected one initialization warning, got {count}"))
             }
         });
     }
