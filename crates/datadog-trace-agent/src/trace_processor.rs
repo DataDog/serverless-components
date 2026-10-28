@@ -207,15 +207,9 @@ impl ServerlessTraceProcessor {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Applies the error rescue pass to a payload collection.
-    ///
-    /// For every eligible V07 chunk containing a non-zero error flag, consults
-    /// the shared sampler. P0 and no-priority (-128) chunks are always eligible;
-    /// the opt-in feature adds other negative priorities except exact manual drops.
-    /// On a keep, stamps the sampler's `_dd.errors_sr` on the chunk's root
-    /// span without priority promotion. Retention is decided by the backend.
-    /// Chunks are never removed or reordered: unrescued chunks stay in the
-    /// payload for the backend to handle.
+    /// Samples V07 chunks selected by [`rescue_root_index`] and stamps
+    /// `_dd.errors_sr` on kept roots. Priorities and chunk order are unchanged;
+    /// every chunk is forwarded, with retention decided by the backend.
     fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
         self.apply_error_rescue_with_clock(payload, config, || {
             SystemTime::now()
@@ -360,19 +354,11 @@ fn span_view(span: &pb::Span) -> SpanView<'_> {
     }
 }
 
-/// Returns the root span index of a chunk that needs an error sampler decision,
-/// or `None` when the chunk is not a rescue candidate.
-///
-/// P0 and no-priority (-128) chunks are candidates. No priority means a missing
-/// sampling decision, not an explicit drop, matching Go's baseline eligibility.
-/// With the feature enabled, other negative priorities also qualify except
-/// priority -1 with chunk DM -4.
-/// Only promoted chunk tags are consulted, never span metadata. The chunk
-/// must contain at least one span with a non-zero error flag; HTTP status or
-/// error metadata alone does not qualify. The root is resolved with
-/// `get_root_span_index`: empty chunks are left unchanged, and non-empty
-/// chunks always resolve a root, falling back to the last span when no span
-/// has `parent_id 0` (e.g. a cyclic chunk).
+/// Returns the root index of an eligible errored chunk, otherwise `None`.
+/// P0 and missing-priority (-128) chunks qualify by default. The feature adds
+/// other negative priorities except manual drops (priority -1 with chunk DM -4).
+/// Only chunk tags determine DM; any span with `error != 0` supplies the error.
+/// Root selection delegates to `get_root_span_index`; empty chunks yield `None`.
 fn rescue_root_index(chunk: &pb::TraceChunk, tracer_drop_enabled: bool) -> Option<usize> {
     let eligible = chunk.priority == 0
         || chunk.priority == i32::from(i8::MIN)
@@ -384,14 +370,10 @@ fn rescue_root_index(chunk: &pb::TraceChunk, tracer_drop_enabled: bool) -> Optio
     if !eligible {
         return None;
     }
-    // An error anywhere in the chunk makes it a rescue candidate, not just an
-    // error on the root span. Checked before the root-span search because
-    // non-errored chunks are the common case on this path.
+    // Skip root resolution for healthy chunks.
     if !chunk.spans.iter().any(|span| span.error != 0) {
         return None;
     }
-    // No identifiable root span: leave the chunk unchanged rather than
-    // guessing an index.
     trace_utils::get_root_span_index(&chunk.spans).ok()
 }
 
