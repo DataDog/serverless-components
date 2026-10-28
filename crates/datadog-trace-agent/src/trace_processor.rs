@@ -1753,24 +1753,28 @@ mod tests {
     fn test_error_rescue_clamps_backward_timestamps_across_clones() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
         let clone = processor.clone();
+        assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
 
-        let chunks = run_rescue(
-            &processor,
-            &config,
-            vec![errored_root_chunk(0x10000, 0)],
-            RESCUE_NOW,
-        );
-        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
-        assert_eq!(processor.lock_sampler().last_sampler_timestamp, RESCUE_NOW);
-
-        let chunks = run_rescue(
-            &clone,
-            &config,
-            vec![errored_root_chunk(0x10001, 0)],
-            RESCUE_NOW - 40,
-        );
-        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
-        assert_eq!(clone.lock_sampler().last_sampler_timestamp, RESCUE_NOW);
+        for (i, (now, expected)) in [
+            (RESCUE_NOW, RESCUE_NOW),
+            (RESCUE_NOW - 40, RESCUE_NOW),
+            (RESCUE_NOW, RESCUE_NOW),
+            (RESCUE_NOW + 40, RESCUE_NOW + 40),
+            (RESCUE_NOW + 20, RESCUE_NOW + 40),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let target = if i % 2 == 0 { &processor } else { &clone };
+            let chunks = run_rescue(
+                target,
+                &config,
+                vec![errored_root_chunk(0x10000 + i as u64, 0)],
+                now,
+            );
+            assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
+            assert_eq!(target.lock_sampler().last_sampler_timestamp, expected);
+        }
     }
 
     #[test]
@@ -1863,35 +1867,6 @@ mod tests {
                 assert_eq!(payloads, vec![original]);
             }
         }
-    }
-
-    #[test]
-    fn test_independent_processors_share_sampler_timestamp_floor() {
-        let sampler = sampler_for(&rate_limited_sampler_config(1.0));
-        let first = trace_processor::ServerlessTraceProcessor::new(None, Arc::clone(&sampler));
-        let second = trace_processor::ServerlessTraceProcessor::new(None, sampler);
-
-        assert_eq!(first.lock_sampler().last_sampler_timestamp, i64::MIN);
-        assert_eq!(first.lock_sampler().clamp_timestamp(200), 200);
-        assert_eq!(second.lock_sampler().clamp_timestamp(50), 200);
-        assert_eq!(second.lock_sampler().clamp_timestamp(300), 300);
-        assert_eq!(first.lock_sampler().clamp_timestamp(250), 300);
-    }
-
-    #[test]
-    fn test_sampler_timestamp_clamp_never_moves_backwards() {
-        let (_config, processor) = rescue_setup(rate_limited_sampler_config(1.0));
-        // A clone shares the clamp floor with the original.
-        let clone = processor.clone();
-
-        assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
-        assert_eq!(processor.lock_sampler().clamp_timestamp(100), 100);
-        // Backward timestamps, through either instance, are clamped to the
-        // last value seen; forward ones update the floor.
-        assert_eq!(clone.lock_sampler().clamp_timestamp(50), 100);
-        assert_eq!(processor.lock_sampler().clamp_timestamp(100), 100);
-        assert_eq!(clone.lock_sampler().clamp_timestamp(200), 200);
-        assert_eq!(processor.lock_sampler().clamp_timestamp(199), 200);
     }
 
     #[test]
