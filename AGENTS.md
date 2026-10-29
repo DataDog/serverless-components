@@ -22,8 +22,7 @@ more than one product:
   index out of range.
 - Keep comments concise. Describe the code as it is, not the history of the change.
 - Describe a rule in one place. Do not repeat the same rule in several doc comments.
-- Before you write a helper, search the repository for one that does the same job. For
-  example, `datadog-agent-config` already parses comma-separated and space-separated lists.
+- Before you write a helper, search the repository for one that does the same job.
 
 ## Settings
 
