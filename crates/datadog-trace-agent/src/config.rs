@@ -24,13 +24,13 @@ const DEFAULT_APM_RECEIVER_PORT: u16 = 8126;
 ///
 /// Starts from `ErrorSamplerConfig::default()` (the Go agent defaults) and
 /// overrides only `target_tps` with `DD_APM_ERROR_TPS`, parsed as `f64`.
-/// Non-finite or unparsable values warn and keep the default. A finite
-/// value <= 0 disables rescue.
+/// Blank values count as unset. Non-finite or unparsable values warn and keep
+/// the default. A finite value <= 0 disables rescue.
 fn parse_error_sampler_config(raw: Option<&str>) -> ErrorSamplerConfig {
     let mut config = ErrorSamplerConfig::default();
 
-    if let Some(raw) = raw {
-        match raw.trim().parse::<f64>() {
+    if let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) {
+        match raw.parse::<f64>() {
             Ok(tps) if tps.is_finite() => config.target_tps = tps,
             _ => {
                 warn!(
