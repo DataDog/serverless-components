@@ -17,9 +17,6 @@ more than one product:
 
 ## Code style
 
-- Do not add a defensive check unless you can name the input that makes it fail. For example,
-  do not check that an index is in range when the function that returns it cannot return an
-  index out of range.
 - Keep comments concise. Describe the code as it is, not the history of the change.
 - Describe a rule in one place. Do not repeat the same rule in several doc comments.
 - Before you write a helper, search the repository for one that does the same job.
