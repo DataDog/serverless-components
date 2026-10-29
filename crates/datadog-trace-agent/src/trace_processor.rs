@@ -11,7 +11,7 @@ use libdd_library_config::tracer_metadata::TracerMetadata;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, warn};
 
-use libdd_trace_obfuscation::obfuscate::obfuscate_span;
+use libdd_trace_obfuscation::obfuscate::obfuscate_pb_span;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils::{self};
 use libdd_trace_utils::trace_utils::{EnvironmentType, SendData};
@@ -112,7 +112,7 @@ impl TraceChunkProcessor for ChunkProcessor {
                     app_name.clone(),
                 );
             }
-            obfuscate_span(span, &self.config.obfuscation_config);
+            obfuscate_pb_span(span, &self.config.obfuscation_config);
         }
     }
 }
@@ -410,7 +410,7 @@ mod tests {
             dd_dogstatsd_windows_pipe_name: None,
             env_type: trace_utils::EnvironmentType::CloudFunction,
             os: "linux".to_string(),
-            obfuscation_config: ObfuscationConfig::new().unwrap(),
+            obfuscation_config: ObfuscationConfig::new_from_env().unwrap(),
             proxy_url: None,
             profiling_intake: Endpoint {
                 url: hyper::Uri::from_static("https://proxy.agent.notdog.com/proxy"),

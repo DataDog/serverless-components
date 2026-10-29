@@ -28,7 +28,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "env-filter",
     "tracing-log",
 ] }
-zstd = { version = "0.13.3", default-features = false }
+zstd = { version = "0.14.3", default-features = false }
 
 [dev-dependencies]
 reqwest = { version = "0.12.4", features = ["json"], default-features = false }

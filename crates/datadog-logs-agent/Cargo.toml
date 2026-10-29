@@ -22,7 +22,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 tokio = { version = "1.37.0", default-features = false, features = ["sync", "net"] }
 tracing = { version = "0.1.40", default-features = false }
-zstd = { version = "0.13.3", default-features = false }
+zstd = { version = "0.14.3", default-features = false }
 
 [dev-dependencies]
 http = "1"
