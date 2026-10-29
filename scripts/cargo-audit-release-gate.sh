@@ -85,22 +85,24 @@ if [ "$head_sha" != "$expected_sha" ]; then
   fail "HEAD ($head_sha) does not match expected release commit ($expected_sha)"
 fi
 
-# Bind the audited inputs to the expected commit, not to the working tree alone.
-if ! expected_lock_hash="$(git show "${expected_sha}:Cargo.lock" | sha256sum | cut -d' ' -f1)"; then
-  fail "cannot read Cargo.lock from expected commit $expected_sha"
-fi
-actual_lock_hash="$(sha256sum "$lockfile" | cut -d' ' -f1)"
-if [ "$expected_lock_hash" != "$actual_lock_hash" ]; then
-  fail "working-tree Cargo.lock does not match the expected commit"
-fi
+sha256_of() {
+  sha256sum "$@" | cut -d' ' -f1
+}
 
-if ! expected_policy_hash="$(git show "${expected_sha}:.cargo/audit.toml" | sha256sum | cut -d' ' -f1)"; then
-  fail "cannot read .cargo/audit.toml from expected commit $expected_sha"
-fi
-actual_policy_hash="$(sha256sum "$policy" | cut -d' ' -f1)"
-if [ "$expected_policy_hash" != "$actual_policy_hash" ]; then
-  fail "working-tree .cargo/audit.toml does not match the expected commit"
-fi
+# Bind an audited input to the expected commit, not to the working tree alone,
+# and print its verified SHA-256. <path> is relative to the repository root.
+verified_sha256() {
+  local path="$1" committed actual
+  committed="$(git show "${expected_sha}:${path}" | sha256_of)" ||
+    fail "cannot read $path from expected commit $expected_sha"
+  actual="$(sha256_of "$path")"
+  [ "$committed" = "$actual" ] || fail "working-tree $path does not match the expected commit"
+  printf '%s\n' "$actual"
+}
+
+# Command substitution runs in a subshell, so propagate a failure explicitly.
+lock_hash="$(verified_sha256 Cargo.lock)" || exit "$?"
+policy_hash="$(verified_sha256 .cargo/audit.toml)" || exit "$?"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/cargo-audit-release-gate.XXXXXXXX")" || die "cannot create a temporary directory"
 readonly work
@@ -117,8 +119,7 @@ if ! curl --fail --silent --show-error --location --proto '=https' \
   fail "failed to download the pinned cargo-audit archive"
 fi
 
-archive_hash="$(sha256sum "$archive" | cut -d' ' -f1)"
-if [ "$archive_hash" != "$ARCHIVE_SHA256" ]; then
+if [ "$(sha256_of "$archive")" != "$ARCHIVE_SHA256" ]; then
   fail "pinned cargo-audit archive checksum mismatch"
 fi
 
@@ -163,8 +164,8 @@ fi
 printf 'cargo-audit release gate\n'
 printf 'expected-sha: %s\n' "$expected_sha"
 printf 'head-sha: %s\n' "$head_sha"
-printf 'cargo-lock-sha256: %s\n' "$actual_lock_hash"
-printf 'audit-toml-sha256: %s\n' "$actual_policy_hash"
+printf 'cargo-lock-sha256: %s\n' "$lock_hash"
+printf 'audit-toml-sha256: %s\n' "$policy_hash"
 printf 'cargo-version: %s\n' "$cargo_version"
 printf 'scanner-version: %s\n' "$scanner_version"
 printf 'advisory-db-url: %s\n' "$ADVISORY_DB_URL"
@@ -181,18 +182,17 @@ printf '%s\n' '----- end cargo-audit output -----'
 guard_rc=0
 "$GUARD_SCRIPT" "$scan_log" "$scan_rc" "$lockfile" || guard_rc=$?
 case "$guard_rc" in
-  0 | 1) ;;
+  0) ;;
+  1)
+    printf 'cargo-audit release gate: result: FAIL (scanner-exit=%s)\n' "$scan_rc" >&2
+    # Preserve the scanner's own status for rejected findings and errors.
+    if [ "$scan_rc" -ne 0 ]; then
+      exit "$scan_rc"
+    fi
+    exit 1
+    ;;
   *) fail "report guard returned an unexpected status ($guard_rc); treating as failure" ;;
 esac
-
-if [ "$guard_rc" -ne 0 ]; then
-  printf 'cargo-audit release gate: result: FAIL (scanner-exit=%s)\n' "$scan_rc" >&2
-  if [ "$scan_rc" -ne 0 ]; then
-    # Preserve the scanner's own status for rejected findings and errors.
-    exit "$scan_rc"
-  fi
-  exit 1
-fi
 
 if [ "$db_origin" != "$ADVISORY_DB_URL" ]; then
   fail "unexpected advisory database origin: '$db_origin'"

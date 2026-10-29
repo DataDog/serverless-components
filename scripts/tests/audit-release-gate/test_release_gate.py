@@ -165,16 +165,16 @@ class ReleaseGateTests(unittest.TestCase):
         corrupt = self.root / "corrupt.tgz"
         corrupt.write_text("not a gzip archive\n")
         cases = [
-            ({"FAKE_CURL_FAIL": "1"}, "failed to download the pinned cargo-audit archive"),
-            ({"FAKE_ARCHIVE_SHA256": "0" * 64}, "pinned cargo-audit archive checksum mismatch"),
-            ({"FAKE_ARCHIVE": str(corrupt)}, "failed to extract the pinned cargo-audit archive"),
-            ({"FAKE_VERSION": "cargo-audit-audit 0.22.1"}, "unexpected cargo-audit version"),
-            ({"FAKE_VERSION": "cargo-audit-audit 0.22.2 extra"}, "unexpected cargo-audit version"),
-            ({"FAKE_CARGO_FAIL": "1"}, "cargo -V failed"),
+            ({"FAKE_CURL_FAIL": "1"}, 1, "failed to download the pinned cargo-audit archive"),
+            ({"FAKE_ARCHIVE_SHA256": "0" * 64}, 1, "pinned cargo-audit archive checksum mismatch"),
+            ({"FAKE_ARCHIVE": str(corrupt)}, 1, "failed to extract the pinned cargo-audit archive"),
+            ({"FAKE_VERSION": "cargo-audit-audit 0.22.1"}, 1, "unexpected cargo-audit version"),
+            ({"FAKE_VERSION": "cargo-audit-audit 0.22.2 extra"}, 1, "unexpected cargo-audit version"),
+            ({"FAKE_CARGO_FAIL": "1"}, 2, "cargo -V failed"),
         ]
-        for fake_env, message in cases:
+        for fake_env, rc, message in cases:
             with self.subTest(fake_env=fake_env):
-                self.assert_blocked(self.run_gate(**fake_env), message, rc=2 if "FAKE_CARGO_FAIL" in fake_env else 1)
+                self.assert_blocked(self.run_gate(**fake_env), message, rc=rc)
                 self.assertEqual(read_records(self.scan_record), [])
 
     def test_source_identity_failures_block_before_scan(self):
@@ -189,7 +189,10 @@ class ReleaseGateTests(unittest.TestCase):
         for sha, edits, message in cases:
             with self.subTest(message=message):
                 for path, text in edits.items():
-                    path.unlink() if text is None else path.write_text(text)
+                    if text is None:
+                        path.unlink()
+                    else:
+                        path.write_text(text)
                 try:
                     self.assert_blocked(self.run_gate(args=[sha] if sha else None), message)
                     self.assertEqual(read_records(self.scan_record), [])

@@ -57,5 +57,5 @@ nonzero counts and absolute scan paths. The guard remains coupled to 0.22.2.
 Timeout statuses are replayed, not actual timer/signal tests; bounds are checked
 on command tokens with comments excluded. Workflow checks cover publication and
 build wiring, not the tests workflow itself or GitHub-runner integration.
-The repository lockfile need not
-pass: the smoke suite uses fixtures, not the current unresolved advisories.
+The repository lockfile need not pass: the smoke suite uses fixtures, not the
+current unresolved advisories.

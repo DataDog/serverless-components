@@ -32,41 +32,32 @@
 # so it can be exercised entirely offline.
 set -euo pipefail
 
-if [ "$#" -ne 3 ]; then
-  printf 'cargo-audit report guard: usage: %s <scan-log> <scanner-exit-code> <expected-lockfile-path>\n' "$0" >&2
+usage_error() {
+  printf 'cargo-audit report guard: %s\n' "$*" >&2
   exit 2
-fi
-
-log="$1"
-rc="$2"
-expected_lockfile="$3"
+}
 
 reject() {
   printf 'cargo-audit report guard: %s\n' "$*" >&2
   exit 1
 }
 
-if [ -z "$expected_lockfile" ]; then
-  printf 'cargo-audit report guard: expected lockfile path must not be empty\n' >&2
-  exit 2
+if [ "$#" -ne 3 ]; then
+  usage_error "usage: $0 <scan-log> <scanner-exit-code> <expected-lockfile-path>"
 fi
 
-if [ ! -f "$log" ]; then
-  printf 'cargo-audit report guard: scan log not found: %s\n' "$log" >&2
-  exit 2
-fi
+log="$1"
+rc="$2"
+expected_lockfile="$3"
+
+[ -n "$expected_lockfile" ] || usage_error "expected lockfile path must not be empty"
+[ -f "$log" ] || usage_error "scan log not found: $log"
 
 case "$rc" in
-  '' | *[!0-9]*)
-    printf 'cargo-audit report guard: scanner exit code is not a non-negative integer: %s\n' "$rc" >&2
-    exit 2
-    ;;
+  '' | *[!0-9]*) usage_error "scanner exit code is not a non-negative integer: $rc" ;;
 esac
 
-if [ "$rc" -ne 0 ]; then
-  printf 'cargo-audit report guard: scanner exited %s; release blocked\n' "$rc" >&2
-  exit 1
-fi
+[ "$rc" -eq 0 ] || reject "scanner exited $rc; release blocked"
 
 if grep -Eq "couldn't (update|open) crates\.io index|couldn't check if the package is yanked" "$log"; then
   reject "scan log shows an incomplete crates.io index check; release blocked"
