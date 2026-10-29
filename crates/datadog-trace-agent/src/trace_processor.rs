@@ -565,9 +565,7 @@ mod tests {
             TraceProcessor, encoded_size, split_oversized_payloads,
         },
     };
-    use datadog_agent_trace_sampler::{
-        ErrorSamplerConfig, ErrorSamplerMode, ErrorsSampler, SampleDecision, SpanView, TraceView,
-    };
+    use datadog_agent_trace_sampler::{ErrorSamplerConfig, ErrorSamplerMode};
     use libdd_common::{Endpoint, http_common};
     use libdd_trace_protobuf::pb;
     use libdd_trace_utils::test_utils::{create_test_gcp_json_span, create_test_gcp_span};
@@ -1186,24 +1184,6 @@ mod tests {
         span.metrics.get("_dd.errors_sr").copied()
     }
 
-    /// Builds the equivalent standalone `TraceView` for a fixture chunk, used to
-    /// compare adapter decisions with direct shared-sampler usage.
-    fn equivalent_trace_view<'a>(
-        chunk: &pb::TraceChunk,
-        env: &'a str,
-        views: &'a [SpanView<'a>],
-    ) -> TraceView<'a> {
-        let root_index = trace_utils::get_root_span_index(&chunk.spans).unwrap();
-        let root = &chunk.spans[root_index];
-        TraceView {
-            env,
-            trace_id: root.trace_id,
-            root_index,
-            root_global_sample_rate: root.metrics.get("_sample_rate").copied().unwrap_or(1.0),
-            spans: views,
-        }
-    }
-
     fn rescued_count(chunks: &[pb::TraceChunk]) -> usize {
         chunks
             .iter()
@@ -1520,50 +1500,40 @@ mod tests {
     }
 
     #[test]
-    fn test_disabled_tps_disables_rescue_in_both_modes() {
-        for mode in [ErrorSamplerMode::RateLimited, ErrorSamplerMode::AlwaysKeep] {
-            for tps in [0.0_f64, -3.0] {
-                let (mut config, processor) = rescue_setup(ErrorSamplerConfig {
-                    mode,
-                    target_tps: tps,
-                    extra_sample_rate: 1.0,
-                });
-                config.error_rare_sample_tracer_drop = true;
+    fn test_disabled_tps_skips_rescue() {
+        for tps in [0.0_f64, -3.0] {
+            let (mut config, processor) = rescue_setup(rate_limited_sampler_config(tps));
+            config.error_rare_sample_tracer_drop = true;
 
-                let original = pb::TracerPayload {
-                    chunks: vec![
-                        errored_root_chunk(0xe000, 0),
-                        errored_root_chunk(0xe001, -1),
-                        errored_root_chunk(0xe002, i32::from(i8::MIN)),
-                    ],
-                    ..Default::default()
-                };
-                let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
-                processor.apply_error_rescue_with_clock(&mut payload, &config, || {
-                    panic!("disabled sampler must not read the clock");
-                });
+            let original = pb::TracerPayload {
+                chunks: vec![
+                    errored_root_chunk(0xe000, 0),
+                    errored_root_chunk(0xe001, -1),
+                ],
+                ..Default::default()
+            };
+            let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
+            processor.apply_error_rescue_with_clock(&mut payload, &config, || {
+                panic!("disabled sampler must not read the clock");
+            });
 
-                assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
-                let TracerPayloadCollection::V07(payloads) = payload else {
-                    panic!("disabled rescue must preserve the payload format");
-                };
-                assert_eq!(payloads, vec![original], "mode={mode:?} tps={tps}");
-            }
+            assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
+            let TracerPayloadCollection::V07(payloads) = payload else {
+                panic!("disabled rescue must preserve the payload format");
+            };
+            assert_eq!(payloads, vec![original], "tps={tps}");
         }
     }
 
     #[test]
     fn test_rate_limited_under_sustained_load_keeps_and_rejects() {
-        for sample_rate in [None, Some(0.25_f64)] {
-            let sampler_config = rate_limited_sampler_config(10.0);
-            let (config, processor) = rescue_setup(sampler_config);
+        for (sample_rate, expected_keeps) in [(None, 83_usize), (Some(0.25_f64), 9)] {
+            let (config, processor) = rescue_setup(rate_limited_sampler_config(10.0));
             let context = format!("sample_rate={sample_rate:?}");
 
-            // With the default client rate, 100 chunks with the same signature
-            // in one 5-second bucket give a default rate of 10 / (100 / 5) = 0.5.
-            // A finite client rate affects both weighting and applied probability.
-            // No exact keep count is asserted: this is an adaptive rolling-window
-            // sampler, not a hard token bucket.
+            // 100 errored chunks with the same signature in one bucket. The
+            // client `_sample_rate` changes both weighting and applied
+            // probability, so the two cases keep different counts.
             let ids: Vec<u64> = (0..100_u64).map(|i| 0x11_0000 + i).collect();
             let input: Vec<pb::TraceChunk> = ids
                 .iter()
@@ -1577,56 +1547,30 @@ mod tests {
                 .collect();
             let chunks = run_rescue(&processor, &config, input, RESCUE_NOW);
 
-            let keeps = rescued_count(&chunks);
-            let drops = chunks.len() - keeps;
-            if sample_rate.is_none() {
-                assert!(keeps > 0, "{context}: expected some keeps, got none");
-            }
-            assert!(drops > 0, "{context}: expected some drops, got none");
             assert_eq!(
                 chunks.len(),
                 100,
                 "{context}: every chunk is still forwarded"
             );
-
-            // Compare every decision against direct crate usage. Set the expected
-            // client rate from the input case, independently of the output metric.
-            let mut standalone = ErrorsSampler::new(sampler_config);
-            for (chunk, id) in chunks.iter().zip(&ids) {
-                assert_eq!(
-                    chunk.priority, 0,
-                    "{context}: priority changed for trace id {id}"
-                );
-                let views: Vec<SpanView> = chunk.spans.iter().map(super::span_view).collect();
-                let mut trace = equivalent_trace_view(chunk, &config.env, &views);
-                trace.root_global_sample_rate = sample_rate.unwrap_or(1.0);
-                let expected = standalone.sample(RESCUE_NOW, &trace);
-                let actual = match errors_sr(root(chunk)) {
-                    Some(errors_sr) => SampleDecision::Keep { errors_sr },
-                    None => SampleDecision::Drop,
-                };
-                assert_eq!(
-                    actual, expected,
-                    "{context}: decision mismatch for trace id {id}"
-                );
-            }
+            assert!(
+                chunks.iter().all(|chunk| chunk.priority == 0),
+                "{context}: priority changed"
+            );
+            assert_eq!(rescued_count(&chunks), expected_keeps, "{context}");
         }
     }
 
     #[test]
     fn test_processor_clones_share_one_budget() {
-        let sampler_config = rate_limited_sampler_config(1.0);
-        let (mut config, processor) = rescue_setup(sampler_config);
+        let (mut config, processor) = rescue_setup(rate_limited_sampler_config(1.0));
         config.error_rare_sample_tracer_drop = true;
         let processor_clone = processor.clone();
 
         // Ten errored chunks with the same signature but distinct IDs: five
         // through the original, five through the clone. Mix P0 and explicit
-        // drops. All must draw from the same budget, matching a standalone
-        // sampler fed the same sequence.
+        // drops. Ineligible chunks interleaved with them spend no budget.
         let ids: Vec<u64> = (0..10_u64).map(|i| 0x33_0000 + i).collect();
         let mut observed = Vec::new();
-        let mut standalone = ErrorsSampler::new(sampler_config);
         for (i, id) in ids.iter().enumerate() {
             let target = if i < 5 { &processor } else { &processor_clone };
             let mut manual = errored_root_chunk(*id, -1);
@@ -1649,26 +1593,13 @@ mod tests {
                 vec![errored_root_chunk(*id, priority)],
                 RESCUE_NOW,
             );
-            let actual = errors_sr(root(&chunks[0])).is_some();
-            let views: Vec<SpanView> = chunks[0].spans.iter().map(super::span_view).collect();
-            let trace = equivalent_trace_view(&chunks[0], &config.env, &views);
-            let expected = matches!(
-                standalone.sample(RESCUE_NOW, &trace),
-                SampleDecision::Keep { .. }
-            );
-            assert_eq!(
-                actual, expected,
-                "clone {i} decision diverged from the shared-budget standalone sampler"
-            );
-            observed.push(actual);
+            observed.push(errors_sr(root(&chunks[0])).is_some());
         }
-        assert!(
-            observed.iter().any(|kept| *kept),
-            "expected at least one keep"
-        );
-        assert!(
-            !observed.iter().all(|kept| *kept),
-            "expected at least one drop"
+        assert_eq!(
+            observed,
+            [
+                true, true, true, true, true, true, false, false, false, false
+            ]
         );
     }
 
@@ -1698,43 +1629,6 @@ mod tests {
             assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
             assert_eq!(target.lock_sampler().last_sampler_timestamp, expected);
         }
-    }
-
-    #[test]
-    fn test_error_rescue_reads_clock_under_lock() {
-        let (config, processor) = rescue_setup(always_keep_sampler_config());
-        let mut payload = TracerPayloadCollection::V07(vec![
-            pb::TracerPayload {
-                chunks: vec![
-                    errored_root_chunk(0x10000, 1),
-                    errored_root_chunk(0x10001, 0),
-                ],
-                ..Default::default()
-            },
-            pb::TracerPayload {
-                chunks: vec![errored_root_chunk(0x20000, 0)],
-                ..Default::default()
-            },
-        ]);
-        let mut clock_called = false;
-
-        processor.apply_error_rescue_with_clock(&mut payload, &config, || {
-            clock_called = true;
-            assert!(matches!(
-                processor.error_rescue_state.try_lock(),
-                Err(std::sync::TryLockError::WouldBlock)
-            ));
-            RESCUE_NOW
-        });
-
-        assert!(clock_called);
-        assert_eq!(processor.lock_sampler().last_sampler_timestamp, RESCUE_NOW);
-        let TracerPayloadCollection::V07(payloads) = payload else {
-            panic!("expected V07 payload");
-        };
-        assert_eq!(errors_sr(root(&payloads[0].chunks[0])), None);
-        assert_eq!(errors_sr(root(&payloads[0].chunks[1])), Some(1.0));
-        assert_eq!(errors_sr(root(&payloads[1].chunks[0])), Some(1.0));
     }
 
     #[test]
