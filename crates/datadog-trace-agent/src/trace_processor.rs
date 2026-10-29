@@ -172,6 +172,8 @@ pub struct ServerlessTraceProcessor {
     enqueue_permits: Arc<tokio::sync::Semaphore>,
     /// Processor clones share one TPS budget and timestamp floor under the same lock.
     error_rescue_state: Arc<Mutex<ErrorRescueState>>,
+    /// False when the configured TPS disables the sampler, so rescue never locks.
+    error_rescue_enabled: bool,
 }
 
 impl ServerlessTraceProcessor {
@@ -182,10 +184,12 @@ impl ServerlessTraceProcessor {
                 "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue"
             );
         }
+        let error_rescue_state = ErrorRescueState::new(config.error_sampler);
         ServerlessTraceProcessor {
             stats_concentrator,
             enqueue_permits: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_ENQUEUES)),
-            error_rescue_state: Arc::new(Mutex::new(ErrorRescueState::new(config.error_sampler))),
+            error_rescue_enabled: !error_rescue_state.sampler.is_disabled(),
+            error_rescue_state: Arc::new(Mutex::new(error_rescue_state)),
         }
     }
 
@@ -217,49 +221,68 @@ impl ServerlessTraceProcessor {
         let TracerPayloadCollection::V07(tracer_payloads) = payload else {
             return;
         };
-        let mut state = None;
-        let mut read_clock = Some(read_clock);
-        for tracer_payload in tracer_payloads.iter_mut() {
-            let env = resolve_payload_env(&tracer_payload.env, &config.env);
-            for chunk in &mut tracer_payload.chunks {
-                let Some(root_index) =
-                    rescue_root_index(chunk, config.error_rare_sample_tracer_drop)
-                else {
-                    continue;
-                };
-                // Requests without candidates never take the shared lock.
-                let state = state.get_or_insert_with(|| self.lock_sampler());
-                if let Some(read_clock) = read_clock.take() {
-                    if state.sampler.is_disabled() {
-                        return;
+        if !self.error_rescue_enabled {
+            return;
+        }
+
+        // Build the sampler inputs before locking, so the shared lock covers
+        // only sampling. Requests without candidates never take the lock.
+        let candidates: Vec<(usize, usize, &str, usize, Vec<SpanView>)> =
+            tracer_payloads
+                .iter()
+                .enumerate()
+                .flat_map(|(payload_index, tracer_payload)| {
+                    let env = resolve_payload_env(&tracer_payload.env, &config.env);
+                    tracer_payload.chunks.iter().enumerate().filter_map(
+                        move |(chunk_index, chunk)| {
+                            let root_index =
+                                rescue_root_index(chunk, config.error_rare_sample_tracer_drop)?;
+                            let views = chunk.spans.iter().map(span_view).collect();
+                            Some((payload_index, chunk_index, env, root_index, views))
+                        },
+                    )
+                })
+                .collect();
+        if candidates.is_empty() {
+            return;
+        }
+
+        let kept: Vec<(usize, usize, usize, f64)> = {
+            let mut state = self.lock_sampler();
+            // Read once under the lock, and clamp backward wall-clock steps so
+            // the sampler's rolling window cannot move backwards.
+            let now_unix_secs = state.clamp_timestamp(read_clock());
+            candidates
+                .iter()
+                .filter_map(|(payload_index, chunk_index, env, root_index, views)| {
+                    let root =
+                        &tracer_payloads[*payload_index].chunks[*chunk_index].spans[*root_index];
+                    let trace = TraceView {
+                        env,
+                        trace_id: root.trace_id,
+                        root_index: *root_index,
+                        // The shared sampler sanitizes the raw wire rate.
+                        root_global_sample_rate: root
+                            .metrics
+                            .get("_sample_rate")
+                            .copied()
+                            .unwrap_or(1.0),
+                        spans: views,
+                    };
+                    match state.sampler.sample(now_unix_secs, &trace) {
+                        SampleDecision::Keep { errors_sr } => {
+                            Some((*payload_index, *chunk_index, *root_index, errors_sr))
+                        }
+                        SampleDecision::Drop => None,
                     }
-                    // Read once under the lock, and clamp backward wall-clock steps
-                    // so the sampler's rolling window cannot move backwards.
-                    state.clamp_timestamp(read_clock());
-                }
-                let now_unix_secs = state.last_sampler_timestamp;
-                let root = &chunk.spans[root_index];
-                let views: Vec<SpanView> = chunk.spans.iter().map(span_view).collect();
-                let trace = TraceView {
-                    env,
-                    trace_id: root.trace_id,
-                    root_index,
-                    // The shared sampler sanitizes the raw wire rate.
-                    root_global_sample_rate: root
-                        .metrics
-                        .get("_sample_rate")
-                        .copied()
-                        .unwrap_or(1.0),
-                    spans: &views,
-                };
-                if let SampleDecision::Keep { errors_sr } =
-                    state.sampler.sample(now_unix_secs, &trace)
-                {
-                    chunk.spans[root_index]
-                        .metrics
-                        .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
-                }
-            }
+                })
+                .collect()
+        };
+
+        for (payload_index, chunk_index, root_index, errors_sr) in kept {
+            tracer_payloads[payload_index].chunks[chunk_index].spans[root_index]
+                .metrics
+                .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
         }
     }
 
