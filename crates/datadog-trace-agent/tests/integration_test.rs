@@ -1149,11 +1149,11 @@ async fn test_mini_agent_named_pipe_with_real_flushers() {
     let mut server_ready = false;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        if let Ok(response) = send_named_pipe_request(pipe_name, "/info", "GET", None).await {
-            if response.status().is_success() {
-                server_ready = true;
-                break;
-            }
+        if let Ok(response) = send_named_pipe_request(pipe_name, "/info", "GET", None).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
         }
     }
     assert!(
