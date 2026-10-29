@@ -7,8 +7,6 @@ on:
       - '.github/workflows/publish.yml'
       - '.github/workflows/release-datadog-serverless-compat.yml'
       - '.github/workflows/build-datadog-serverless-compat.yml'
-      - 'Cargo.lock'
-      - '.cargo/audit.toml'
       - 'scripts/cargo-audit-release-gate.sh'
       - 'scripts/cargo-audit-report-guard.sh'
       - 'scripts/tests/audit-release-gate/**'
