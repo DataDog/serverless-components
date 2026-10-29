@@ -1,0 +1,5 @@
+serverless-compat-release:
+  dd_owner_team: serverless-azure-and-gcp
+  type: template
+  template: .gitlab/release.yml
+  static_rule: true

@@ -1,34 +1,170 @@
 name: Release Datadog Serverless Compat
 
-on: workflow_dispatch
+run-name: >-
+  Core binary v${{ inputs.core-version }} ${{ inputs.release-state }}
+  (${{ inputs.operation-ID }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      core-version:
+        description: "Core version (x.y.z)"
+        required: true
+        type: string
+      operation-ID:
+        description: "Immutable parent release operation ID"
+        required: true
+        type: string
+      release-state:
+        description: "Create a draft or publish the matching draft"
+        required: true
+        type: choice
+        options:
+          - draft
+          - published
+
+concurrency:
+  group: datadog-serverless-compat-v${{ inputs.core-version }}
+  cancel-in-progress: false
 
 permissions: {}
 
 jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Authorize immutable release request
+        env:
+          EXPECTED_ACTOR: ${{ vars.RELEASE_AUTOMATION_ACTOR }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          CORE_VERSION: ${{ inputs.core-version }}
+          OPERATION_ID: ${{ inputs.operation-ID }}
+          RELEASE_STATE: ${{ inputs.release-state }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$EXPECTED_ACTOR" ]]; then
+            echo "RELEASE_AUTOMATION_ACTOR is not configured" >&2
+            exit 1
+          fi
+          [[ "$EVENT_NAME" == workflow_dispatch ]] || { echo "workflow_dispatch is required" >&2; exit 1; }
+          if [[ "$ACTOR" != "$EXPECTED_ACTOR" || "$TRIGGERING_ACTOR" != "$EXPECTED_ACTOR" ]]; then
+            echo "actor and triggering actor must both match RELEASE_AUTOMATION_ACTOR" >&2
+            exit 1
+          fi
+          [[ "$CORE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || {
+            echo "core-version must be an exact semantic version without a leading v" >&2
+            exit 1
+          }
+          [[ "$OPERATION_ID" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$ ]] || { echo "invalid operation-ID" >&2; exit 1; }
+          [[ "$RELEASE_STATE" == draft || "$RELEASE_STATE" == published ]] || { echo "invalid release-state" >&2; exit 1; }
+          [[ "$RELEASE_REF" == "refs/tags/datadog-serverless-compat/v${CORE_VERSION}" ]] || {
+            echo "workflow must run at refs/tags/datadog-serverless-compat/v${CORE_VERSION}" >&2
+            exit 1
+          }
+
   build:
+    needs: authorize
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-24.04, windows-2022]
     uses: ./.github/workflows/build-datadog-serverless-compat.yml
     with:
-      runner: ${{matrix.runner}}
+      runner: ${{ matrix.runner }}
+
   release:
     runs-on: ubuntu-24.04
-    needs: build
+    needs: [authorize, build]
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CORE_VERSION: ${{ inputs.core-version }}
+      OPERATION_ID: ${{ inputs.operation-ID }}
+      RELEASE_STATE: ${{ inputs.release-state }}
+      RELEASE_TAG: datadog-serverless-compat/v${{ inputs.core-version }}
+      REPOSITORY: ${{ github.repository }}
+      EXPECTED_SHA: ${{ github.sha }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # 4.3.0
         with:
           path: target/bin
-      - run: |
+      - name: Assemble release archive
+        run: |
+          set -euo pipefail
           chmod +x target/bin/linux-amd64/datadog-serverless-compat
           chmod +x target/bin/windows-amd64/datadog-serverless-compat.exe
-      - run: zip -r datadog-serverless-compat.zip ./*
-        working-directory: target
-      - uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
-        with:
-          draft: true
-          generate_release_notes: true
-          files: target/datadog-serverless-compat.zip
+          find target/bin -type f -exec touch -t 198001010000 {} +
+          (cd target && find bin -type f -print | LC_ALL=C sort | zip -X datadog-serverless-compat.zip -@)
+      - name: Reconcile release and asset
+        run: |
+          set -euo pipefail
+          fail() { echo "$*" >&2; exit 1; }
+
+          ENCODED_RELEASE_TAG="$(jq -rn --arg value "$RELEASE_TAG" '$value | @uri')"
+          TAG_SHA="$(gh api "repos/$REPOSITORY/commits/$ENCODED_RELEASE_TAG" --jq .sha)"
+          [[ "$TAG_SHA" == "$EXPECTED_SHA" ]] || fail "release tag points to $TAG_SHA instead of $EXPECTED_SHA"
+
+          RELEASE_ERROR="$(mktemp)"
+          if RELEASE_JSON="$(gh api "repos/$REPOSITORY/releases/tags/$ENCODED_RELEASE_TAG" 2>"$RELEASE_ERROR")"; then
+            RELEASE_ID="$(jq -r .id <<<"$RELEASE_JSON")"
+            EXISTING_DRAFT="$(jq -r .draft <<<"$RELEASE_JSON")"
+            if [[ "$RELEASE_STATE" == draft && "$EXISTING_DRAFT" != true ]]; then
+              fail "cannot reuse a published Release for a draft request"
+            fi
+          elif grep -Eq 'HTTP 404|Not Found' "$RELEASE_ERROR"; then
+            CREATE_PAYLOAD="$(jq -cn \
+              --arg tag "$RELEASE_TAG" \
+              --arg sha "$EXPECTED_SHA" \
+              --arg name "v$CORE_VERSION" \
+              --arg operation "$OPERATION_ID" \
+              '{tag_name:$tag,target_commitish:$sha,name:$name,draft:true,generate_release_notes:true,body:("Release operation: " + $operation)}')"
+            RELEASE_JSON="$(gh api --method POST "repos/$REPOSITORY/releases" --input - <<<"$CREATE_PAYLOAD")"
+            RELEASE_ID="$(jq -r .id <<<"$RELEASE_JSON")"
+            EXISTING_DRAFT=true
+          else
+            cat "$RELEASE_ERROR" >&2
+            exit 1
+          fi
+
+          [[ "$(jq -r .tag_name <<<"$RELEASE_JSON")" == "$RELEASE_TAG" ]] || fail "existing Release tag conflicts"
+          [[ "$(jq -r .name <<<"$RELEASE_JSON")" == "v$CORE_VERSION" ]] || fail "existing Release name conflicts"
+          [[ "$(jq -r .prerelease <<<"$RELEASE_JSON")" == false ]] || fail "existing Release is a prerelease"
+          RELEASE_BODY="$(jq -r '.body // ""' <<<"$RELEASE_JSON")"
+          [[ "$(grep -Ec '^Release operation: [0-9A-Za-z][0-9A-Za-z._-]{0,127}$' <<<"$RELEASE_BODY")" == 1 ]] || \
+            fail "existing Release operation metadata conflicts"
+          [[ "$(jq '[.assets[] | select(.name != "datadog-serverless-compat.zip")] | length' <<<"$RELEASE_JSON")" == 0 ]] || \
+            fail "Release contains unexpected assets"
+
+          mapfile -t ASSET_ROWS < <(jq -r '.assets[] | select(.name == "datadog-serverless-compat.zip") | [.id, .browser_download_url] | @tsv' <<<"$RELEASE_JSON")
+          (( ${#ASSET_ROWS[@]} <= 1 )) || fail "Release contains duplicate datadog-serverless-compat.zip assets"
+          if (( ${#ASSET_ROWS[@]} == 1 )); then
+            ASSET_ID="${ASSET_ROWS[0]%%$'\t'*}"
+            gh api -H 'Accept: application/octet-stream' "repos/$REPOSITORY/releases/assets/$ASSET_ID" > existing.zip
+            [[ "$(sha256sum existing.zip | awk '{print $1}')" == "$(sha256sum target/datadog-serverless-compat.zip | awk '{print $1}')" ]] || \
+              fail "existing datadog-serverless-compat.zip conflicts with the assembled archive"
+          else
+            [[ "$EXISTING_DRAFT" == true ]] || fail "published Release is missing datadog-serverless-compat.zip"
+            gh release upload "$RELEASE_TAG" target/datadog-serverless-compat.zip --repo "$REPOSITORY"
+          fi
+
+          if [[ "$RELEASE_STATE" == published && "$EXISTING_DRAFT" == true ]]; then
+            gh api --method PATCH "repos/$REPOSITORY/releases/$RELEASE_ID" \
+              -F draft=false -f make_latest=true >/dev/null
+          fi
+
+          FINAL_JSON="$(gh api "repos/$REPOSITORY/releases/$RELEASE_ID")"
+          EXPECTED_DRAFT="$([[ "$RELEASE_STATE" == draft ]] && printf true || printf false)"
+          [[ "$(jq -r .tag_name <<<"$FINAL_JSON")" == "$RELEASE_TAG" ]] || fail "final Release tag conflicts"
+          [[ "$(jq -r .name <<<"$FINAL_JSON")" == "v$CORE_VERSION" ]] || fail "final Release name conflicts"
+          [[ "$(jq -r .prerelease <<<"$FINAL_JSON")" == false ]] || fail "final Release is a prerelease"
+          [[ "$(jq -r .draft <<<"$FINAL_JSON")" == "$EXPECTED_DRAFT" ]] || fail "Release state does not match $RELEASE_STATE"
+          [[ "$(jq '.assets | length' <<<"$FINAL_JSON")" == 1 ]] || fail "Release does not contain exactly one asset"
+          [[ "$(jq '[.assets[] | select(.name == "datadog-serverless-compat.zip")] | length' <<<"$FINAL_JSON")" == 1 ]] || \
+            fail "Release does not contain exactly one expected asset"
+          echo "Release: $(jq -r .html_url <<<"$FINAL_JSON")"

@@ -1,0 +1,147 @@
+stages:
+  - check
+
+.core-ci-rules:
+  rules:
+    - if: '$CI_MERGE_REQUEST_IID'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+.rust-linux:
+  stage: check
+  image: registry.ddbuild.io/images/mirror/rust:latest
+  extends: .core-ci-rules
+  interruptible: true
+  parallel:
+    matrix:
+      - RUNNER_TAG: "arch:amd64"
+        PLATFORM: "linux-amd64"
+      - RUNNER_TAG: "arch:arm64"
+        PLATFORM: "linux-arm64"
+  tags:
+    - "$RUNNER_TAG"
+
+.rust-linux-protoc:
+  extends: .rust-linux
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends curl unzip musl-tools ca-certificates cmake clang pkg-config
+    - ./scripts/install-protoc.sh /usr/local
+
+.rust-windows:
+  stage: check
+  extends: .core-ci-rules
+  interruptible: true
+  tags:
+    - "windows-v2:2022"
+  before_script:
+    - |
+      if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+        $Rustup = Join-Path $env:TEMP "rustup-init.exe"
+        Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $Rustup -UseBasicParsing
+        & $Rustup -y --default-toolchain stable --profile default
+        $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+      }
+      rustup update stable
+      rustup default stable
+      rustup component add clippy rustfmt
+
+.rust-windows-protoc:
+  extends: .rust-windows
+  before_script:
+    - !reference [.rust-windows, before_script]
+    - |
+      $ProtocRoot = Join-Path $env:TEMP "protoc-28.0"
+      $ProtocZip = Join-Path $env:TEMP "protoc-28.0-win64.zip"
+      if (Test-Path $ProtocRoot) { Remove-Item -Recurse -Force $ProtocRoot }
+      Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v28.0/protoc-28.0-win64.zip" -OutFile $ProtocZip -UseBasicParsing
+      Expand-Archive -Path $ProtocZip -DestinationPath $ProtocRoot -Force
+      $env:PATH = "$ProtocRoot\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
+      protoc --version
+
+check-linux:
+  extends: .rust-linux-protoc
+  script:
+    - scripts/ci/gitlab-rust.sh check "$PLATFORM"
+
+check-windows:
+  extends: .rust-windows-protoc
+  script:
+    - ./scripts/ci/gitlab-rust.ps1 check
+
+fmt-linux:
+  extends: .rust-linux
+  script:
+    - scripts/ci/gitlab-rust.sh fmt "$PLATFORM"
+
+fmt-windows:
+  extends: .rust-windows
+  script:
+    - ./scripts/ci/gitlab-rust.ps1 fmt
+
+clippy-linux:
+  extends: .rust-linux-protoc
+  script:
+    - scripts/ci/gitlab-rust.sh clippy "$PLATFORM"
+
+clippy-windows:
+  extends: .rust-windows-protoc
+  script:
+    - ./scripts/ci/gitlab-rust.ps1 clippy
+
+build-linux:
+  extends: .rust-linux-protoc
+  script:
+    - scripts/ci/gitlab-rust.sh build "$PLATFORM"
+
+build-windows:
+  extends: .rust-windows-protoc
+  script:
+    - ./scripts/ci/gitlab-rust.ps1 build
+
+compat-release-linux:
+  extends: .rust-linux-protoc
+  script:
+    - scripts/ci/gitlab-rust.sh compat-release "$PLATFORM"
+
+compat-release-windows:
+  extends: .rust-windows-protoc
+  script:
+    - ./scripts/ci/gitlab-rust.ps1 compat-release
+
+test-linux:
+  extends: .rust-linux-protoc
+  before_script:
+    - !reference [.rust-linux-protoc, before_script]
+    - cargo install cargo-nextest --version 0.9 --locked
+  script:
+    - scripts/ci/gitlab-rust.sh test "$PLATFORM"
+
+test-windows:
+  extends: .rust-windows-protoc
+  before_script:
+    - !reference [.rust-windows-protoc, before_script]
+    - cargo install cargo-nextest --version 0.9 --locked
+  script:
+    - ./scripts/ci/gitlab-rust.ps1 test
+
+cargo-audit:
+  stage: check
+  image: registry.ddbuild.io/images/mirror/rust:latest
+  extends: .core-ci-rules
+  tags:
+    - "arch:amd64"
+  interruptible: true
+  script:
+    - cargo install cargo-audit --locked
+    - cargo audit
+
+license:
+  stage: check
+  image: registry.ddbuild.io/images/mirror/rust:latest
+  extends: .core-ci-rules
+  tags:
+    - "arch:amd64"
+  interruptible: true
+  script:
+    - cargo install dd-rust-license-tool
+    - dd-rust-license-tool check
