@@ -14,6 +14,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v -s scripts/tests/audit
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/audit-release-gate/network_smoke.py
 ```
 
+In CI, `.github/workflows/audit-release-gate-tests.yml` runs the offline suite on
+pull requests that touch the gate, its tests, or the publication workflows. Run it
+manually with `workflow_dispatch` and enable `network_smoke` to also run the smoke
+suite.
+
 | File | Coverage |
 |---|---|
 | `test_release_gate.py` | Identity, installation, verdicts, sentinel blocking, fresh state/retry, cleanup, pins and command bounds |
@@ -39,7 +44,7 @@ are not assertions. Retained logs are unchanged from the original captures.
 | `warning-only-success.log` | 0 | pass |
 | `vulnerable-failure.log` | 1 | reject |
 | `index-error-rc0.log` | 0 | reject |
-| `quiet-output-rc0.log` | 0 | reject |
+| `quiet-output-rc0.log` (empty) | 0 | reject |
 | `disabled-yanked-rc0.log` | 0 | reject |
 | `disabled-fetch-rc0.log` | 0 | reject |
 
