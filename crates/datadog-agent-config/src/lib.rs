@@ -9,7 +9,59 @@ pub use deserializers::{
 };
 pub use sources::{env, yaml};
 
-pub use datadog_opentelemetry::configuration::TracePropagationStyle;
+/// Trace context propagation style.
+///
+/// Defines how trace context is propagated across service boundaries.
+///
+/// Kept local instead of re-exporting `datadog-opentelemetry`'s type because
+/// this crate only needs parsing/display, and that dependency pulls an older
+/// duplicate `libdd-*` stack into the workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TracePropagationStyle {
+    /// Datadog proprietary propagation format using `x-datadog-*` headers.
+    Datadog,
+    /// W3C Trace Context propagation format using `traceparent` and `tracestate` headers.
+    TraceContext,
+    /// W3C Baggage propagation format using the `baggage` header.
+    Baggage,
+    /// B3 multi-header propagation format using `x-b3-*` headers.
+    B3Multi,
+    /// B3 single-header propagation format using the `b3` header.
+    B3SingleHeader,
+    /// No propagation — trace context is not propagated.
+    None,
+}
+
+impl std::str::FromStr for TracePropagationStyle {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "datadog" => Ok(Self::Datadog),
+            "tracecontext" => Ok(Self::TraceContext),
+            "baggage" => Ok(Self::Baggage),
+            "b3multi" => Ok(Self::B3Multi),
+            "b3" => Ok(Self::B3SingleHeader),
+            "none" => Ok(Self::None),
+            _ => Err(format!("Unknown trace propagation style: '{s}'")),
+        }
+    }
+}
+
+impl std::fmt::Display for TracePropagationStyle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let style = match self {
+            Self::Datadog => "datadog",
+            Self::TraceContext => "tracecontext",
+            Self::Baggage => "baggage",
+            Self::B3Multi => "b3multi",
+            Self::B3SingleHeader => "b3",
+            Self::None => "none",
+        };
+        f.write_str(style)
+    }
+}
+
 // Re-export all helper deserializers so consumers and internal modules can
 // use `crate::deserialize_optional_string` etc. without reaching into submodules.
 pub use deserializers::helpers::*;
