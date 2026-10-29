@@ -9,7 +9,7 @@ use std::env;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
-use datadog_agent_trace_sampler::{ErrorSamplerConfig, ErrorSamplerMode};
+use datadog_agent_trace_sampler::ErrorSamplerConfig;
 use libdd_trace_obfuscation::obfuscation_config;
 use libdd_trace_utils::config_utils::{
     read_cloud_env, trace_intake_url, trace_intake_url_prefixed, trace_stats_url,
@@ -19,30 +19,23 @@ use libdd_trace_utils::trace_utils;
 use tracing::warn;
 
 const DEFAULT_APM_RECEIVER_PORT: u16 = 8126;
-/// Default error rescue budget: error traces per second, matching the Go agent's `ErrorTPS`.
-const DEFAULT_ERROR_SAMPLER_TPS: f64 = 10.0;
 
-/// Parses the rate-limited error rescue budget from an optional raw TPS value.
+/// Parses the error rescue budget from an optional raw TPS value.
 ///
-/// `DD_APM_ERROR_TPS` sets the target error traces per second, default 10. Parsed
-/// as `f64`; non-finite or unparsable values warn and fall back to the default.
-/// A finite value <= 0 disables rescue.
-///
-/// The strategy is fixed to `RateLimited`, and `extra_sample_rate` is fixed at
-/// 1.0. Startup stays operational when the optional TPS setting is malformed.
+/// Starts from `ErrorSamplerConfig::default()` (the Go agent defaults) and
+/// overrides only `target_tps` with `DD_APM_ERROR_TPS`, parsed as `f64`.
+/// Non-finite or unparsable values warn and keep the default. A finite
+/// value <= 0 disables rescue.
 fn parse_error_sampler_config(raw: Option<&str>) -> ErrorSamplerConfig {
-    let mut config = ErrorSamplerConfig {
-        mode: ErrorSamplerMode::RateLimited,
-        target_tps: DEFAULT_ERROR_SAMPLER_TPS,
-        extra_sample_rate: 1.0,
-    };
+    let mut config = ErrorSamplerConfig::default();
 
     if let Some(raw) = raw {
         match raw.trim().parse::<f64>() {
             Ok(tps) if tps.is_finite() => config.target_tps = tps,
             _ => {
                 warn!(
-                    "Invalid DD_APM_ERROR_TPS {raw:?}; using default {DEFAULT_ERROR_SAMPLER_TPS}"
+                    "Invalid DD_APM_ERROR_TPS {raw:?}; using default {}",
+                    config.target_tps
                 );
             }
         }
