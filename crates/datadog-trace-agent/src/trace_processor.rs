@@ -146,7 +146,7 @@ impl TraceChunkProcessor for ChunkProcessor {
 const MAX_IN_FLIGHT_ENQUEUES: usize = 10;
 
 /// Error rescue sampler and its monotonic timestamp floor, shared under one mutex.
-pub struct ErrorRescueState {
+struct ErrorRescueState {
     sampler: ErrorsSampler,
     last_sampler_timestamp: i64,
 }
@@ -170,33 +170,23 @@ impl ErrorRescueState {
 pub struct ServerlessTraceProcessor {
     pub stats_concentrator: Option<StatsConcentratorHandle>,
     enqueue_permits: Arc<tokio::sync::Semaphore>,
-    /// Processor clones and independently constructed processors using this
-    /// `Arc` share one TPS budget and timestamp floor under the same lock.
+    /// Processor clones share one TPS budget and timestamp floor under the same lock.
     error_rescue_state: Arc<Mutex<ErrorRescueState>>,
 }
 
 impl ServerlessTraceProcessor {
     #[allow(clippy::must_use_candidate)]
-    pub fn new(
-        stats_concentrator: Option<StatsConcentratorHandle>,
-        error_rescue_state: Arc<Mutex<ErrorRescueState>>,
-    ) -> Self {
-        ServerlessTraceProcessor {
-            stats_concentrator,
-            enqueue_permits: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_ENQUEUES)),
-            error_rescue_state,
-        }
-    }
-
-    /// Builds the shared error rescue state from parsed config settings.
-    #[must_use]
-    pub fn new_error_rescue_state(config: &Config) -> Arc<Mutex<ErrorRescueState>> {
+    pub fn new(stats_concentrator: Option<StatsConcentratorHandle>, config: &Config) -> Self {
         if config.error_rare_sample_tracer_drop && config.error_sampler.target_tps <= 0.0 {
             warn!(
                 "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue"
             );
         }
-        Arc::new(Mutex::new(ErrorRescueState::new(config.error_sampler)))
+        ServerlessTraceProcessor {
+            stats_concentrator,
+            enqueue_permits: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_ENQUEUES)),
+            error_rescue_state: Arc::new(Mutex::new(ErrorRescueState::new(config.error_sampler))),
+        }
     }
 
     /// Locks the shared sampler and timestamp floor, recovering from a poisoned
@@ -561,8 +551,8 @@ mod tests {
         config::{Config, Tags},
         peer_tags::peer_tag_keys,
         trace_processor::{
-            self, ErrorRescueState, MAX_IN_FLIGHT_ENQUEUES, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY,
-            TraceProcessor, encoded_size, split_oversized_payloads,
+            self, MAX_IN_FLIGHT_ENQUEUES, TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY, TraceProcessor,
+            encoded_size, split_oversized_payloads,
         },
     };
     use datadog_agent_trace_sampler::{ErrorSamplerConfig, ErrorSamplerMode};
@@ -633,10 +623,6 @@ mod tests {
             error_sampler: ErrorSamplerConfig::default(),
             error_rare_sample_tracer_drop: false,
         }
-    }
-
-    fn default_error_sampler() -> Arc<std::sync::Mutex<ErrorRescueState>> {
-        sampler_for(&ErrorSamplerConfig::default())
     }
 
     fn create_test_metadata() -> MiniAgentMetadata {
@@ -755,7 +741,7 @@ mod tests {
             .unwrap();
 
         let trace_processor =
-            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
+            trace_processor::ServerlessTraceProcessor::new(None, &create_test_config());
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -829,7 +815,7 @@ mod tests {
             .unwrap();
 
         let trace_processor =
-            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
+            trace_processor::ServerlessTraceProcessor::new(None, &create_test_config());
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -916,7 +902,7 @@ mod tests {
             .unwrap();
 
         let trace_processor =
-            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
+            trace_processor::ServerlessTraceProcessor::new(None, &create_test_config());
         let res = trace_processor
             .process_traces(
                 Arc::new(create_test_config()),
@@ -975,7 +961,7 @@ mod tests {
         ) = mpsc::channel(1);
 
         let trace_processor =
-            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
+            trace_processor::ServerlessTraceProcessor::new(None, &create_test_config());
         let config = Arc::new(Config {
             enqueue_permit_timeout_secs: 0,
             ..create_test_config()
@@ -1044,7 +1030,7 @@ mod tests {
         ) = mpsc::channel(MAX_IN_FLIGHT_ENQUEUES + 1);
 
         let trace_processor =
-            trace_processor::ServerlessTraceProcessor::new(None, default_error_sampler());
+            trace_processor::ServerlessTraceProcessor::new(None, &create_test_config());
         // Uses the default (non-zero) enqueue_permit_timeout_secs, so the 11th request's permit
         // acquire has real time to succeed once an earlier request's send completes and
         // releases its permit, rather than racing a 0-second timeout against task scheduling.
@@ -1140,20 +1126,13 @@ mod tests {
         }
     }
 
-    fn sampler_for(config: &ErrorSamplerConfig) -> Arc<std::sync::Mutex<ErrorRescueState>> {
-        Arc::new(std::sync::Mutex::new(ErrorRescueState::new(*config)))
-    }
-
     /// Builds the standard rescue test fixture: a config with the given
     /// sampler settings and a processor whose shared sampler uses them.
     fn rescue_setup(
         sampler_config: ErrorSamplerConfig,
     ) -> (Config, trace_processor::ServerlessTraceProcessor) {
         let config = rescue_config(sampler_config);
-        let processor = trace_processor::ServerlessTraceProcessor::new(
-            None,
-            sampler_for(&config.error_sampler),
-        );
+        let processor = trace_processor::ServerlessTraceProcessor::new(None, &config);
         (config, processor)
     }
 
@@ -1341,7 +1320,7 @@ mod tests {
         let warning = "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue";
         let mut config = rescue_config(rate_limited_sampler_config(0.0));
         config.error_rare_sample_tracer_drop = true;
-        let _state = trace_processor::ServerlessTraceProcessor::new_error_rescue_state(&config);
+        let _processor = trace_processor::ServerlessTraceProcessor::new(None, &config);
         logs_assert(|lines| {
             let count = lines.iter().filter(|line| line.contains(warning)).count();
             if count == 1 {
@@ -1473,7 +1452,7 @@ mod tests {
         let (stats_tx, mut stats_rx) = tokio::sync::mpsc::unbounded_channel();
         let processor = trace_processor::ServerlessTraceProcessor::new(
             Some(super::StatsConcentratorHandle::new(stats_tx)),
-            sampler_for(&config.error_sampler),
+            &config,
         );
         let (tx, mut rx) = mpsc::channel(1);
         let res = processor
@@ -1685,7 +1664,7 @@ mod tests {
         let (stats_tx, mut stats_rx) = tokio::sync::mpsc::unbounded_channel();
         let processor = trace_processor::ServerlessTraceProcessor::new(
             Some(super::StatsConcentratorHandle::new(stats_tx)),
-            sampler_for(&config.error_sampler),
+            &config,
         );
         for (priority, dm, rescued) in [(0, None, true), (-1, Some("-4"), false)] {
             let (tx, mut rx) = mpsc::channel(1);
