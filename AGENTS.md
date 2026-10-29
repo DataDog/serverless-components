@@ -66,8 +66,7 @@ checks something that no other test checks.
 
 ## Reviewing a pull request
 
-- Read the code before the PR description. Then check that the description agrees with the
-  code.
+- Check that the PR description agrees with the code.
 - Report the number of core lines and the number of test lines. If the PR is larger than the
   size in [Pull requests](#pull-requests), suggest how to split it.
 - Look for duplicates outside the diff, such as a helper that the repository already has or a
