@@ -355,15 +355,15 @@ fn span_view(span: &pb::Span) -> SpanView<'_> {
 }
 
 /// Returns the root index of an eligible errored chunk, otherwise `None`.
-/// P0 and missing-priority (-128) chunks qualify by default. The feature adds
-/// other negative priorities except manual drops (priority -1 with chunk DM -4).
+/// P0 chunks qualify by default. The feature adds other negative priorities
+/// except no-priority (-128) and manual drops (priority -1 with chunk DM -4).
 /// Only chunk tags determine DM; any span with `error != 0` supplies the error.
 /// Root selection delegates to `get_root_span_index`; empty chunks yield `None`.
 fn rescue_root_index(chunk: &pb::TraceChunk, tracer_drop_enabled: bool) -> Option<usize> {
     let eligible = chunk.priority == 0
-        || chunk.priority == i32::from(i8::MIN)
         || (tracer_drop_enabled
             && chunk.priority < 0
+            && chunk.priority != i32::from(i8::MIN)
             && !(chunk.priority == -1
                 && chunk.tags.get(DECISION_MAKER_KEY).map(String::as_str)
                     == Some(MANUAL_DECISION_MAKER)));
@@ -1283,8 +1283,8 @@ mod tests {
         for (priority, dm, expected) in [
             (0, None, [true, true]),
             (0, Some("-4"), [true, true]),
-            (-128, None, [true, true]),
-            (-128, Some("-4"), [true, true]),
+            (-128, None, [false, false]),
+            (-128, Some("-4"), [false, false]),
             (-1, None, [false, true]),
             (-1, Some(""), [false, true]),
             (-1, Some("-4"), [false, false]),
@@ -1621,9 +1621,9 @@ mod tests {
         let processor_clone = processor.clone();
 
         // Ten errored chunks with the same signature but distinct IDs: five
-        // through the original, five through the clone. Mix P0, explicit drops,
-        // and no-priority chunks. All must draw from the same budget, matching
-        // a standalone sampler fed the same sequence.
+        // through the original, five through the clone. Mix P0 and explicit
+        // drops. All must draw from the same budget, matching a standalone
+        // sampler fed the same sequence.
         let ids: Vec<u64> = (0..10_u64).map(|i| 0x33_0000 + i).collect();
         let mut observed = Vec::new();
         let mut standalone = ErrorsSampler::new(sampler_config);
@@ -1642,7 +1642,7 @@ mod tests {
                 RESCUE_NOW,
             );
             assert_eq!(rescued_count(&excluded), 0);
-            let priority = [0, -1, i32::from(i8::MIN)][i % 3];
+            let priority = if i % 2 == 0 { 0 } else { -1 };
             let chunks = run_rescue(
                 target,
                 &config,
