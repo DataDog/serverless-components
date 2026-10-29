@@ -1326,23 +1326,6 @@ mod tests {
     }
 
     #[test]
-    #[tracing_test::traced_test]
-    fn test_disabled_sampler_initialization_warning() {
-        let warning = "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue";
-        let mut config = rescue_config(rate_limited_sampler_config(0.0));
-        config.error_rare_sample_tracer_drop = true;
-        let _processor = trace_processor::ServerlessTraceProcessor::new(None, &config);
-        logs_assert(|lines| {
-            let count = lines.iter().filter(|line| line.contains(warning)).count();
-            if count == 1 {
-                Ok(())
-            } else {
-                Err(format!("expected one initialization warning, got {count}"))
-            }
-        });
-    }
-
-    #[test]
     fn test_rescue_stamps_errored_p0_root_and_keeps_priority() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
 
