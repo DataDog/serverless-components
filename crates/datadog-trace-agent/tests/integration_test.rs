@@ -1454,9 +1454,9 @@ async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
             .find(|s| s.parent_id == 0)
             .and_then(|root| root.metrics.get("_dd.errors_sr").copied());
         let rescued = match name {
-            "rescued_error_p0" | "no_priority" => true,
+            "rescued_error_p0" => true,
             "negative_nonmanual" | "other_negative_manual_dm" => feature,
-            "healthy_p0" | "manual_child" | "priority_1" => false,
+            "healthy_p0" | "manual_child" | "no_priority" | "priority_1" => false,
             _ => panic!("missing expected rescue outcome for {name}"),
         };
         assert_eq!(
