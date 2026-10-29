@@ -6,8 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::config::Config;
-use crate::trace_processor::resolve_payload_env;
+use crate::config::{Config, resolve_payload_env};
 use libdd_library_config::tracer_metadata::TracerMetadata;
 use libdd_trace_protobuf::pb::{ClientStatsPayload, TraceChunk};
 use libdd_trace_stats::span_concentrator::{CardinalityLimitConfig, SpanConcentrator};

@@ -53,6 +53,18 @@ fn error_rare_sample_tracer_drop_enabled(raw: &str) -> bool {
         .any(|entry| entry == "error_rare_sample_tracer_drop")
 }
 
+/// Chooses the env used to key per-signature state: the payload-reported env
+/// when nonempty, otherwise the agent's configured env. Shared by stats
+/// flushing and error-rescue sampling so the fallback rule can't drift
+/// between the two.
+pub(crate) fn resolve_payload_env<'a>(payload_env: &'a str, config_env: &'a str) -> &'a str {
+    if payload_env.is_empty() {
+        config_env
+    } else {
+        payload_env
+    }
+}
+
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 const DSM_PIPELINE_STATS_ROUTE: &str = "/api/v0.1/pipeline_stats";
 
@@ -1034,6 +1046,25 @@ mod tests {
             assert_eq!(error_sampler.mode, ErrorSamplerMode::RateLimited);
             assert_eq!(error_sampler.extra_sample_rate, 1.0);
         }
+    }
+
+    #[test]
+    fn test_resolve_payload_env_prefers_payload_env() {
+        assert_eq!(
+            super::resolve_payload_env("tracer-env", "agent-env"),
+            "tracer-env",
+            "nonempty payload env wins"
+        );
+        assert_eq!(
+            super::resolve_payload_env("", "agent-env"),
+            "agent-env",
+            "empty payload env falls back to the agent config env"
+        );
+        assert_eq!(
+            super::resolve_payload_env("", ""),
+            "",
+            "both empty stays empty"
+        );
     }
 }
 

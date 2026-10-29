@@ -25,7 +25,7 @@ use prost::Message;
 
 use crate::{
     aggregator::MAX_CONTENT_SIZE_BYTES,
-    config::Config,
+    config::{Config, resolve_payload_env},
     http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
     stats_concentrator_service::StatsConcentratorHandle,
 };
@@ -339,18 +339,6 @@ impl ServerlessTraceProcessor {
             };
             error!("Unsupported tracer payload version {version}. Failed to send trace stats.");
         }
-    }
-}
-
-/// Chooses the env used to key per-signature state: the payload-reported env
-/// when nonempty, otherwise the agent's configured env. Shared by stats
-/// flushing and error-rescue sampling so the fallback rule can't drift
-/// between the two.
-pub(crate) fn resolve_payload_env<'a>(payload_env: &'a str, config_env: &'a str) -> &'a str {
-    if payload_env.is_empty() {
-        config_env
-    } else {
-        payload_env
     }
 }
 
@@ -1658,25 +1646,6 @@ mod tests {
             panic!("rescue must preserve the payload format");
         };
         assert_eq!(payloads, vec![original]);
-    }
-
-    #[test]
-    fn test_resolve_payload_env_prefers_payload_env() {
-        assert_eq!(
-            super::resolve_payload_env("tracer-env", "agent-env"),
-            "tracer-env",
-            "nonempty payload env wins"
-        );
-        assert_eq!(
-            super::resolve_payload_env("", "agent-env"),
-            "agent-env",
-            "empty payload env falls back to the agent config env"
-        );
-        assert_eq!(
-            super::resolve_payload_env("", ""),
-            "",
-            "both empty stays empty"
-        );
     }
 
     #[tokio::test]
