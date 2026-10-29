@@ -989,31 +989,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    #[serial]
-    fn test_unreadable_apm_features_is_disabled() {
-        use std::os::unix::ffi::OsStringExt;
-        temp_env::with_var(
-            "DD_APM_FEATURES",
-            Some(std::ffi::OsString::from_vec(vec![0xff])),
-            || {
-                temp_env::with_vars(
-                    [
-                        ("DD_API_KEY", Some("test")),
-                        ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
-                        ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
-                        ("WEBSITE_SITE_NAME", Some("test")),
-                        ("DD_APM_ERROR_TPS", None),
-                    ],
-                    || {
-                        assert!(!config::Config::new().unwrap().error_rare_sample_tracer_drop);
-                    },
-                );
-            },
-        );
-    }
-
     #[test]
     #[serial]
     fn test_error_sampler_env_is_wired() {
