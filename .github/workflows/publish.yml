@@ -39,6 +39,7 @@ jobs:
           ref: ${{ github.sha }}
           sparse-checkout: npm
           sparse-checkout-cone-mode: false
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # 4.3.0
         with:
           name: linux-amd64
@@ -116,6 +117,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: source
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # 4.3.0
         with:
           name: npm-packages
