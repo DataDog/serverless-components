@@ -1,0 +1,62 @@
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 1380 security advisories (from /tmp/cargo-release-preflight-vrpsnQ/rustsec-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (2 crate dependencies)
+Crate:     openssl
+Version:   0.10.38
+Title:     `openssl` `X509VerifyParamRef::set_host` buffer over-read
+Date:      2023-06-20
+ID:        RUSTSEC-2023-0044
+URL:       https://rustsec.org/advisories/RUSTSEC-2023-0044
+Solution:  Upgrade to >=0.10.55
+
+Crate:     openssl
+Version:   0.10.38
+Title:     `openssl` `X509Extension::new` and `X509Extension::new_nid` null pointer dereference
+Date:      2023-03-24
+ID:        RUSTSEC-2023-0024
+URL:       https://rustsec.org/advisories/RUSTSEC-2023-0024
+Solution:  Upgrade to >=0.10.48
+
+Crate:     openssl
+Version:   0.10.38
+Title:     ssl::select_next_proto use after free
+Date:      2025-02-02
+ID:        RUSTSEC-2025-0004
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0004
+Solution:  Upgrade to >=0.10.70
+
+Crate:     openssl
+Version:   0.10.38
+Title:     `openssl` `SubjectAlternativeName` and `ExtendedKeyUsage::other` allow arbitrary file read
+Date:      2023-03-24
+ID:        RUSTSEC-2023-0023
+URL:       https://rustsec.org/advisories/RUSTSEC-2023-0023
+Solution:  Upgrade to >=0.10.48
+
+Crate:     openssl
+Version:   0.10.38
+Title:     `openssl` `X509NameBuilder::build` returned object is not thread safe
+Date:      2023-03-24
+ID:        RUSTSEC-2023-0022
+URL:       https://rustsec.org/advisories/RUSTSEC-2023-0022
+Solution:  Upgrade to >=0.10.48
+
+Crate:     openssl
+Version:   0.10.38
+Title:     `MemBio::get_buf` has undefined behavior with empty buffers
+Date:      2024-07-21
+ID:        RUSTSEC-2024-0357
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0357
+Solution:  Upgrade to >=0.10.66
+
+Crate:     openssl
+Version:   0.10.38
+Warning:   unsound
+Title:     `openssl` `X509StoreRef::objects` is unsound
+Date:      2023-11-23
+ID:        RUSTSEC-2023-0072
+URL:       https://rustsec.org/advisories/RUSTSEC-2023-0072
+
+error: 6 vulnerabilities found!
+warning: 1 allowed warning found

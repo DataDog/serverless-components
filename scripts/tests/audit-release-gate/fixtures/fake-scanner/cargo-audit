@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# Replay double for the pinned cargo-audit binary, used only by
+# test_release_gate.py and never by production. Fixture-only variables:
+#   FAKE_VERSION    line printed for `audit --version`
+#   FAKE_RECORD     file that receives one record block per scan
+#   FAKE_LOG        captured scanner log to replay
+#   FAKE_RC         exit status to return after replaying (default 0)
+#   FAKE_NO_DB      when set, create no advisory database (fetch failure)
+#   FAKE_ORIGIN     origin URL of the created advisory database
+#   FAKE_SCAN_PATH  lockfile path shown on the Scanning line instead of --file
+set -euo pipefail
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+
+if [ "$*" = "audit --version" ]; then
+  printf '%s\n' "${FAKE_VERSION:-cargo-audit-audit 0.22.2}"
+  exit 0
+fi
+
+db="" lockfile="" previous=""
+for arg in "$@"; do
+  case "$previous" in
+    --db) db="$arg" ;;
+    --file) lockfile="$arg" ;;
+  esac
+  previous="$arg"
+done
+
+# Record the state this scan inherited, before the database is created.
+home="${CARGO_HOME:-}"
+{
+  printf -- '---\ndb=%s\nhome=%s\n' "$db" "$home"
+  if [ -e "$db" ]; then echo db_existed=yes; else echo db_existed=no; fi
+  if [ -d "$home" ] && [ -z "$(ls -A -- "$home")" ]; then echo home_empty=yes; else echo home_empty=no; fi
+  printf 'arg=%s\n' "$@"
+} >>"$FAKE_RECORD"
+
+if [ -z "${FAKE_NO_DB:-}" ]; then
+  git init --quiet "$db"
+  git -C "$db" remote add origin "${FAKE_ORIGIN:-https://github.com/RustSec/advisory-db.git}"
+  git -C "$db" -c user.name=fixture -c user.email=fixture@example.invalid \
+    commit --quiet --allow-empty -m 'fixture advisory database'
+fi
+
+scan_path="${FAKE_SCAN_PATH:-$lockfile}"
+while IFS= read -r line || [ -n "$line" ]; do
+  printf '%s\n' "${line/Scanning Cargo.lock for/"Scanning $scan_path for"}"
+done <"$FAKE_LOG"
+exit "${FAKE_RC:-0}"

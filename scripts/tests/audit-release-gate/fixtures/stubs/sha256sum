@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# sha256sum double for test_release_gate.py: reports FAKE_ARCHIVE_SHA256 for the
+# downloaded */cargo-audit.tgz only and delegates every other call (lockfile,
+# policy, and stdin hashing) to the real binary at REAL_SHA256SUM.
+set -euo pipefail
+if [ "$#" -eq 1 ] && [[ "$1" == */cargo-audit.tgz ]]; then
+  printf '%s  %s\n' "$FAKE_ARCHIVE_SHA256" "$1"
+  exit 0
+fi
+exec "$REAL_SHA256SUM" "$@"

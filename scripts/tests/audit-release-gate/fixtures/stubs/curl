@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# curl double for test_release_gate.py: records argv (one arg per line), then
+# copies FAKE_ARCHIVE to the --output path. FAKE_CURL_FAIL simulates a failure.
+set -euo pipefail
+{ printf -- '---\n'; printf 'arg=%s\n' "$@"; } >>"$FAKE_CURL_RECORD"
+[ -z "${FAKE_CURL_FAIL:-}" ] || { echo 'curl: (22) fixture download failure' >&2; exit 22; }
+output="" previous=""
+for arg in "$@"; do
+  [ "$previous" != --output ] || output="$arg"
+  previous="$arg"
+done
+[ -n "$output" ] || { echo 'curl stub: missing --output' >&2; exit 2; }
+cp -- "$FAKE_ARCHIVE" "$output"

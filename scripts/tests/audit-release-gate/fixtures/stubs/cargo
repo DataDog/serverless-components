@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# cargo double for test_release_gate.py: answers `cargo -V`, or simulates a
+# missing toolchain when FAKE_CARGO_FAIL is set.
+if [ -n "${FAKE_CARGO_FAIL:-}" ]; then
+  echo 'error: fixture cargo is unavailable' >&2
+  exit 1
+fi
+echo 'cargo 1.99.0 (fixture)'
