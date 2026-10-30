@@ -15,12 +15,11 @@ rescue strategies are available, selected by `ErrorSamplerMode`:
   `ScoreSampler` (`ScoreSampler` targeting `ErrorTPS`, from `pkg/trace/sampler/`
   in `DataDog/datadog-agent`): keep up to `target_tps` error traces per second,
   distributed fairly across distinct trace signatures. Suits continuous
-  processes that can hit error storms (the Serverless Compatibility Layer's
-  default).
+  processes that can hit error storms (the Serverless Compatibility Layer uses
+  this strategy).
 
-Per-platform defaults are chosen by each consumer's config layer (e.g. via a
-`DD_APM_ERROR_SAMPLER_MODE` env var), not this crate — it has no notion of
-which platform it runs on.
+Each consumer chooses its strategy through its configuration or integration
+layer, not this crate, which has no notion of which platform it runs on.
 
 ## Why dependency-free
 
