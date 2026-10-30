@@ -2080,9 +2080,13 @@ dependencies = [
 name = "metadata"
 version = "0.1.0"
 dependencies = [
+ "httpmock",
  "libdd-common",
  "libdd-trace-utils",
+ "reqwest",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
