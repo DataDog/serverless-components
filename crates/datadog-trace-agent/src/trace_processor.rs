@@ -11,7 +11,7 @@ use libdd_library_config::tracer_metadata::TracerMetadata;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, warn};
 
-use libdd_trace_obfuscation::obfuscate::obfuscate_span;
+use libdd_trace_obfuscation::obfuscate::obfuscate_pb_span;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils::{self};
 use libdd_trace_utils::trace_utils::{EnvironmentType, SendData};
@@ -112,7 +112,7 @@ impl TraceChunkProcessor for ChunkProcessor {
                     app_name.clone(),
                 );
             }
-            obfuscate_span(span, &self.config.obfuscation_config);
+            obfuscate_pb_span(span, &self.config.obfuscation_config);
         }
     }
 }
@@ -160,6 +160,7 @@ impl ServerlessTraceProcessor {
                     service_version: Some(tracer_payload.app_version.clone()),
                     process_tags: None,
                     container_id: Some(tracer_payload.container_id.clone()),
+                    threadlocal_metadata: None,
                 });
                 for chunk in &tracer_payload.chunks {
                     if let Err(e) = concentrator.add_chunk(chunk.clone(), Arc::clone(&metadata)) {
@@ -410,7 +411,7 @@ mod tests {
             dd_dogstatsd_windows_pipe_name: None,
             env_type: trace_utils::EnvironmentType::CloudFunction,
             os: "linux".to_string(),
-            obfuscation_config: ObfuscationConfig::new().unwrap(),
+            obfuscation_config: ObfuscationConfig::new_from_env().unwrap(),
             proxy_url: None,
             profiling_intake: Endpoint {
                 url: hyper::Uri::from_static("https://proxy.agent.notdog.com/proxy"),

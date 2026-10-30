@@ -218,11 +218,12 @@ impl Config {
             profiling_intake_url = format!("{endpoint_prefix}/api/v2/profile");
         };
 
-        let obfuscation_config = obfuscation_config::ObfuscationConfig::new().map_err(|err| {
-            anyhow::anyhow!(
-                "Error creating obfuscation config, Mini Agent will not start. Error: {err}",
-            )
-        })?;
+        let obfuscation_config =
+            obfuscation_config::ObfuscationConfig::new_from_env().map_err(|err| {
+                anyhow::anyhow!(
+                    "Error creating obfuscation config, Mini Agent will not start. Error: {err}",
+                )
+            })?;
 
         let tags = if let Ok(env_tags) = env::var("DD_TAGS") {
             Tags::from_env_string(&env_tags)
@@ -935,7 +936,7 @@ pub mod test_helpers {
             env_type: trace_utils::EnvironmentType::AzureFunction,
             app_name: Some("test-app".to_string()),
             max_request_content_length: 10_000_000,
-            obfuscation_config: obfuscation_config::ObfuscationConfig::new().unwrap(),
+            obfuscation_config: obfuscation_config::ObfuscationConfig::new_from_env().unwrap(),
             os: std::env::consts::OS.to_string(),
             tags: Tags::new(),
             stats_flush_interval_secs: 10,

@@ -24,7 +24,7 @@ socket2 = { version = "0.6", default-features = false }
 tokio-util = { version = "0.7.11", default-features = false }
 tracing = { version = "0.1.40", default-features = false }
 regex = { version = "1.10.6", default-features = false }
-zstd = { version = "0.13.3", default-features = false }
+zstd = { version = "0.14.3", default-features = false }
 
 [dev-dependencies]
 http = "1"
