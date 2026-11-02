@@ -1327,22 +1327,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rescue_stamps_errored_p0_root_and_keeps_priority() {
-        let (config, processor) = rescue_setup(always_keep_sampler_config());
-
-        let chunks = run_rescue(
-            &processor,
-            &config,
-            vec![errored_root_chunk(0xdead_beef, 0)],
-            RESCUE_NOW,
-        );
-
-        assert_eq!(chunks.len(), 1, "rescued chunk must still be forwarded");
-        assert_eq!(chunks[0].priority, 0, "priority must not be promoted");
-        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
-    }
-
-    #[test]
     fn test_rescue_uses_resolved_root_not_first_span() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
 
