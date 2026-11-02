@@ -11,9 +11,8 @@ use http_body_util::BodyExt;
 use hyper::{StatusCode, http};
 use libdd_common::http_common;
 use libdd_library_config::tracer_metadata::TracerMetadata;
-use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{Mutex, mpsc::Sender};
 use tracing::{debug, error, warn};
 
 use libdd_trace_obfuscation::obfuscate::obfuscate_pb_span;
@@ -193,26 +192,19 @@ impl ServerlessTraceProcessor {
         }
     }
 
-    /// Locks the shared sampler and timestamp floor, recovering from a poisoned
-    /// guard (a panic in another thread while holding the lock).
-    fn lock_sampler(&self) -> MutexGuard<'_, ErrorRescueState> {
-        self.error_rescue_state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Samples V07 chunks selected by [`rescue_root_index`] and stamps
     /// `_dd.errors_sr` on kept roots. Priorities and chunk order are unchanged;
     /// every chunk is forwarded, with retention decided by the backend.
-    fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
+    async fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
         self.apply_error_rescue_with_clock(payload, config, || {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64)
-        });
+        })
+        .await;
     }
 
-    fn apply_error_rescue_with_clock<F: FnOnce() -> i64>(
+    async fn apply_error_rescue_with_clock<F: FnOnce() -> i64>(
         &self,
         payload: &mut TracerPayloadCollection,
         config: &Config,
@@ -248,7 +240,7 @@ impl ServerlessTraceProcessor {
         }
 
         let kept: Vec<(usize, usize, usize, f64)> = {
-            let mut state = self.lock_sampler();
+            let mut state = self.error_rescue_state.lock().await;
             // Read once under the lock, and clamp backward wall-clock steps so
             // the sampler's rolling window cannot move backwards.
             let now_unix_secs = state.clamp_timestamp(read_clock());
@@ -289,13 +281,14 @@ impl ServerlessTraceProcessor {
     /// Test-only variant that injects a synthetic clock reading through the
     /// production clamp path, exercising the rolling window without sleeping.
     #[cfg(test)]
-    fn apply_error_rescue_at(
+    async fn apply_error_rescue_at(
         &self,
         payload: &mut TracerPayloadCollection,
         config: &Config,
         now_unix_secs: i64,
     ) {
-        self.apply_error_rescue_with_clock(payload, config, || now_unix_secs);
+        self.apply_error_rescue_with_clock(payload, config, || now_unix_secs)
+            .await;
     }
 
     fn send_to_concentrator(
@@ -490,7 +483,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
         // conditional stats submission so the concentrator observes chunks before
         // rescue stamping, and before payload splitting so the inserted metric is
         // included in the recomputed outbound size.
-        self.apply_error_rescue(&mut payload, &config);
+        self.apply_error_rescue(&mut payload, &config).await;
 
         let pieces: Vec<(TracerPayloadCollection, usize)> = match payload {
             TracerPayloadCollection::V07(payloads) => {
@@ -1151,7 +1144,7 @@ mod tests {
         (config, processor)
     }
 
-    fn run_rescue(
+    async fn run_rescue(
         processor: &trace_processor::ServerlessTraceProcessor,
         config: &Config,
         chunks: Vec<pb::TraceChunk>,
@@ -1161,7 +1154,9 @@ mod tests {
             chunks,
             ..Default::default()
         }]);
-        processor.apply_error_rescue_at(&mut payload, config, now_unix_secs);
+        processor
+            .apply_error_rescue_at(&mut payload, config, now_unix_secs)
+            .await;
         match payload {
             TracerPayloadCollection::V07(mut payloads) => payloads.remove(0).chunks,
             _ => unreachable!(),
@@ -1302,8 +1297,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_rescue_preserves_chunks_except_root_metric() {
+    #[tokio::test]
+    async fn test_rescue_preserves_chunks_except_root_metric() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
         let mut chunk = test_chunk(vec![test_span(1, 2, 0, 0), test_span(1, 3, 2, 1)], 0);
         chunk.spans[0].metrics.extend([
@@ -1319,7 +1314,7 @@ mod tests {
         chunk.tags.insert("origin".into(), "synthetics".into());
         let healthy = test_chunk(vec![test_span(2, 4, 0, 0)], 0);
         let original = vec![chunk, healthy];
-        let mut chunks = run_rescue(&processor, &config, original.clone(), RESCUE_NOW);
+        let mut chunks = run_rescue(&processor, &config, original.clone(), RESCUE_NOW).await;
         assert_eq!(chunks.len(), 2, "every chunk must still be forwarded");
         assert_eq!(errors_sr(&chunks[0].spans[0]), Some(1.0));
         assert_eq!(errors_sr(&chunks[0].spans[1]), None);
@@ -1329,8 +1324,8 @@ mod tests {
         assert_eq!(chunks, original);
     }
 
-    #[test]
-    fn test_rescue_uses_resolved_root_not_first_span() {
+    #[tokio::test]
+    async fn test_rescue_uses_resolved_root_not_first_span() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         // Root (parent_id 0) appears last; the first span is a child.
@@ -1339,7 +1334,7 @@ mod tests {
             test_span(0xbeef, 0x202, 0x203, 1),
             test_span(0xbeef, 0x203, 0, 0),
         ];
-        let chunks = run_rescue(&processor, &config, vec![test_chunk(spans, 0)], RESCUE_NOW);
+        let chunks = run_rescue(&processor, &config, vec![test_chunk(spans, 0)], RESCUE_NOW).await;
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(
@@ -1351,8 +1346,8 @@ mod tests {
         assert_eq!(errors_sr(&chunks[0].spans[1]), None);
     }
 
-    #[test]
-    fn test_no_error_flags_leaves_chunk_unchanged_and_spends_no_budget() {
+    #[tokio::test]
+    async fn test_no_error_flags_leaves_chunk_unchanged_and_spends_no_budget() {
         // With RateLimited, counting is global across signatures via
         // `all_sigs_seen`, so if the healthy chunks below were wrongly fed to
         // the sampler, the final errored chunk's rate would drop below 1.0 and
@@ -1370,7 +1365,7 @@ mod tests {
             .collect();
         chunks.push(errored_root_chunk(0xb000, 0));
 
-        let chunks = run_rescue(&processor, &config, chunks, RESCUE_NOW);
+        let chunks = run_rescue(&processor, &config, chunks, RESCUE_NOW).await;
 
         for (i, chunk) in chunks.iter().enumerate() {
             let is_last = i == chunks.len() - 1;
@@ -1382,8 +1377,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_empty_chunk_and_fallback_root() {
+    #[tokio::test]
+    async fn test_empty_chunk_and_fallback_root() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
 
         // Eligible empty chunks return at the no-error guard before root resolution.
@@ -1400,7 +1395,8 @@ mod tests {
             &config,
             vec![test_chunk(vec![], 0), cyclic],
             RESCUE_NOW,
-        );
+        )
+        .await;
 
         assert_eq!(chunks.len(), 2);
         assert!(chunks[0].spans.is_empty(), "empty chunk unchanged");
@@ -1453,8 +1449,8 @@ mod tests {
         assert_eq!(errors_sr(&payloads[0].chunks[0].spans[0]), Some(1.0));
     }
 
-    #[test]
-    fn test_disabled_tps_skips_rescue() {
+    #[tokio::test]
+    async fn test_disabled_tps_skips_rescue() {
         for tps in [0.0_f64, -3.0] {
             let (mut config, processor) = rescue_setup(rate_limited_sampler_config(tps));
             config.error_rare_sample_tracer_drop = true;
@@ -1467,11 +1463,20 @@ mod tests {
                 ..Default::default()
             };
             let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
-            processor.apply_error_rescue_with_clock(&mut payload, &config, || {
-                panic!("disabled sampler must not read the clock");
-            });
+            processor
+                .apply_error_rescue_with_clock(&mut payload, &config, || {
+                    panic!("disabled sampler must not read the clock");
+                })
+                .await;
 
-            assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
+            assert_eq!(
+                processor
+                    .error_rescue_state
+                    .lock()
+                    .await
+                    .last_sampler_timestamp,
+                i64::MIN
+            );
             let TracerPayloadCollection::V07(payloads) = payload else {
                 panic!("disabled rescue must preserve the payload format");
             };
@@ -1479,8 +1484,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_client_sample_rate_affects_error_rescue() {
+    #[tokio::test]
+    async fn test_client_sample_rate_affects_error_rescue() {
         let mut rescued_by_rate = Vec::new();
         for sample_rate in [None, Some(0.25_f64)] {
             let (config, processor) = rescue_setup(rate_limited_sampler_config(10.0));
@@ -1497,7 +1502,7 @@ mod tests {
                     chunk
                 })
                 .collect();
-            let chunks = run_rescue(&processor, &config, input, RESCUE_NOW);
+            let chunks = run_rescue(&processor, &config, input, RESCUE_NOW).await;
 
             assert_eq!(chunks.len(), 100, "every chunk is still forwarded");
             assert!(
@@ -1513,8 +1518,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_processor_clones_share_one_budget() {
+    #[tokio::test]
+    async fn test_processor_clones_share_one_budget() {
         let (mut config, processor) = rescue_setup(rate_limited_sampler_config(1.0));
         config.error_rare_sample_tracer_drop = true;
         let processor_clone = processor.clone();
@@ -1537,7 +1542,8 @@ mod tests {
                 &config,
                 vec![manual, healthy, errored_root_chunk(id, 1)],
                 RESCUE_NOW,
-            );
+            )
+            .await;
             assert_eq!(rescued_count(&excluded), 0);
             let priority = if i % 2 == 0 { 0 } else { -1 };
             let chunks = run_rescue(
@@ -1545,7 +1551,8 @@ mod tests {
                 &config,
                 vec![errored_root_chunk(id, priority)],
                 RESCUE_NOW,
-            );
+            )
+            .await;
             observed.push(errors_sr(root(&chunks[0])).is_some());
         }
         assert_eq!(
@@ -1556,11 +1563,54 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_error_rescue_clamps_backward_timestamps_across_clones() {
+    #[tokio::test]
+    async fn test_error_rescue_yields_while_sampler_is_locked() {
+        use std::{
+            future::{Future, poll_fn},
+            task::Poll,
+        };
+
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
+        let guard = processor.error_rescue_state.lock().await;
+        let mut rescue = std::pin::pin!(run_rescue(
+            &processor,
+            &config,
+            vec![errored_root_chunk(0x10000, 0)],
+            RESCUE_NOW,
+        ));
+
+        poll_fn(|cx| {
+            assert!(rescue.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(guard.last_sampler_timestamp, i64::MIN);
+        drop(guard);
+
+        let chunks = rescue.await;
+        assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
+        assert_eq!(
+            processor
+                .error_rescue_state
+                .lock()
+                .await
+                .last_sampler_timestamp,
+            RESCUE_NOW
+        );
+    }
+
+    #[tokio::test]
+    async fn test_error_rescue_clamps_backward_timestamps_across_clones() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
         let clone = processor.clone();
-        assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
+        assert_eq!(
+            processor
+                .error_rescue_state
+                .lock()
+                .await
+                .last_sampler_timestamp,
+            i64::MIN
+        );
 
         for (i, (now, expected)) in [
             (RESCUE_NOW, RESCUE_NOW),
@@ -1578,14 +1628,22 @@ mod tests {
                 &config,
                 vec![errored_root_chunk(0x10000 + i as u64, 0)],
                 now,
-            );
+            )
+            .await;
             assert_eq!(errors_sr(root(&chunks[0])), Some(1.0));
-            assert_eq!(target.lock_sampler().last_sampler_timestamp, expected);
+            assert_eq!(
+                target
+                    .error_rescue_state
+                    .lock()
+                    .await
+                    .last_sampler_timestamp,
+                expected
+            );
         }
     }
 
-    #[test]
-    fn test_error_rescue_without_candidates_skips_sampler() {
+    #[tokio::test]
+    async fn test_error_rescue_without_candidates_skips_sampler() {
         let (config, processor) = rescue_setup(always_keep_sampler_config());
         let original = pb::TracerPayload {
             chunks: vec![
@@ -1600,11 +1658,20 @@ mod tests {
         };
         let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
 
-        processor.apply_error_rescue_with_clock(&mut payload, &config, || {
-            panic!("a payload without rescue candidates must not consult the sampler");
-        });
+        processor
+            .apply_error_rescue_with_clock(&mut payload, &config, || {
+                panic!("a payload without rescue candidates must not consult the sampler");
+            })
+            .await;
 
-        assert_eq!(processor.lock_sampler().last_sampler_timestamp, i64::MIN);
+        assert_eq!(
+            processor
+                .error_rescue_state
+                .lock()
+                .await
+                .last_sampler_timestamp,
+            i64::MIN
+        );
         let TracerPayloadCollection::V07(payloads) = payload else {
             panic!("rescue must preserve the payload format");
         };
