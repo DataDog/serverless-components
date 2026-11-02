@@ -1346,8 +1346,7 @@ async fn test_error_rescue_feature_on_outbound_payload_and_stats() {
 
 async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
     use datadog_agent_trace_sampler::{ErrorSamplerConfig, ErrorSamplerMode};
-    use libdd_trace_protobuf::pb::{AgentPayload, TraceChunk};
-    use prost::Message as _;
+    use libdd_trace_protobuf::pb::TraceChunk;
     use std::collections::HashMap;
 
     let mock_intake = MockIntake::start().await;
@@ -1411,13 +1410,15 @@ async fn verify_error_rescue_outbound_payload_and_stats(feature: bool) {
         .expect("bounded agent shutdown")
         .expect("agent task");
 
-    // Decode the actual outbound protobuf payload(s) and locate each submitted
-    // chunk by its root span name.
-    let trace_reqs = mock_intake.requests_for_path("/api/v0.2/traces");
+    // Locate each submitted chunk by its root span name in the outbound payloads.
+    let trace_payloads = mock_intake.trace_payloads();
+    assert_eq!(
+        trace_payloads.len(),
+        mock_intake.requests_for_path("/api/v0.2/traces").len(),
+        "every outbound trace request must decode successfully"
+    );
     let mut chunks_by_root_name: HashMap<String, TraceChunk> = HashMap::new();
-    for req in &trace_reqs {
-        let agent_payload = AgentPayload::decode(&req.body[..])
-            .expect("Failed to decode outbound AgentPayload protobuf");
+    for agent_payload in trace_payloads {
         for tracer_payload in agent_payload.tracer_payloads {
             for chunk in tracer_payload.chunks {
                 let root_name = chunk

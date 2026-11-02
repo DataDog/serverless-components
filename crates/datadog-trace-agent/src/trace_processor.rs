@@ -362,13 +362,16 @@ fn span_view(span: &pb::Span) -> SpanView<'_> {
 /// Only chunk tags determine DM; any span with `error != 0` supplies the error.
 /// Root selection delegates to `get_root_span_index`; empty chunks yield `None`.
 fn rescue_root_index(chunk: &pb::TraceChunk, tracer_drop_enabled: bool) -> Option<usize> {
-    let eligible = chunk.priority == 0
-        || (tracer_drop_enabled
-            && chunk.priority < 0
-            && chunk.priority != i32::from(i8::MIN)
-            && !(chunk.priority == -1
+    let eligible = match chunk.priority {
+        0 => true,
+        -128 => false,
+        -1 => {
+            tracer_drop_enabled
                 && chunk.tags.get(DECISION_MAKER_KEY).map(String::as_str)
-                    == Some(MANUAL_DECISION_MAKER)));
+                    != Some(MANUAL_DECISION_MAKER)
+        }
+        priority => tracer_drop_enabled && priority < 0,
+    };
     if !eligible {
         return None;
     }
@@ -1519,20 +1522,20 @@ mod tests {
         // Ten errored chunks with the same signature but distinct IDs: five
         // through the original, five through the clone. Mix P0 and explicit
         // drops. Ineligible chunks interleaved with them spend no budget.
-        let ids: Vec<u64> = (0..10_u64).map(|i| 0x33_0000 + i).collect();
         let mut observed = Vec::new();
-        for (i, id) in ids.iter().enumerate() {
+        for i in 0..10_u64 {
+            let id = 0x33_0000 + i;
             let target = if i < 5 { &processor } else { &processor_clone };
-            let mut manual = errored_root_chunk(*id, -1);
+            let mut manual = errored_root_chunk(id, -1);
             manual
                 .tags
                 .insert(super::DECISION_MAKER_KEY.into(), "-4".into());
-            let mut healthy = errored_root_chunk(*id, -1);
+            let mut healthy = errored_root_chunk(id, -1);
             healthy.spans[0].error = 0;
             let excluded = run_rescue(
                 target,
                 &config,
-                vec![manual, healthy, errored_root_chunk(*id, 1)],
+                vec![manual, healthy, errored_root_chunk(id, 1)],
                 RESCUE_NOW,
             );
             assert_eq!(rescued_count(&excluded), 0);
@@ -1540,7 +1543,7 @@ mod tests {
             let chunks = run_rescue(
                 target,
                 &config,
-                vec![errored_root_chunk(*id, priority)],
+                vec![errored_root_chunk(id, priority)],
                 RESCUE_NOW,
             );
             observed.push(errors_sr(root(&chunks[0])).is_some());
