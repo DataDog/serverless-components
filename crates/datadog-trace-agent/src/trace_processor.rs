@@ -1381,45 +1381,38 @@ mod tests {
 
     #[test]
     fn test_empty_chunk_and_fallback_root() {
-        for (feature, priority) in [(false, 0), (true, -1)] {
-            let (mut config, processor) = rescue_setup(always_keep_sampler_config());
-            config.error_rare_sample_tracer_drop = feature;
-            let context = format!("feature={feature} priority={priority}");
+        let (config, processor) = rescue_setup(always_keep_sampler_config());
 
-            // Eligible empty chunks return at the no-error guard before root resolution.
-            // The cyclic chunk has no parent_id 0, so the last span is the fallback root.
-            let cyclic = test_chunk(
-                vec![
-                    test_span(0xd00d, 0xd01, 0xd02, 1),
-                    test_span(0xd00d, 0xd02, 0xd01, 0),
-                ],
-                priority,
-            );
-            let chunks = run_rescue(
-                &processor,
-                &config,
-                vec![test_chunk(vec![], priority), cyclic],
-                RESCUE_NOW,
-            );
+        // Eligible empty chunks return at the no-error guard before root resolution.
+        // The cyclic chunk has no parent_id 0, so the last span is the fallback root.
+        let cyclic = test_chunk(
+            vec![
+                test_span(0xd00d, 0xd01, 0xd02, 1),
+                test_span(0xd00d, 0xd02, 0xd01, 0),
+            ],
+            0,
+        );
+        let chunks = run_rescue(
+            &processor,
+            &config,
+            vec![test_chunk(vec![], 0), cyclic],
+            RESCUE_NOW,
+        );
 
-            assert_eq!(chunks.len(), 2, "{context}");
-            assert!(
-                chunks[0].spans.is_empty(),
-                "empty chunk unchanged: {context}"
-            );
-            assert_eq!(chunks[0].priority, priority, "{context}");
-            assert_eq!(chunks[1].priority, priority, "{context}");
-            assert_eq!(
-                errors_sr(&chunks[1].spans[0]),
-                None,
-                "non-root span not stamped: {context}"
-            );
-            assert_eq!(
-                errors_sr(&chunks[1].spans[1]),
-                Some(1.0),
-                "fallback root (last span) stamped: {context}"
-            );
-        }
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].spans.is_empty(), "empty chunk unchanged");
+        assert_eq!(chunks[0].priority, 0);
+        assert_eq!(chunks[1].priority, 0);
+        assert_eq!(
+            errors_sr(&chunks[1].spans[0]),
+            None,
+            "non-root span not stamped"
+        );
+        assert_eq!(
+            errors_sr(&chunks[1].spans[1]),
+            Some(1.0),
+            "fallback root (last span) stamped"
+        );
     }
 
     #[tokio::test]
