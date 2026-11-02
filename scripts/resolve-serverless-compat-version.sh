@@ -15,7 +15,11 @@ if [[ -z "$version" ]]; then
   exit 0
 fi
 
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+numeric_identifier='(0|[1-9][0-9]*)'
+prerelease_identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+build_identifier='[0-9A-Za-z-]+'
+semver_pattern="^${numeric_identifier}\\.${numeric_identifier}\\.${numeric_identifier}(-${prerelease_identifier}(\\.${prerelease_identifier})*)?(\\+${build_identifier}(\\.${build_identifier})*)?$"
+if [[ ! "$version" =~ $semver_pattern ]]; then
   echo "Invalid Serverless Compat version: $version" >&2
   exit 1
 fi
