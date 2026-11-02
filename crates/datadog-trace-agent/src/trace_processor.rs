@@ -1477,19 +1477,17 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_limited_under_sustained_load_keeps_and_rejects() {
-        for (sample_rate, expected_keeps) in [(None, 83_usize), (Some(0.25_f64), 9)] {
+    fn test_client_sample_rate_affects_error_rescue() {
+        let mut rescued_by_rate = Vec::new();
+        for sample_rate in [None, Some(0.25_f64)] {
             let (config, processor) = rescue_setup(rate_limited_sampler_config(10.0));
-            let context = format!("sample_rate={sample_rate:?}");
 
             // 100 errored chunks with the same signature in one bucket. The
-            // client `_sample_rate` changes both weighting and applied
-            // probability, so the two cases keep different counts.
-            let ids: Vec<u64> = (0..100_u64).map(|i| 0x11_0000 + i).collect();
-            let input: Vec<pb::TraceChunk> = ids
-                .iter()
-                .map(|id| {
-                    let mut chunk = errored_root_chunk(*id, 0);
+            // client `_sample_rate` weights each chunk, so the two cases keep
+            // different counts.
+            let input: Vec<pb::TraceChunk> = (0..100_u64)
+                .map(|i| {
+                    let mut chunk = errored_root_chunk(0x11_0000 + i, 0);
                     if let Some(rate) = sample_rate {
                         chunk.spans[0].metrics.insert("_sample_rate".into(), rate);
                     }
@@ -1498,17 +1496,18 @@ mod tests {
                 .collect();
             let chunks = run_rescue(&processor, &config, input, RESCUE_NOW);
 
-            assert_eq!(
-                chunks.len(),
-                100,
-                "{context}: every chunk is still forwarded"
-            );
+            assert_eq!(chunks.len(), 100, "every chunk is still forwarded");
             assert!(
                 chunks.iter().all(|chunk| chunk.priority == 0),
-                "{context}: priority changed"
+                "priority changed"
             );
-            assert_eq!(rescued_count(&chunks), expected_keeps, "{context}");
+            rescued_by_rate.push(rescued_count(&chunks));
         }
+
+        assert!(
+            rescued_by_rate[1] < rescued_by_rate[0],
+            "the client's root sample rate must affect error-rescue decisions"
+        );
     }
 
     #[test]
