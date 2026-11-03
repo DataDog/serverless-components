@@ -115,7 +115,7 @@ impl std::fmt::Debug for ProxyHttpClient {
 impl ProxyHttpClient {
     // The `HttpClientCapability` constructors take no arguments, so we use `with_proxy` to
     // take in the proxy URL and build the client. Neither `new_client` nor
-    // `new_without_connection_pooling` is called on our code path — we only ever hand an
+    // `new_periodic` is called on our code path — we only ever hand an
     // already-built instance to `SendData::send` — so their proxy-less clients are unused.
     fn with_proxy(proxy_https: Option<&String>) -> Result<Self, Box<dyn Error>> {
         Self::with_proxy_pooling(proxy_https, true)
@@ -149,7 +149,7 @@ impl HttpClientCapability for ProxyHttpClient {
     }
 
     #[allow(clippy::expect_used)]
-    fn new_without_connection_pooling() -> Self {
+    fn new_periodic() -> Self {
         Self::with_proxy_pooling(None, false)
             .expect("building proxy connector with default TLS should not fail")
     }
