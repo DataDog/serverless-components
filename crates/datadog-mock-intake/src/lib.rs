@@ -18,11 +18,12 @@
 //! failures and failure-injection rejections, is also recorded as a raw
 //! [`CapturedRequest`], queryable via [`MockIntake::requests_for_path`].
 //! Typed query methods return only accepted, successfully decoded payloads.
+//! [`MockIntakeOptions::disable_captures`] turns both off.
 //!
 //! [`MockIntake::start`] binds `127.0.0.1:0` with all diagnostics disabled.
 //! [`MockIntake::start_with_options`] accepts [`MockIntakeOptions`] to pick a
 //! port and enable per-request summaries, stats failure injection, and JSON
-//! dumps of decoded payloads.
+//! dumps of decoded payloads, or to disable in-memory captures.
 //!
 //! This crate is self-contained (no host config, logging framework, or trace
 //! processing dependencies) so it stays usable from multiple repositories.
@@ -117,6 +118,12 @@ pub struct MockIntakeOptions {
     /// Write one JSON envelope per successfully decoded request attempt
     /// (including rejected stats attempts) into this directory.
     pub dump_dir: Option<PathBuf>,
+    /// Keep no captures in memory: `stats_payloads()`, `trace_payloads()`,
+    /// `pipeline_stats_payloads()`, and `requests_for_path()` return nothing,
+    /// and no raw request is built. Decoding, response status codes, request
+    /// summaries, JSON dumps, request ids, and stats failure injection are
+    /// unaffected.
+    pub disable_captures: bool,
 }
 
 /// Errors from `MockIntake::start_with_options`.
@@ -505,28 +512,34 @@ async fn handle_request(
         }
     };
 
-    let captured = CapturedRequest {
-        method: Method::POST.as_str().to_string(),
-        path: path.clone(),
-        headers: headers
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str().to_string(),
-                    String::from_utf8_lossy(v.as_bytes()).into_owned(),
-                )
-            })
-            .collect(),
-        body: body.to_vec(),
+    // Build the raw capture only when captures are enabled: the body copy and
+    // the header strings are otherwise unused work.
+    let captured = if state.options.disable_captures {
+        None
+    } else {
+        Some(CapturedRequest {
+            method: Method::POST.as_str().to_string(),
+            path: path.clone(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_string(),
+                        String::from_utf8_lossy(v.as_bytes()).into_owned(),
+                    )
+                })
+                .collect(),
+            body: body.to_vec(),
+        })
     };
     // Decompression (up to `MAX_DECOMPRESSED_SIZE`) and optional JSON dumps
     // are blocking work; run them off the async worker so a large payload
     // cannot stall a single-threaded test runtime.
     //
-    // The capture is recorded inside the blocking task rather than after
-    // awaiting it: Hyper drops this future if the client disconnects, but a
-    // blocking task always runs to completion, so a request that was fully
-    // read is still captured.
+    // When captures are enabled, a capture is recorded inside the blocking
+    // task rather than after awaiting it: Hyper drops this future if the
+    // client disconnects, but a blocking task always runs to completion, so
+    // a request that was fully read is still recorded.
     let handled = tokio::task::spawn_blocking(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match endpoint {
             Endpoint::Stats => handle_stats(&state, request_id, &headers, &body),
@@ -543,12 +556,15 @@ async fn handle_request(
 
         // Record the raw request and its typed payload in one critical
         // section, before the response is sent, so a client that has seen
-        // the response always finds its capture.
-        state
-            .captured
-            .lock()
-            .expect("mock_intake: captured mutex poisoned")
-            .record(request_id, captured, accepted);
+        // the response always finds its capture. With captures disabled
+        // nothing is stored, so the lock is not taken at all.
+        if let Some(captured) = captured {
+            state
+                .captured
+                .lock()
+                .expect("mock_intake: captured mutex poisoned")
+                .record(request_id, captured, accepted);
+        }
         status
     })
     .await;
@@ -1868,6 +1884,93 @@ mod tests {
         assert_eq!(captured[0].stats[0].stats[0].stats[0].hits, 1);
         // Raw capture records every completed attempt, including rejections.
         assert_eq!(intake.requests_for_path("/api/v0.2/stats").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn disable_captures_keeps_responses_and_dumps_but_stores_nothing() {
+        let tmp = tempfile::tempdir().expect("test: tempdir failed");
+        let intake = MockIntake::start_with_options(MockIntakeOptions {
+            disable_captures: true,
+            dump_dir: Some(tmp.path().to_path_buf()),
+            fail_stats_first_n: 1,
+            ..MockIntakeOptions::default()
+        })
+        .await
+        .expect("test: start failed");
+
+        let stats = stats_payload(
+            client_payload("local"),
+            1,
+            vec![grouped_stats("svc", "GET /a", 1, |_| {})],
+        );
+        let body = rmp_serde::to_vec_named(&stats).expect("test: msgpack encode failed");
+
+        // Statuses are unchanged: failure injection still rejects the first
+        // stats attempt, then accepts.
+        assert_eq!(
+            post(&intake.base_url(), "/api/v0.2/stats", None, body.clone()).await,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            post(&intake.base_url(), "/api/v0.2/stats", None, body).await,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            post(
+                &intake.base_url(),
+                "/api/v0.2/traces",
+                None,
+                trace_payload().encode_to_vec()
+            )
+            .await,
+            StatusCode::ACCEPTED
+        );
+        let dsm = PipelineStatsPayload {
+            env: "local".to_string(),
+            service: "svc".to_string(),
+            tracer_version: "1.0".to_string(),
+            version: "2.0".to_string(),
+            tags: Vec::new(),
+            stats: Vec::new(),
+        };
+        assert_eq!(
+            post(
+                &intake.base_url(),
+                "/api/v0.1/pipeline_stats",
+                None,
+                rmp_serde::to_vec_named(&dsm).expect("test: msgpack encode failed")
+            )
+            .await,
+            StatusCode::ACCEPTED
+        );
+
+        // Decoding still happens, so every decoded attempt is dumped with a
+        // request id, rejected attempts included.
+        let mut files: Vec<_> = std::fs::read_dir(tmp.path())
+            .expect("test: read dump dir failed")
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .collect();
+        files.sort();
+        assert_eq!(files.len(), 4, "one dump per decoded attempt: {files:?}");
+        for path in &files {
+            let raw = std::fs::read(path).expect("test: read dump failed");
+            let envelope: serde_json::Value =
+                serde_json::from_slice(&raw).expect("dump envelope must parse as JSON");
+            assert!(
+                envelope["request_id"].is_u64(),
+                "request id must be present"
+            );
+        }
+
+        // Nothing is retained in memory.
+        assert!(intake.stats_payloads().is_empty());
+        assert!(intake.trace_payloads().is_empty());
+        assert!(intake.pipeline_stats_payloads().is_empty());
+        assert!(
+            intake.requests_for_path("/api/v0.2/stats").is_empty(),
+            "raw captures must be disabled too"
+        );
     }
 
     #[tokio::test]
