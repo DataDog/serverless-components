@@ -9,14 +9,62 @@ use std::env;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+use datadog_agent_trace_sampler::ErrorSamplerConfig;
 use libdd_trace_obfuscation::obfuscation_config;
 use libdd_trace_utils::config_utils::{
     read_cloud_env, trace_intake_url, trace_intake_url_prefixed, trace_stats_url,
     trace_stats_url_prefixed,
 };
 use libdd_trace_utils::trace_utils;
+use tracing::warn;
 
 const DEFAULT_APM_RECEIVER_PORT: u16 = 8126;
+
+/// Parses the error rescue budget from an optional raw TPS value.
+///
+/// Starts from `ErrorSamplerConfig::default()` (the Go agent defaults) and
+/// overrides only `target_tps` with `DD_APM_ERROR_TPS`, parsed as `f64`.
+/// Blank values count as unset. Non-finite or unparsable values warn and keep
+/// the default. A finite value <= 0 disables rescue.
+fn parse_error_sampler_config(raw: Option<&str>) -> ErrorSamplerConfig {
+    let mut config = ErrorSamplerConfig::default();
+
+    if let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) {
+        match raw.parse::<f64>() {
+            Ok(tps) if tps.is_finite() => config.target_tps = tps,
+            _ => {
+                warn!(
+                    "Invalid DD_APM_ERROR_TPS {raw:?}; using default {}",
+                    config.target_tps
+                );
+            }
+        }
+    }
+
+    config
+}
+
+// The trace agent already constructs its own configuration. Adopting
+// datadog-agent-config solely for this flag would introduce broader loader coupling.
+fn error_rare_sample_tracer_drop_enabled(raw: &str) -> bool {
+    let delimiter = if raw.contains(',') { ',' } else { ' ' };
+    raw.split(delimiter)
+        .map(str::trim)
+        .any(|entry| entry == "error_rare_sample_tracer_drop")
+}
+
+/// Chooses the env used to key per-signature state: the payload-reported env
+/// when nonempty, otherwise the agent's configured env. Shared by stats
+/// flushing and error-rescue sampling so the fallback rule can't drift
+/// between the two.
+pub(crate) fn resolve_payload_env<'a>(payload_env: &'a str, config_env: &'a str) -> &'a str {
+    if payload_env.is_empty() {
+        config_env
+    } else {
+        payload_env
+    }
+}
+
 const DEFAULT_DOGSTATSD_PORT: u16 = 8125;
 const DSM_PIPELINE_STATS_ROUTE: &str = "/api/v0.1/pipeline_stats";
 
@@ -128,6 +176,12 @@ pub struct Config {
     pub additional_metric_tags_cardinality_limit: Option<usize>,
     /// Whether the agent should compute trace stats
     pub agent_stats_computation_enabled: bool,
+    /// Rate-limited error rescue settings, with the budget parsed from
+    /// `DD_APM_ERROR_TPS`. `extra_sample_rate` is fixed at 1.0 and not
+    /// configurable. See `parse_error_sampler_config` for the defaults.
+    pub error_sampler: ErrorSamplerConfig,
+    /// Opt-in eligibility for tracer-dropped errors, independent of sampler enablement.
+    pub error_rare_sample_tracer_drop: bool,
 }
 
 impl Config {
@@ -308,6 +362,9 @@ impl Config {
             agent_stats_computation_enabled: env::var("DD_AGENT_STATS_COMPUTATION_ENABLED")
                 .map(|val| val.to_lowercase() == "true")
                 .unwrap_or(true),
+            error_sampler: parse_error_sampler_config(env::var("DD_APM_ERROR_TPS").ok().as_deref()),
+            error_rare_sample_tracer_drop: env::var("DD_APM_FEATURES")
+                .is_ok_and(|raw| error_rare_sample_tracer_drop_enabled(&raw)),
         })
     }
 }
@@ -319,6 +376,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::config;
+    use datadog_agent_trace_sampler::ErrorSamplerMode;
 
     #[test]
     #[serial]
@@ -915,6 +973,100 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn test_apm_features_grammar() {
+        let feature = "error_rare_sample_tracer_drop";
+        for (raw, expected) in [
+            ("".to_string(), false),
+            ("   ".to_string(), false),
+            ("other".to_string(), false),
+            (feature.to_string(), true),
+            (format!(" {feature} "), true),
+            (format!("other {feature}"), true),
+            (format!("other,{feature}"), true),
+            (format!(" other ,, {feature} "), true),
+            (format!("other,{feature} extra"), false),
+            (format!("other {feature},extra"), false),
+            (format!("other\t{feature}"), false),
+            (format!("\t{feature}\t"), true),
+            (feature.to_uppercase(), false),
+            (format!("prefix_{feature}"), false),
+            (format!("{feature}_suffix"), false),
+        ] {
+            assert_eq!(
+                super::error_rare_sample_tracer_drop_enabled(&raw),
+                expected,
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_error_sampler_env_is_wired() {
+        temp_env::with_vars(
+            [
+                ("DD_API_KEY", Some("_not_a_real_key_")),
+                ("FUNCTIONS_EXTENSION_VERSION", Some("~4")),
+                ("FUNCTIONS_WORKER_RUNTIME", Some("dotnet")),
+                ("WEBSITE_SITE_NAME", Some("my-azure-function")),
+                ("DD_APM_FEATURES", Some("error_rare_sample_tracer_drop")),
+                ("DD_APM_ERROR_TPS", Some("5.5")),
+            ],
+            || {
+                let config = config::Config::new().unwrap();
+                assert!(config.error_rare_sample_tracer_drop);
+                assert_eq!(config.error_sampler.target_tps, 5.5);
+                assert_eq!(config.error_sampler.mode, ErrorSamplerMode::RateLimited);
+                assert_eq!(config.error_sampler.extra_sample_rate, 1.0);
+            },
+        );
+    }
+
+    #[test]
+    fn test_error_sampler_tps_parsing() {
+        for (raw, expected_tps) in [
+            (None, 10.0),
+            (Some("5.5"), 5.5),
+            (Some("0"), 0.0),
+            (Some("-1"), -1.0),
+            (Some(" 10 "), 10.0),
+            (Some("not_a_number"), 10.0),
+            (Some("inf"), 10.0),
+            (Some("-inf"), 10.0),
+            (Some("NaN"), 10.0),
+            (Some("1e400"), 10.0),
+            (Some(""), 10.0),
+        ] {
+            let error_sampler = super::parse_error_sampler_config(raw);
+            assert_eq!(
+                error_sampler.target_tps, expected_tps,
+                "DD_APM_ERROR_TPS {raw:?} should parse to {expected_tps}"
+            );
+            assert_eq!(error_sampler.mode, ErrorSamplerMode::RateLimited);
+            assert_eq!(error_sampler.extra_sample_rate, 1.0);
+        }
+    }
+
+    #[test]
+    fn test_resolve_payload_env_prefers_payload_env() {
+        assert_eq!(
+            super::resolve_payload_env("tracer-env", "agent-env"),
+            "tracer-env",
+            "nonempty payload env wins"
+        );
+        assert_eq!(
+            super::resolve_payload_env("", "agent-env"),
+            "agent-env",
+            "empty payload env falls back to the agent config env"
+        );
+        assert_eq!(
+            super::resolve_payload_env("", ""),
+            "",
+            "both empty stays empty"
+        );
+    }
 }
 
 /// Test helpers for creating Config instances in tests
@@ -957,6 +1109,8 @@ pub mod test_helpers {
             additional_metric_tags: vec![],
             additional_metric_tags_cardinality_limit: None,
             agent_stats_computation_enabled: true,
+            error_sampler: ErrorSamplerConfig::default(),
+            error_rare_sample_tracer_drop: false,
         }
     }
 }
