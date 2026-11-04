@@ -3,9 +3,11 @@
 
 mod payload;
 mod platform;
+mod reporter;
+
+pub use reporter::run_metadata_reporter;
 
 use libdd_common::azure_app_services::QueryEnv;
-use libdd_trace_utils::trace_utils::EnvironmentType;
 use std::env;
 
 #[derive(Clone, Copy)]
@@ -27,26 +29,19 @@ pub struct MetadataReport {
     pub workload_type: &'static str,
 }
 
-/// Builds a metadata report for a supported serverless environment.
-///
-/// Returns `None` when the environment is unsupported or its required cloud
-/// identity is unavailable. The async API leaves room for platforms such as
-/// GCP that may need metadata-server lookups to complete their identity.
-pub async fn build_metadata_report(
-    env_type: &EnvironmentType,
+/// Builds a metadata report from the cloud identity collected at startup.
+fn build_metadata_report(
+    platform: &platform::PlatformData,
     process_id: &str,
     report_reason: &str,
-) -> Result<Option<MetadataReport>, serde_json::Error> {
-    let Some(platform) = platform::collect(env_type).await else {
-        return Ok(None);
-    };
-
-    let body = payload::build(process_id, report_reason, &platform)?;
-    Ok(Some(MetadataReport {
+    dd_site: &str,
+) -> Result<MetadataReport, serde_json::Error> {
+    let body = payload::build(process_id, report_reason, platform, dd_site)?;
+    Ok(MetadataReport {
         body,
-        resource_id: platform.resource_id,
+        resource_id: platform.resource_id.clone(),
         workload_type: platform.workload_type,
-    }))
+    })
 }
 
 #[cfg(test)]
