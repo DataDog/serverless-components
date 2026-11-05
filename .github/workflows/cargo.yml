@@ -65,7 +65,7 @@ jobs:
             # doesn't fail.
             export AWS_LC_FIPS_SYS_NO_ASM=1
           fi
-          cargo clippy --workspace --all-features -- -D warnings
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   build:
     name: Build
