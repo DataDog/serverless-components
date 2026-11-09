@@ -321,7 +321,10 @@ mod tests {
                 "python3.13.7",
             ),
             (vec![("DD_SERVERLESS_COMPAT_RUNTIME", "")], "python3.12.7"),
-            (vec![("DD_SERVERLESS_COMPAT_RUNTIME", "unknown")], "python3.12.7"),
+            (
+                vec![("DD_SERVERLESS_COMPAT_RUNTIME", "unknown")],
+                "python3.12.7",
+            ),
         ] {
             let mut values = vec![("PYTHON_VERSION", "3.12.7")];
             values.extend(overrides);
