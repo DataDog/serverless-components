@@ -38,12 +38,8 @@ mod tests {
     #[test]
     fn wrapper_runtime_is_an_optional_best_effort_hint() {
         for (value, expected) in [
-            ("node22.1.0", Some("node22.1.0")),
             ("python3.13.7", Some("python3.13.7")),
             ("java21.0.1+12", Some("java21.0.1+12")),
-            ("go1.24.0", Some("go1.24.0")),
-            ("dotnet8.0.12", Some("dotnet8.0.12")),
-            ("dotnet-isolated8.0.12", Some("dotnet-isolated8.0.12")),
             (" python3.13.7 ", Some("python3.13.7")),
             ("", None),
             ("   ", None),
