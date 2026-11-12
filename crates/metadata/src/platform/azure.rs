@@ -29,6 +29,7 @@ pub(super) fn collect() -> Option<PlatformData> {
 }
 
 fn collect_from<E: QueryEnv>(env: E) -> Option<PlatformData> {
+    let runtime = super::wrapper_runtime(&env);
     let azure = AzureMetadata::new_function(env)?;
     let resource_name = known_value(azure.get_site_name())?.to_string();
     let resource_id = known_value(azure.get_resource_id())?.to_string();
@@ -44,7 +45,9 @@ fn collect_from<E: QueryEnv>(env: E) -> Option<PlatformData> {
             metadata.insert(field.into(), Value::String(value.to_string()));
         }
     }
-    if let Some(runtime) = runtime_with_version(azure.get_runtime(), azure.get_runtime_version()) {
+    if let Some(runtime) =
+        runtime.or_else(|| runtime_with_version(azure.get_runtime(), azure.get_runtime_version()))
+    {
         metadata.insert("runtime".into(), Value::String(runtime));
     }
 
@@ -178,5 +181,28 @@ mod tests {
         ]))
         .expect("Azure metadata should be available");
         assert_eq!(data.metadata["runtime"], "dotnet");
+    }
+
+    #[test]
+    fn wrapper_runtime_falls_back_to_platform_detection() {
+        for (runtime, expected) in [
+            (Some("python3.13.7"), "python3.13.7"),
+            (None, "python3.12"),
+            (Some(""), "python3.12"),
+            (Some("unknown"), "python3.12"),
+        ] {
+            let mut values = vec![
+                ("FUNCTIONS_WORKER_RUNTIME", "python"),
+                ("FUNCTIONS_WORKER_RUNTIME_VERSION", "3.12"),
+                ("WEBSITE_OWNER_NAME", "abc123+my-rg-eastuswebspace"),
+                ("WEBSITE_RESOURCE_GROUP", "my-rg"),
+                ("WEBSITE_SITE_NAME", "my-func-app"),
+            ];
+            if let Some(runtime) = runtime {
+                values.push(("DD_SERVERLESS_COMPAT_RUNTIME", runtime));
+            }
+            let data = collect_from(FakeEnv::new(&values)).unwrap();
+            assert_eq!(data.metadata["runtime"], expected);
+        }
     }
 }

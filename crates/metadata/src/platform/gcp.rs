@@ -102,6 +102,9 @@ fn first_env(env: &impl QueryEnv, names: &[&str]) -> Option<String> {
 }
 
 fn detect_runtime(env: &impl QueryEnv) -> Option<String> {
+    if let Some(runtime) = super::wrapper_runtime(env) {
+        return Some(runtime);
+    }
     for (runtime, variable) in [
         ("node", "NODE_VERSION"),
         ("python", "PYTHON_VERSION"),
@@ -308,8 +311,27 @@ mod tests {
 
     #[test]
     fn detects_runtime_from_platform_environment() {
-        let env = FakeEnv::new(&[("PYTHON_VERSION", "3.12.7")]);
-        assert_eq!(detect_runtime(&env), Some("python3.12.7".into()));
+        for (overrides, expected) in [
+            (vec![], "python3.12.7"),
+            (
+                vec![
+                    ("DD_SERVERLESS_COMPAT_RUNTIME", "python3.13.7"),
+                    ("NODE_VERSION", "22.0.0"),
+                ],
+                "python3.13.7",
+            ),
+            (vec![("DD_SERVERLESS_COMPAT_RUNTIME", "")], "python3.12.7"),
+            (
+                vec![("DD_SERVERLESS_COMPAT_RUNTIME", "unknown")],
+                "python3.12.7",
+            ),
+        ] {
+            let mut values = vec![("PYTHON_VERSION", "3.12.7")];
+            values.extend(overrides);
+            let env = FakeEnv::new(&values);
+            assert_eq!(detect_runtime(&env).as_deref(), Some(expected));
+        }
+        assert_eq!(detect_runtime(&FakeEnv::new(&[])), None);
     }
 
     #[tokio::test]
