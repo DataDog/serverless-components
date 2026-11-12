@@ -291,6 +291,8 @@ mod tests {
     use crate::intake_entry::IntakeEntry;
     use crate::logs_additional_endpoint::LogsAdditionalEndpoint;
     use mockito::Matcher;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     fn make_entry(msg: &str) -> IntakeEntry {
@@ -887,5 +889,603 @@ mod tests {
             result.is_empty(),
             "additional-endpoint failures are best-effort and must not be tracked for retry"
         );
+    }
+
+    /// Default policy: client errors other than 408/425/429 are dropped after one attempt.
+    #[tokio::test]
+    async fn test_default_policy_drops_permanent_client_errors_after_one_attempt() {
+        for status in [400_usize, 401, 404, 413] {
+            let (service, handle) = AggregatorService::new();
+            let _task = tokio::spawn(service.run());
+            let mut server = mockito::Server::new_async().await;
+            let mock = server
+                .mock("POST", "/api/v2/logs")
+                .with_status(status)
+                .expect(1)
+                .create_async()
+                .await;
+            let client = reqwest::Client::builder().build().expect("client");
+            let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone());
+            handle
+                .insert_batch(vec![make_entry("log")])
+                .expect("insert");
+
+            assert!(
+                flusher.flush(vec![]).await.is_empty(),
+                "status {status} must be dropped, not handed back"
+            );
+            mock.assert_async().await;
+        }
+    }
+
+    /// Default policy: 408, 425 and 429 are retried like server errors, then handed back.
+    #[tokio::test]
+    async fn test_default_policy_retries_408_425_and_429() {
+        for status in [408_usize, 425, 429] {
+            let (service, handle) = AggregatorService::new();
+            let _task = tokio::spawn(service.run());
+            let mut server = mockito::Server::new_async().await;
+            let mock = server
+                .mock("POST", "/api/v2/logs")
+                .with_status(status)
+                .expect(3)
+                .create_async()
+                .await;
+            let client = reqwest::Client::builder().build().expect("client");
+            let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone());
+            handle
+                .insert_batch(vec![make_entry("log")])
+                .expect("insert");
+
+            assert_eq!(
+                flusher.flush(vec![]).await.len(),
+                1,
+                "status {status} is handed back"
+            );
+            mock.assert_async().await;
+        }
+    }
+
+    /// Connection errors are retried and then handed back.
+    #[tokio::test]
+    async fn test_default_policy_hands_back_connection_errors() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let accepts_in_task = Arc::clone(&accepts);
+        let _server = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                accepts_in_task.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+        });
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(
+            config_for_mock(&format!("http://127.0.0.1:{port}")),
+            client,
+            handle.clone(),
+        );
+        handle
+            .insert_batch(vec![make_entry("log")])
+            .expect("insert");
+
+        assert_eq!(flusher.flush(vec![]).await.len(), 1);
+        assert_eq!(accepts.load(Ordering::SeqCst), 3);
+    }
+
+    /// A redriven request that fails again gets a fresh retry budget and is handed back again.
+    #[tokio::test]
+    async fn test_redriven_request_that_fails_again_is_handed_back_again() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v2/logs")
+            .with_status(503)
+            .expect(6)
+            .create_async()
+            .await;
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("log")])
+            .expect("insert");
+
+        let failed = flusher.flush(vec![]).await;
+        assert_eq!(failed.len(), 1);
+        let failed_again = flusher.flush(failed).await;
+        assert_eq!(failed_again.len(), 1);
+        mock.assert_async().await;
+    }
+
+    /// Sends one batch in Datadog mode to a listener that drops every connection, so the
+    /// request is handed back and can be inspected.
+    async fn handed_back_datadog_request(use_compression: bool) -> reqwest::Request {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let _server = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        });
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let config = LogFlusherConfig {
+            site: "datadoghq.eu".to_string(),
+            mode: Destination::Datadog,
+            use_compression,
+            ..config_for_mock("http://unused")
+        };
+        // Route the public intake hostname to the local listener.
+        let client = reqwest::Client::builder()
+            .resolve("http-intake.logs.datadoghq.eu", addr)
+            .build()
+            .expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("default path")])
+            .expect("insert");
+
+        let mut failed = flusher.flush(vec![]).await;
+        assert_eq!(failed.len(), 1);
+        failed.remove(0).build().expect("request")
+    }
+
+    /// Datadog mode by default sends compressed batches to the site's public intake with the
+    /// Datadog-intake headers.
+    #[tokio::test]
+    async fn test_default_datadog_request_when_compressed() {
+        let req = handed_back_datadog_request(true).await;
+
+        assert_eq!(
+            req.url().as_str(),
+            "https://http-intake.logs.datadoghq.eu/api/v2/logs"
+        );
+        assert_eq!(
+            req.timeout(),
+            Some(&config_for_mock("http://unused").flush_timeout)
+        );
+        let headers = req.headers();
+        assert_eq!(headers["DD-API-KEY"], "test-api-key");
+        assert_eq!(headers["DD-PROTOCOL"], "agent-json");
+        assert_eq!(headers["Content-Type"], "application/json");
+        assert_eq!(headers["Content-Encoding"], "zstd");
+        let body =
+            zstd::decode_all(req.body().expect("body").as_bytes().expect("bytes")).expect("zstd");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json[0]["message"], "default path");
+    }
+
+    /// With compression off, Datadog mode sends the raw batch without Content-Encoding.
+    #[tokio::test]
+    async fn test_default_datadog_request_when_uncompressed() {
+        let req = handed_back_datadog_request(false).await;
+
+        assert_eq!(
+            req.url().as_str(),
+            "https://http-intake.logs.datadoghq.eu/api/v2/logs"
+        );
+        assert_eq!(
+            req.timeout(),
+            Some(&config_for_mock("http://unused").flush_timeout)
+        );
+        let headers = req.headers();
+        assert_eq!(headers["DD-API-KEY"], "test-api-key");
+        assert_eq!(headers["DD-PROTOCOL"], "agent-json");
+        assert_eq!(headers["Content-Type"], "application/json");
+        assert!(headers.get("Content-Encoding").is_none());
+        let json: serde_json::Value =
+            serde_json::from_slice(req.body().expect("body").as_bytes().expect("bytes"))
+                .expect("json");
+        assert_eq!(json[0]["message"], "default path");
+    }
+
+    /// One-shot HTTP server. Records "<name>:received" when the full request has arrived and
+    /// "<name>:responded" just before answering 200 after `delay`; hands back the body.
+    async fn capture_once(
+        name: &'static str,
+        delay: Duration,
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> (String, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0_u8; 8192];
+            let body = loop {
+                let n = stream.read(&mut buf).await.expect("read");
+                assert!(n > 0, "connection closed before the request was complete");
+                raw.extend_from_slice(&buf[..n]);
+                let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .expect("request has content-length")
+                    .trim()
+                    .parse()
+                    .expect("content-length");
+                while raw.len() < end + 4 + len {
+                    let n = stream.read(&mut buf).await.expect("read body");
+                    assert!(n > 0, "connection closed before the body was complete");
+                    raw.extend_from_slice(&buf[..n]);
+                }
+                break raw[end + 4..end + 4 + len].to_vec();
+            };
+            events
+                .lock()
+                .expect("lock")
+                .push(format!("{name}:received"));
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(body);
+            events
+                .lock()
+                .expect("lock")
+                .push(format!("{name}:responded"));
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+        });
+        (format!("http://127.0.0.1:{port}/logs"), rx)
+    }
+
+    /// Default policy: per batch, additional endpoints are sent only after the primary
+    /// request has finished.
+    #[tokio::test]
+    async fn test_default_policy_sends_additional_endpoints_after_primary() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (primary_url, _primary_body) =
+            capture_once("primary", Duration::from_millis(200), events.clone()).await;
+        let (extra_url, _extra_body) = capture_once("extra", Duration::ZERO, events.clone()).await;
+
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let config = LogFlusherConfig {
+            mode: Destination::ObservabilityPipelinesWorker { url: primary_url },
+            additional_endpoints: vec![LogsAdditionalEndpoint {
+                api_key: "extra-key".to_string(),
+                url: extra_url,
+                is_reliable: true,
+            }],
+            ..config_for_mock("http://unused")
+        };
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("ordered")])
+            .expect("insert");
+
+        assert!(flusher.flush(vec![]).await.is_empty());
+        assert_eq!(
+            *events.lock().expect("lock"),
+            vec![
+                "primary:received",
+                "primary:responded",
+                "extra:received",
+                "extra:responded"
+            ]
+        );
+    }
+
+    /// Default policy: when the primary fails, additional endpoints are still sent with their
+    /// own API key, and only the primary request is handed back.
+    #[tokio::test]
+    async fn test_default_extras_still_sent_with_their_own_key_when_primary_fails() {
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let mut primary = mockito::Server::new_async().await;
+        let mut extra = mockito::Server::new_async().await;
+        let primary_mock = primary
+            .mock("POST", "/api/v2/logs")
+            .match_header("DD-API-KEY", "test-api-key")
+            .with_status(503)
+            .expect(3)
+            .create_async()
+            .await;
+        let extra_mock = extra
+            .mock("POST", "/extra")
+            .match_header("DD-API-KEY", "extra-key")
+            .with_status(202)
+            .expect(1)
+            .create_async()
+            .await;
+        let config = LogFlusherConfig {
+            additional_endpoints: vec![LogsAdditionalEndpoint {
+                api_key: "extra-key".to_string(),
+                url: format!("{}/extra", extra.url()),
+                is_reliable: true,
+            }],
+            ..config_for_mock(&primary.url())
+        };
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("log")])
+            .expect("insert");
+
+        let failed = flusher.flush(vec![]).await;
+        assert_eq!(failed.len(), 1);
+        let req = failed
+            .into_iter()
+            .next()
+            .expect("handed-back request")
+            .build()
+            .expect("request");
+        assert_eq!(req.url().as_str(), format!("{}/api/v2/logs", primary.url()));
+        assert_eq!(req.headers()["DD-API-KEY"], "test-api-key");
+        primary_mock.assert_async().await;
+        extra_mock.assert_async().await;
+    }
+
+    /// Every additional endpoint receives byte-identical compressed bodies that decompress to
+    /// exactly what the primary received.
+    #[tokio::test]
+    async fn test_additional_endpoints_receive_identical_compressed_bodies() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (primary_url, mut primary_body) =
+            capture_once("primary", Duration::ZERO, events.clone()).await;
+        let (url_1, mut body_1) = capture_once("extra1", Duration::ZERO, events.clone()).await;
+        let (url_2, mut body_2) = capture_once("extra2", Duration::ZERO, events.clone()).await;
+
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let config = LogFlusherConfig {
+            mode: Destination::ObservabilityPipelinesWorker { url: primary_url },
+            additional_endpoints: vec![
+                LogsAdditionalEndpoint {
+                    api_key: "extra-key-1".to_string(),
+                    url: url_1,
+                    is_reliable: true,
+                },
+                LogsAdditionalEndpoint {
+                    api_key: "extra-key-2".to_string(),
+                    url: url_2,
+                    is_reliable: true,
+                },
+            ],
+            use_compression: true,
+            ..config_for_mock("http://unused")
+        };
+        let compression_level = config.compression_level;
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(
+                // Varied enough that zstd levels 3 and 4 produce different bytes.
+                (0..200_u64)
+                    .map(|i| {
+                        let words: Vec<String> = (0..40)
+                            .map(|j| format!("{:x}", (i * 40 + j) * 2_654_435_761 % 1_000_003))
+                            .collect();
+                        make_entry(&format!("same bytes {i} {}", words.join(" ")))
+                    })
+                    .collect(),
+            )
+            .expect("insert");
+
+        assert!(flusher.flush(vec![]).await.is_empty());
+        let primary_body = primary_body.try_recv().expect("primary received a request");
+        let body_1 = body_1.try_recv().expect("extra1 received a request");
+        let body_2 = body_2.try_recv().expect("extra2 received a request");
+        assert_eq!(body_1, body_2);
+        assert_eq!(
+            body_1,
+            zstd::encode_all(primary_body.as_slice(), compression_level).expect("zstd"),
+            "additional endpoints use the configured compression level"
+        );
+        let decompressed = zstd::decode_all(body_1.as_slice()).expect("zstd");
+        assert_eq!(decompressed, primary_body);
+        let decoded: serde_json::Value = serde_json::from_slice(&decompressed).expect("json");
+        assert_eq!(decoded.as_array().expect("array").len(), 200);
+    }
+
+    /// Counts `warn!` and `error!` events emitted by this crate on the current thread.
+    #[derive(Clone, Default)]
+    struct LevelCounter {
+        warnings: Arc<AtomicUsize>,
+        errors: Arc<AtomicUsize>,
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LevelCounter {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let meta = event.metadata();
+            if !meta.target().starts_with("datadog_logs_agent") {
+                return;
+            }
+            match *meta.level() {
+                tracing::Level::WARN => self.warnings.fetch_add(1, Ordering::SeqCst),
+                tracing::Level::ERROR => self.errors.fetch_add(1, Ordering::SeqCst),
+                _ => return,
+            };
+        }
+    }
+
+    impl LevelCounter {
+        /// Installs the counter for this thread. Use the current-thread runtime so tasks
+        /// spawned by the test run on this thread.
+        fn install() -> (Self, tracing::subscriber::DefaultGuard) {
+            use tracing_subscriber::layer::SubscriberExt as _;
+            let counter = Self::default();
+            let guard = tracing::subscriber::set_default(
+                tracing_subscriber::registry().with(counter.clone()),
+            );
+            (counter, guard)
+        }
+
+        fn warnings(&self) -> usize {
+            self.warnings.load(Ordering::SeqCst)
+        }
+
+        fn errors(&self) -> usize {
+            self.errors.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Default: a request that keeps failing logs one warning per attempt plus a final one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_default_logging_warns_on_every_failed_attempt() {
+        let (logged, _guard) = LevelCounter::install();
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v2/logs")
+            .with_status(503)
+            .expect(3)
+            .create_async()
+            .await;
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("log")])
+            .expect("insert");
+
+        assert_eq!(flusher.flush(vec![]).await.len(), 1);
+        mock.assert_async().await;
+        assert_eq!(
+            logged.warnings(),
+            4,
+            "3 transient-error warnings + 1 gave-up warning"
+        );
+        assert_eq!(logged.errors(), 0, "default logging uses warn!, not error!");
+    }
+
+    /// Default: a connection that keeps dropping logs one warning per attempt plus a final one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_default_logging_warns_on_every_failed_network_attempt() {
+        let (logged, _guard) = LevelCounter::install();
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let _server = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        });
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(
+            config_for_mock(&format!("http://127.0.0.1:{port}")),
+            client,
+            handle.clone(),
+        );
+        handle
+            .insert_batch(vec![make_entry("log")])
+            .expect("insert");
+
+        assert_eq!(flusher.flush(vec![]).await.len(), 1);
+        assert_eq!(
+            logged.warnings(),
+            4,
+            "3 network-error warnings + 1 gave-up warning"
+        );
+        assert_eq!(logged.errors(), 0, "default logging uses warn!, not error!");
+    }
+
+    /// Default: a permanent client error logs exactly one warning.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_default_logging_warns_once_on_permanent_error() {
+        let (logged, _guard) = LevelCounter::install();
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v2/logs")
+            .with_status(404)
+            .expect(1)
+            .create_async()
+            .await;
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config_for_mock(&server.url()), client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("log")])
+            .expect("insert");
+
+        assert!(flusher.flush(vec![]).await.is_empty());
+        mock.assert_async().await;
+        assert_eq!(logged.warnings(), 1);
+        assert_eq!(logged.errors(), 0, "default logging uses warn!, not error!");
+    }
+
+    /// Default: an additional endpoint that keeps failing adds one more warning on top of
+    /// the per-attempt ones.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_default_logging_for_failing_additional_endpoint() {
+        let (logged, _guard) = LevelCounter::install();
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+        let mut primary = mockito::Server::new_async().await;
+        let mut extra = mockito::Server::new_async().await;
+        let primary_mock = primary
+            .mock("POST", "/api/v2/logs")
+            .with_status(202)
+            .expect(1)
+            .create_async()
+            .await;
+        let extra_mock = extra
+            .mock("POST", "/extra")
+            .with_status(503)
+            .expect(3)
+            .create_async()
+            .await;
+        let config = LogFlusherConfig {
+            additional_endpoints: vec![LogsAdditionalEndpoint {
+                api_key: "extra-key".to_string(),
+                url: format!("{}/extra", extra.url()),
+                is_reliable: true,
+            }],
+            ..config_for_mock(&primary.url())
+        };
+        let client = reqwest::Client::builder().build().expect("client");
+        let flusher = LogFlusher::new(config, client, handle.clone());
+        handle
+            .insert_batch(vec![make_entry("log")])
+            .expect("insert");
+
+        assert!(flusher.flush(vec![]).await.is_empty());
+        primary_mock.assert_async().await;
+        extra_mock.assert_async().await;
+        assert_eq!(
+            logged.warnings(),
+            5,
+            "3 transient + 1 gave-up + 1 additional-endpoint warning"
+        );
+        assert_eq!(logged.errors(), 0, "default logging uses warn!, not error!");
+    }
+
+    /// Default: each entry over the 1 MiB limit is dropped with exactly one warning.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_default_logging_warns_once_per_dropped_oversized_entry() {
+        let (logged, _guard) = LevelCounter::install();
+        let (service, handle) = AggregatorService::new();
+        let _task = tokio::spawn(service.run());
+
+        let oversized = "a".repeat(crate::constants::MAX_LOG_BYTES + 1);
+        handle
+            .insert_batch(vec![make_entry(&oversized), make_entry(&oversized)])
+            .expect("insert");
+        assert!(handle.get_batches().await.expect("batches").is_empty());
+        assert_eq!(logged.warnings(), 2);
+        assert_eq!(logged.errors(), 0, "default logging uses warn!, not error!");
     }
 }
