@@ -1135,7 +1135,7 @@ async fn test_peer_tags_in_flushed_stats() {
 #[tokio::test]
 #[serial]
 async fn test_pubsub_topic_and_subscription_peer_tags_in_flushed_stats() {
-    let groups = flushed_stats_peer_tag_groups(8137, create_pubsub_spans_payload()).await;
+    let groups = flushed_stats_peer_tag_groups(8139, create_pubsub_spans_payload()).await;
 
     let topic_group = groups
         .iter()
