@@ -52,6 +52,24 @@ pub fn create_client_span_with_peer_tag_payload() -> Vec<u8> {
     rmp_serde::to_vec(&vec![vec![span]]).expect("Failed to serialize client peer tag trace")
 }
 
+/// Create a trace payload with two root spans for one Pub/Sub project: a `"producer"` span
+/// publishing to a topic and a `"consumer"` span pulling from a subscription.
+pub fn create_pubsub_spans_payload() -> Vec<u8> {
+    let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
+    let mut producer = create_test_json_span(500, 501, 0, start, false);
+    producer["name"] = json!("pubsub.publish");
+    producer["meta"]["span.kind"] = json!("producer");
+    producer["meta"]["gcloud.project_id"] = json!("my-project");
+    producer["meta"]["gcp.pubsub.topic.name"] = json!("my-topic");
+    let mut consumer = create_test_json_span(510, 511, 0, start, false);
+    consumer["name"] = json!("pubsub.receive");
+    consumer["meta"]["span.kind"] = json!("consumer");
+    consumer["meta"]["gcloud.project_id"] = json!("my-project");
+    consumer["meta"]["gcp.pubsub.subscription.name"] = json!("my-sub");
+    rmp_serde::to_vec(&vec![vec![producer], vec![consumer]])
+        .expect("Failed to serialize Pub/Sub trace")
+}
+
 /// Build a raw, uncompressed, msgpack `ClientStatsPayload` body as sent by a tracer directly
 /// to `/v0.6/stats`. `service` is used to distinguish tracer computed stats from agent computed stats.
 pub fn create_test_client_stats_payload(service: &str) -> Vec<u8> {
