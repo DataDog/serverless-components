@@ -107,3 +107,70 @@ impl LogFlusherConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ENV_VARS: [&str; 8] = [
+        "DD_API_KEY",
+        "DD_SITE",
+        "DD_LOGS_CONFIG_USE_COMPRESSION",
+        "DD_LOGS_CONFIG_COMPRESSION_LEVEL",
+        "DD_FLUSH_TIMEOUT",
+        "DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED",
+        "DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL",
+        "DD_LOGS_CONFIG_ADDITIONAL_ENDPOINTS",
+    ];
+
+    fn clear_env() {
+        for var in ENV_VARS {
+            // SAFETY: other threads in this test binary only access the environment through
+            // std::env (which takes std's env lock); nothing calls libc getenv/setenv directly.
+            unsafe { std::env::remove_var(var) };
+        }
+    }
+
+    fn set_env(var: &str, value: &str) {
+        // SAFETY: other threads in this test binary only access the environment through
+        // std::env (which takes std's env lock); nothing calls libc getenv/setenv directly.
+        unsafe { std::env::set_var(var, value) };
+    }
+
+    // Kept as one test so the env var changes cannot race with each other.
+    #[test]
+    fn test_from_env_defaults() {
+        clear_env();
+
+        let config = LogFlusherConfig::from_env();
+
+        assert_eq!(config.api_key, "");
+        assert_eq!(config.site, "datadoghq.com");
+        assert!(matches!(config.mode, Destination::Datadog));
+        assert!(config.additional_endpoints.is_empty());
+        assert!(config.use_compression);
+        assert_eq!(config.compression_level, 3);
+        assert_eq!(config.flush_timeout, Duration::from_secs(5));
+
+        set_env("DD_LOGS_CONFIG_USE_COMPRESSION", "false");
+        assert!(!LogFlusherConfig::from_env().use_compression);
+        clear_env();
+
+        // A URL alone does not select OPW mode.
+        set_env(
+            "DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_URL",
+            "http://opw.local:8080",
+        );
+        assert!(matches!(
+            LogFlusherConfig::from_env().mode,
+            Destination::Datadog
+        ));
+
+        set_env("DD_OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED", "true");
+        assert!(matches!(
+            LogFlusherConfig::from_env().mode,
+            Destination::ObservabilityPipelinesWorker { url } if url == "http://opw.local:8080"
+        ));
+        clear_env();
+    }
+}
