@@ -4,6 +4,9 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[lib]
+bench = false
+
 [dependencies]
 figment = { version = "0.10", default-features = false, features = ["yaml", "env"] }
 libdd-trace-obfuscation.workspace = true
@@ -18,7 +21,15 @@ dogstatsd = { path = "../dogstatsd", default-features = false }
 tokio = { version = "1.47", default-features = false, features = ["time"] }
 
 [dev-dependencies]
+# default-features = false drops rayon, so the benches run on one thread; the
+# `set_var` calls in the benches rely on that.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 figment = { version = "0.10", default-features = false, features = ["yaml", "env", "test"] }
+tempfile = "3"
+
+[[bench]]
+name = "load"
+harness = false
 
 [features]
 # Disabled by default. Consumers that need a TLS provider on the transitive
