@@ -1,0 +1,17 @@
+# Posts the two-traces fixtures as a /v0.5/traces payload (string table and span arrays, the
+# default of the Python tracer) and as a /v0.7/traces tracer payload. Each fixture has its own
+# trace IDs and resources, so the two sends stay apart in the output.
+name: traces.payload-versions-other
+priority: P1
+features: [traces.payload-versions]
+mode: in-container
+platform: local
+environment:
+  DD_SERVICE: parity-app
+workload:
+  - at: 1s
+    send_spans: {fixture: two-traces-v05}
+  - at: 1s
+    send_spans: {fixture: two-traces-v07}
+  - at: 2s
+    exit: 0

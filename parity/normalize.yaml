@@ -1,0 +1,250 @@
+# Normalization rules for the parity harness. Only a person changes this file, and every rule
+# needs a reason. internal/normalize/normalize.go documents the actions and the path syntax.
+
+tolerances:
+  interval: 1s
+  delay: 1s
+  shutdown: 1s
+  percentile: 0.02
+  # Payloads of one area that arrive less than this apart are one flush, so a flush sent as
+  # several payloads counts once in the flush interval.
+  flush_gap: 500ms
+  reason: >-
+    interval, delay and shutdown are the design's starting values. Stability runs of Go 1.12.0
+    vary by under 50 milliseconds once the timing scenarios set align, which fixes the phase of
+    Go's 10-second metric buckets and 3-second flush ticks against the wall clock; without align
+    they varied by up to 5 seconds, which no tolerance should hide. flush_gap is well under the
+    3-second flush interval and well over the time between payloads of one flush. percentile is
+    2 percent (user decision, 2026-11-23): the Go and Rust sketches bin values differently, and
+    their stats quantiles differ by up to 1.14 percent for the same spans.
+
+rules:
+  # Run-specific values are masked, not dropped: a present value becomes a constant and an
+  # absent one stays absent, so a binary that sends a field the other leaves out still differs.
+
+  # Absolute timestamps differ between any two runs, so each is checked against the run instead:
+  # its declared unit must put it between the container start and exit (one second of margin on
+  # each side, and lead before the start for a bucket that began before the agent), and a declared
+  # alignment must hold. The units and alignments are what Go 1.12.0 sends. Arrival times are kept
+  # separately in timing.
+  - action: relative
+    path: series[metric!=datadog.agent.running].points[].timestamp
+    relative: {unit: s, align: 10s, lead: 10s}
+    reason: >-
+      Seconds. DogStatsD and enhanced metrics carry the start of their 10-second bucket aligned to
+      the wall clock, which can be up to 10 seconds before the container start.
+  - action: relative
+    path: series[metric=datadog.agent.running].points[].timestamp
+    relative: {unit: s}
+    reason: Seconds, the flush time, which is not aligned.
+  - action: relative
+    path: sketches[].points[].timestamp
+    relative: {unit: s, align: 10s, lead: 10s}
+    reason: Seconds, the start of a 10-second bucket aligned to the wall clock.
+  - action: relative
+    path: sketches[].distributions[].timestamp
+    relative: {unit: s, align: 10s, lead: 10s}
+    reason: The older sketch encoding, with the same buckets as the points.
+  - action: relative
+    path: logs[].timestamp
+    relative: {unit: ms}
+    reason: Milliseconds, the time the agent read the log.
+  - action: mask
+    path: traces[].tracer_payloads[].chunks[].spans[].span_events[].time_unix_nano
+    reason: Absolute timestamp of the run.
+  - action: relative
+    path: stats[].stats[].buckets[].start
+    relative: {unit: ns, align: 10s, lead: 10s}
+    reason: Nanoseconds, the start of a 10-second stats bucket aligned to the wall clock.
+  - action: relative
+    path: check_runs[].timestamp
+    relative: {unit: s}
+    reason: Seconds, the flush time of the check run.
+
+  # Hostnames come from the container, which differs between runs.
+  - action: mask
+    path: series[].host
+    reason: Container hostname.
+  - action: mask
+    path: sketches[].host
+    reason: Container hostname.
+  - action: mask
+    path: logs[].hostname
+    reason: Container hostname.
+  - action: mask
+    path: traces[].host_name
+    reason: Container hostname.
+  - action: mask
+    path: traces[].tracer_payloads[].hostname
+    reason: Container hostname.
+  - action: mask
+    path: stats[].agent_hostname
+    reason: Container hostname.
+  - action: mask
+    path: stats[].stats[].hostname
+    reason: Container hostname.
+  - action: mask
+    path: check_runs[].host_name
+    reason: Container hostname.
+
+  # serverless-init tags all telemetry with instance:<hostname> on the local platform, and the
+  # hostname is the container's, which differs between runs. The tag stays present. Docker names
+  # a container's host after the first 12 hexadecimal characters of its ID, so only such values are
+  # masked: on Google Cloud Run the instance tag is the instance ID from the fake metadata server,
+  # which is fixed, so it is compared, and a binary sending instance:unknown there still differs.
+  - action: mask
+    path: series[].tags[instance]
+    when_matches: "[0-9a-f]{12}"
+    reason: Container hostname in the instance tag; other instance values are fixed and compared.
+  - action: mask
+    path: logs[].ddtags[instance]
+    when_matches: "[0-9a-f]{12}"
+    reason: Container hostname in the instance tag; other instance values are fixed and compared.
+  - action: mask
+    path: traces[].tracer_payloads[].chunks[].spans[].meta[instance]
+    when_matches: "[0-9a-f]{12}"
+    reason: Container hostname in the instance tag; other instance values are fixed and compared.
+
+  # The trace agent puts an APM install signature on the first trace it sends: a random install
+  # ID and the time the agent started. The install type is fixed and stays compared.
+  - action: mask
+    path: traces[].tracer_payloads[].chunks[].spans[].meta[_dd.install.id]
+    reason: Random install ID that the trace agent generates at each start.
+  - action: mask
+    path: traces[].tracer_payloads[].chunks[].spans[].meta[_dd.install.time]
+    reason: The time the trace agent started.
+
+  # Container IDs differ between runs.
+  - action: mask
+    path: traces[].tracer_payloads[].container_id
+    reason: Container ID of the run.
+  - action: mask
+    path: stats[].stats[].container_id
+    reason: Container ID of the run.
+
+  # The high 64 bits of 128-bit trace IDs are random.
+  - action: mask
+    path: traces[].tracer_payloads[].chunks[].spans[].meta[_dd.p.tid]
+    reason: Random high bits of the trace ID.
+  - action: mask
+    path: traces[].tracer_payloads[].chunks[].spans[].span_links[].trace_id_high
+    reason: Random high bits of the linked trace ID.
+
+  # Trace and span IDs are random. Relabel rules run after every other rule, once the normalizer
+  # has ordered the traces by masked content, so the numbering does not depend on arrival order or
+  # run-specific values. Parent and link targets stay comparable. Parent and link IDs
+  # share the numbering of the IDs they point to.
+  - action: relabel
+    path: traces[].tracer_payloads[].chunks[].spans[].trace_id
+    reason: Trace IDs are random.
+  - action: relabel
+    path: traces[].tracer_payloads[].chunks[].spans[].span_id
+    reason: Span IDs are random.
+  - action: relabel
+    path: traces[].tracer_payloads[].chunks[].spans[].parent_id
+    label: span
+    reason: Parent IDs are span IDs, so they use the span numbering.
+  - action: relabel
+    path: traces[].tracer_payloads[].chunks[].spans[].span_links[].trace_id
+    label: trace
+    reason: Linked trace IDs use the trace numbering.
+  - action: relabel
+    path: traces[].tracer_payloads[].chunks[].spans[].span_links[].span_id
+    label: span
+    reason: Linked span IDs use the span numbering.
+
+  # The version tags name the binary's own version, which legitimately differs between Go and
+  # Rust. serverless-init sets _dd.datadog_init_version (or _dd.datadog_sidecar_version in
+  # sidecar mode) on DogStatsD metrics, logs and traces, and the names without _dd. on enhanced
+  # metrics.
+  - action: placeholder
+    path: series[].tags[datadog_init_version]
+    reason: Binary version on enhanced metrics.
+  - action: placeholder
+    path: series[].tags[datadog_sidecar_version]
+    reason: Binary version on enhanced metrics in sidecar mode.
+  - action: placeholder
+    path: series[].tags[_dd.datadog_init_version]
+    reason: Binary version on DogStatsD metrics.
+  - action: placeholder
+    path: series[].tags[_dd.datadog_sidecar_version]
+    reason: Binary version on DogStatsD metrics in sidecar mode.
+  - action: placeholder
+    path: sketches[].tags[datadog_init_version]
+    reason: Binary version on enhanced metrics.
+  - action: placeholder
+    path: sketches[].tags[datadog_sidecar_version]
+    reason: Binary version on enhanced metrics in sidecar mode.
+  - action: placeholder
+    path: sketches[].tags[_dd.datadog_init_version]
+    reason: Binary version on DogStatsD metrics.
+  - action: placeholder
+    path: sketches[].tags[_dd.datadog_sidecar_version]
+    reason: Binary version on DogStatsD metrics in sidecar mode.
+  - action: placeholder
+    path: logs[].ddtags[datadog_init_version]
+    reason: Binary version on logs.
+  - action: placeholder
+    path: logs[].ddtags[datadog_sidecar_version]
+    reason: Binary version on logs in sidecar mode.
+  - action: placeholder
+    path: logs[].ddtags[_dd.datadog_init_version]
+    reason: Binary version on logs.
+  - action: placeholder
+    path: logs[].ddtags[_dd.datadog_sidecar_version]
+    reason: Binary version on logs in sidecar mode.
+  - action: placeholder
+    path: traces[].tracer_payloads[].chunks[].spans[].meta[_dd.datadog_init_version]
+    reason: Binary version on spans.
+  - action: placeholder
+    path: traces[].tracer_payloads[].chunks[].spans[].meta[_dd.datadog_sidecar_version]
+    reason: Binary version on spans in sidecar mode.
+  - action: placeholder
+    path: series[metric=datadog.agent.running].tags[version]
+    reason: >-
+      The agent's own gauge carries the agent binary's version (7.85.2 for Go 1.12.0), which
+      differs by binary. Only this metric is matched, so a version tag on a workload metric is
+      still compared. User decision, 2026-11-23.
+  - action: placeholder
+    path: traces[].agent_version
+    reason: The version of the agent that sent the payload differs by binary.
+  - action: placeholder
+    path: stats[].agent_version
+    reason: The version of the agent that sent the payload differs by binary.
+
+  # Tag order carries no meaning.
+  - action: sort
+    path: series[].tags
+    reason: Tag order carries no meaning.
+  - action: sort
+    path: sketches[].tags
+    reason: Tag order carries no meaning.
+  - action: sort
+    path: logs[].ddtags
+    reason: Tag order carries no meaning.
+  - action: sort
+    path: stats[].stats[].tags
+    reason: Tag order carries no meaning.
+  - action: sort
+    path: check_runs[].tags
+    reason: Tag order carries no meaning.
+  - action: sort
+    path: stats[].stats[].buckets[].stats[].peer_tags
+    reason: Tag order carries no meaning.
+  - action: sort
+    path: stats[].stats[].buckets[].stats[].span_derived_primary_tags
+    reason: Tag order carries no meaning.
+  - action: sort
+    path: stats[].stats[].buckets[].stats[].additional_metric_tags
+    reason: Tag order carries no meaning.
+
+  # How items are split into payloads and the order the payloads arrive in depend on flush
+  # timing, which the timing check covers. These rules come last, so they order by masked content.
+  # Series keep arrival order, because a gauge's last value is the one a customer sees. Logs keep
+  # their order too, and the normalizer orders traces by content itself.
+  - action: sort
+    path: sketches
+    reason: Payload order depends on flush timing.
+  - action: sort
+    path: stats
+    reason: Payload order depends on flush timing.

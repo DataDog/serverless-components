@@ -13,7 +13,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::signature::{Signature, compute_signature_with_root_and_env, sample_by_rate};
+use crate::signature::{
+    Signature, compute_service_signature, compute_signature_with_root_and_env, sample_by_rate,
+};
 use crate::{ErrorSamplerConfig, ErrorSamplerMode, SampleDecision, TraceView};
 
 const BUCKET_DURATION_SECS: i64 = 5;
@@ -341,8 +343,11 @@ impl RateLimitedSampler {
         let signature =
             compute_signature_with_root_and_env(trace.spans, trace.root_index, trace.env);
         let signature = self.shrink(signature);
-        self.sampler
-            .count_weighted_sig(now_unix_secs, signature, weight_root(trace));
+        self.sampler.count_weighted_sig(
+            now_unix_secs,
+            signature,
+            weight_root(trace.root_global_sample_rate),
+        );
 
         let rate = self.sampler.get_signature_sample_rate(signature);
         self.apply_sample_rate(trace, rate)
@@ -352,7 +357,7 @@ impl RateLimitedSampler {
         // The product is not clamped, mirroring the Go agent's `applySampleRate`:
         // `sample_by_rate` already treats any `new_rate >= 1.0` as always-keep, and
         // both factors are in range, so the product needs no bounding.
-        let new_rate = client_rate(trace) * rate;
+        let new_rate = client_rate(trace.root_global_sample_rate) * rate;
         if sample_by_rate(trace.trace_id, new_rate) {
             SampleDecision::Keep { errors_sr: rate }
         } else {
@@ -386,6 +391,42 @@ impl RateLimitedSampler {
     }
 }
 
+/// The rate loop of the Go trace agent's `PrioritySampler`
+/// (`pkg/trace/sampler/prioritysampler.go`): counts the chunks that tracers sampled with
+/// priority 0 or 1 per service and env, and computes the rate of each that would keep
+/// `target_tps` traces per second.
+pub struct PrioritySampler {
+    sampler: Sampler,
+}
+
+impl PrioritySampler {
+    #[must_use]
+    pub fn new(target_tps: f64, extra_sample_rate: f64) -> Self {
+        PrioritySampler {
+            sampler: Sampler::new(extra_sample_rate, target_tps),
+        }
+    }
+
+    /// Counts a chunk against the signature of its root's service and env, and returns the
+    /// signature's rate. The chunk weighs the inverse of `root_global_sample_rate` plus
+    /// `client_dropped_p0s_weight`, the tracer's dropped P0 chunks divided by the chunks of
+    /// the payload.
+    pub fn count(
+        &mut self,
+        now_unix_secs: i64,
+        service: &str,
+        env: &str,
+        root_global_sample_rate: f64,
+        client_dropped_p0s_weight: f64,
+    ) -> f64 {
+        let signature = compute_service_signature(service, env);
+        let weight = weight_root(root_global_sample_rate) + client_dropped_p0s_weight as f32;
+        self.sampler
+            .count_weighted_sig(now_unix_secs, signature, weight);
+        self.sampler.get_signature_sample_rate(signature)
+    }
+}
+
 /// The client sample rate already applied upstream, sanitized to `(0, 1]`.
 ///
 /// `root_global_sample_rate` comes straight off the wire (`metrics["_sample_rate"]`)
@@ -401,8 +442,7 @@ impl RateLimitedSampler {
 ///   makes the hottest signature report zero TPS and get evicted; as a factor in the
 ///   applied rate it makes the product NaN, which `sample_by_rate` treats as
 ///   always-keep. Either way the error-TPS budget goes unenforced.
-fn client_rate(trace: &TraceView) -> f64 {
-    let rate = trace.root_global_sample_rate;
+fn client_rate(rate: f64) -> f64 {
     if !rate.is_finite() || rate <= 0.0 || rate > 1.0 {
         return 1.0;
     }
@@ -413,8 +453,8 @@ fn client_rate(trace: &TraceView) -> f64 {
 ///
 /// Mirrors Go's `weightRoot`. Serverless has no agent pre-sampler, so the
 /// pre-sampler rate is always 1.
-fn weight_root(trace: &TraceView) -> f32 {
-    (1.0 / client_rate(trace)) as f32
+fn weight_root(root_global_sample_rate: f64) -> f32 {
+    (1.0 / client_rate(root_global_sample_rate)) as f32
 }
 
 #[cfg(test)]
@@ -889,14 +929,14 @@ mod tests {
         for rate in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0, 2.0] {
             let mut trace = error_trace(1, &spans);
             trace.root_global_sample_rate = rate;
-            let weight = weight_root(&trace);
+            let weight = weight_root(trace.root_global_sample_rate);
             assert_eq!(weight, 1.0, "rate {rate} should fall back to weight 1");
         }
 
         // A valid rate is still inverted.
         let mut trace = error_trace(1, &spans);
         trace.root_global_sample_rate = 0.25;
-        assert_eq!(weight_root(&trace), 4.0);
+        assert_eq!(weight_root(trace.root_global_sample_rate), 4.0);
     }
 
     // The same fallback must apply when the client rate scales the applied rate,
@@ -940,6 +980,32 @@ mod tests {
                 kept < 20,
                 "rate {bogus} bypassed throttling: {kept}/200 kept"
             );
+        }
+    }
+
+    /// Each case gives the counted chunks, as the second, the number of chunks, the root's global
+    /// sample rate and the client dropped P0 weight, then the rate returned for the last chunk.
+    /// The target is 10 traces per second, and the core sampler's own tests cover its rates.
+    #[test]
+    fn priority_sampler_rates() {
+        type Count = (i64, usize, f64, f64);
+        let cases: &[(&[Count], f64)] = &[
+            // 100 chunks in the last bucket are 20 per second, twice the target.
+            (&[(0, 100, 1.0, 0.0), (BUCKET, 1, 1.0, 0.0)], 0.5),
+            // A global sample rate of 0.5 counts each chunk twice.
+            (&[(0, 50, 0.5, 0.0), (BUCKET, 1, 1.0, 0.0)], 0.5),
+            // The client dropped P0 weight adds to each chunk's weight.
+            (&[(0, 50, 1.0, 1.0), (BUCKET, 1, 1.0, 0.0)], 0.5),
+        ];
+        for (counts, expected) in cases {
+            let mut sampler = PrioritySampler::new(10.0, 1.0);
+            let mut rate = None;
+            for &(second, chunks, global_rate, dropped_weight) in *counts {
+                for _ in 0..chunks {
+                    rate = Some(sampler.count(second, "web", "prod", global_rate, dropped_weight));
+                }
+            }
+            assert_eq!(rate, Some(*expected), "counts {counts:?}");
         }
     }
 }

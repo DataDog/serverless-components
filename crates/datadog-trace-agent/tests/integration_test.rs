@@ -5,7 +5,8 @@ mod common;
 
 use common::helpers::{
     create_client_span_with_peer_tag_payload, create_test_client_stats_payload,
-    create_test_trace_payload, create_trace_with_span_kind_children_payload, send_tcp_request,
+    create_test_trace_payload, create_test_v05_trace_payload, create_test_v07_trace_payload,
+    create_trace_with_span_kind_children_payload, send_tcp_request,
 };
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_mock_intake::{
@@ -22,7 +23,10 @@ use datadog_trace_agent::{
 };
 use http_body_util::BodyExt;
 use hyper::StatusCode;
+use libdd_trace_protobuf::pb;
 use libdd_trace_utils::test_utils::create_test_json_span;
+use libdd_trace_utils::trace_utils::{SendData, TracerHeaderTags};
+use libdd_trace_utils::tracer_payload::TracerPayloadCollection;
 use serde_json::{Value, json};
 use serial_test::serial;
 use std::sync::Arc;
@@ -564,6 +568,582 @@ async fn test_mini_agent_tcp_with_real_flushers() {
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
     verify_stats_request(&mock_intake).await; // Stats generator should generate stats from trace payload
+}
+
+/// The agent fields of the flushed trace and stats payloads, and the root's `_dd.no_p_sr`, for a
+/// trace without a sampling priority. The root has `_dd.hostname:tracer-host`, and the request
+/// has the tracer version `9.9.9` and the container ID `container-1`. Each case gives the trace
+/// payload's env, agent version, target and error rates and container ID, then the stats
+/// payload's agent env and version and the client stats' hostname, tracer version and container
+/// ID.
+#[tokio::test]
+#[serial]
+async fn test_agent_payload_fields_in_flushed_payloads() {
+    use datadog_trace_agent::config::AgentPayloadFields;
+
+    type Case = (
+        Option<AgentPayloadFields>,
+        (&'static str, &'static str, f64, f64, &'static str),
+        Option<f64>,
+        (
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+        ),
+    );
+    let cases: [Case; 2] = [
+        (
+            None,
+            ("", "", 60.0, 60.0, "container-1"),
+            None,
+            ("", "", "", "9.9.9", "container-1"),
+        ),
+        (
+            Some(AgentPayloadFields {
+                agent_version: "1.2.3".to_string(),
+                target_tps: 7.0,
+                install_signature: None,
+            }),
+            ("none", "1.2.3", 7.0, 10.0, ""),
+            Some(1.0),
+            ("none", "1.2.3", "tracer-host", "", ""),
+        ),
+    ];
+    for (fields, expected_trace_fields, expected_no_priority_rate, expected_stats_fields) in cases {
+        let mock_intake = MockIntake::start().await;
+        let mut config = create_tcp_test_config(8140);
+        configure_mock_endpoints(&mut config, &mock_intake.base_url());
+        config.agent_payload_fields = fields.clone();
+        let config = Arc::new(config);
+        let (mini_agent, stats_concentrator_service_handle) =
+            create_mini_agent_with_real_flushers(config);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let agent_handle = tokio::spawn(async move {
+            let _ = mini_agent
+                .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+                .await;
+        });
+        let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
+        let mut root = create_test_json_span(11, 222, 0, start, false);
+        root["meta"]["_dd.hostname"] = json!("tracer-host");
+        let body = rmp_serde::to_vec(&vec![vec![root]]).unwrap();
+        let mut trace_response = None;
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if let Ok(response) = send_tcp_request(
+                8140,
+                "/v0.4/traces",
+                "POST",
+                Some(body.clone()),
+                &[
+                    ("Datadog-Meta-Tracer-Version", "9.9.9"),
+                    ("Datadog-Container-ID", "container-1"),
+                ],
+            )
+            .await
+            {
+                trace_response = Some(response);
+                break;
+            }
+        }
+        assert_eq!(
+            trace_response.map(|response| response.status()),
+            Some(StatusCode::OK)
+        );
+        let _ = shutdown_tx.send(true);
+        let _ = agent_handle.await;
+
+        let trace_payloads = mock_intake.trace_payloads();
+        let payload = &trace_payloads[0];
+        assert_eq!(
+            (
+                payload.env.as_str(),
+                payload.agent_version.as_str(),
+                payload.target_tps,
+                payload.error_tps,
+                payload.tracer_payloads[0].container_id.as_str(),
+            ),
+            expected_trace_fields,
+            "fields {fields:?}"
+        );
+        let root = &payload.tracer_payloads[0].chunks[0].spans[0];
+        assert_eq!(
+            root.metrics.get("_dd.no_p_sr").copied(),
+            expected_no_priority_rate,
+            "fields {fields:?}"
+        );
+        let stats_payloads = mock_intake.stats_payloads();
+        let stats = &stats_payloads[0];
+        let client_stats = &stats.stats[0];
+        assert_eq!(
+            (
+                stats.agent_env.as_str(),
+                stats.agent_version.as_str(),
+                client_stats.hostname.as_str(),
+                client_stats.tracer_version.as_str(),
+                client_stats.container_id.as_str(),
+            ),
+            expected_stats_fields,
+            "fields {fields:?}"
+        );
+    }
+}
+
+/// Each case gives whether the receiver takes v0.5 and v0.7 payloads, a post's path and body,
+/// then the post's status, the `/info` endpoints, the flushed language, and the priority and
+/// origin of each flushed chunk with the name and `_dd.convertedv1` of its spans. The post's
+/// `Datadog-Meta-Lang` header is `header-language`.
+#[tokio::test]
+#[serial]
+async fn test_trace_payload_versions_in_flushed_payloads() {
+    use datadog_trace_agent::config::AgentPayloadFields;
+
+    type FlushedChunk = (i32, String, Vec<(String, Option<String>)>);
+    type Chunk = (
+        i32,
+        &'static str,
+        &'static [(&'static str, Option<&'static str>)],
+    );
+    type Case = (
+        bool,
+        &'static str,
+        Vec<u8>,
+        StatusCode,
+        Value,
+        &'static str,
+        &'static [Chunk],
+    );
+    let all_endpoints = json!([
+        "/v0.4/traces",
+        "/v0.5/traces",
+        "/v0.7/traces",
+        "/v0.6/stats",
+        "/info",
+        "/v0.1/pipeline_stats",
+        "/profiling/v1/input"
+    ]);
+    let cases: [Case; 3] = [
+        (
+            false,
+            "/v0.5/traces",
+            create_test_v05_trace_payload(),
+            StatusCode::NOT_FOUND,
+            json!([
+                "/v0.4/traces",
+                "/v0.6/stats",
+                "/info",
+                "/v0.1/pipeline_stats",
+                "/profiling/v1/input"
+            ]),
+            "",
+            &[],
+        ),
+        // As in Go, only the payload's first span gets `_dd.convertedv1`.
+        (
+            true,
+            "/v0.5/traces",
+            create_test_v05_trace_payload(),
+            StatusCode::OK,
+            all_endpoints.clone(),
+            "header-language",
+            &[
+                (1, "", &[("first", Some("v05")), ("second", None)]),
+                (1, "", &[("third", None)]),
+            ],
+        ),
+        (
+            true,
+            "/v0.7/traces",
+            create_test_v07_trace_payload(),
+            StatusCode::OK,
+            all_endpoints,
+            "python",
+            &[
+                (
+                    2,
+                    "synthetics",
+                    &[("first", Some("v07-pb")), ("second", Some("v07-pb"))],
+                ),
+                (1, "", &[("third", Some("v07-pb"))]),
+            ],
+        ),
+    ];
+    for (
+        enabled,
+        path,
+        body,
+        expected_status,
+        expected_endpoints,
+        expected_language,
+        expected_chunks,
+    ) in cases
+    {
+        let mock_intake = MockIntake::start().await;
+        let mut config = create_tcp_test_config(8141);
+        configure_mock_endpoints(&mut config, &mock_intake.base_url());
+        config.v05_and_v07_traces_enabled = enabled;
+        config.agent_payload_fields = Some(AgentPayloadFields {
+            agent_version: "1.2.3".to_string(),
+            target_tps: 10.0,
+            install_signature: None,
+        });
+        let (mini_agent, stats_concentrator_service_handle) =
+            create_mini_agent_with_real_flushers(Arc::new(config));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let agent_handle = tokio::spawn(async move {
+            let _ = mini_agent
+                .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+                .await;
+        });
+        let mut info_response = None;
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if let Ok(response) = send_tcp_request(8141, "/info", "GET", None, &[]).await {
+                info_response = Some(response);
+                break;
+            }
+        }
+        let info_body = info_response
+            .expect("Failed to send /info request")
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let info: Value = serde_json::from_slice(&info_body).unwrap();
+        let status = send_tcp_request(
+            8141,
+            path,
+            "POST",
+            Some(body),
+            &[("Datadog-Meta-Lang", "header-language")],
+        )
+        .await
+        .expect("Failed to send the trace request")
+        .status();
+        let _ = shutdown_tx.send(true);
+        let _ = agent_handle.await;
+
+        let case = format!("enabled {enabled}, {path}");
+        assert_eq!(status, expected_status, "{case}");
+        assert_eq!(info["endpoints"], expected_endpoints, "{case}");
+        let tracer_payloads: Vec<pb::TracerPayload> = mock_intake
+            .trace_payloads()
+            .into_iter()
+            .flat_map(|payload| payload.tracer_payloads)
+            .collect();
+        let chunks: Vec<FlushedChunk> = tracer_payloads
+            .iter()
+            .flat_map(|tracer_payload| &tracer_payload.chunks)
+            .map(|chunk| {
+                let spans = chunk
+                    .spans
+                    .iter()
+                    .map(|span| (span.name.clone(), span.meta.get("_dd.convertedv1").cloned()))
+                    .collect();
+                (chunk.priority, chunk.origin.clone(), spans)
+            })
+            .collect();
+        let expected: Vec<FlushedChunk> = expected_chunks
+            .iter()
+            .map(|(priority, origin, spans)| {
+                let spans = spans
+                    .iter()
+                    .map(|(name, converted)| (name.to_string(), converted.map(str::to_string)))
+                    .collect();
+                (*priority, origin.to_string(), spans)
+            })
+            .collect();
+        assert_eq!(chunks, expected, "{case}");
+        // The samplers decide the dropped flag, as in Go, so kept chunks are not dropped.
+        let dropped = tracer_payloads
+            .iter()
+            .flat_map(|tracer_payload| &tracer_payload.chunks)
+            .any(|chunk| chunk.dropped_trace);
+        assert!(!dropped, "{case}");
+        if let Some(tracer_payload) = tracer_payloads.first() {
+            assert_eq!(tracer_payload.language_name, expected_language, "{case}");
+        }
+    }
+}
+
+/// Each case gives whether the agent payload fields are set, a path and a body, then the status
+/// and content type of the response. With the fields, a body that does not decode gets Go's 400
+/// in plain text.
+#[tokio::test]
+#[serial]
+async fn test_undecodable_trace_bodies() {
+    use datadog_trace_agent::config::AgentPayloadFields;
+
+    let v05_truncated = &create_test_v05_trace_payload()[..10];
+    let v07_truncated = &create_test_v07_trace_payload()[..10];
+    let v04_truncated = &create_test_trace_payload(None)[..10];
+    let wrong_type = rmp_serde::to_vec(&json!({"chunks": "x"})).unwrap();
+    type Case<'a> = (bool, &'static str, &'a [u8], StatusCode, &'static str);
+    let cases: [Case; 11] = [
+        (
+            false,
+            "/v0.4/traces",
+            b"",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "",
+        ),
+        (
+            true,
+            "/v0.4/traces",
+            b"",
+            StatusCode::BAD_REQUEST,
+            "text/plain; charset=utf-8",
+        ),
+        (
+            true,
+            "/v0.4/traces",
+            v04_truncated,
+            StatusCode::BAD_REQUEST,
+            "text/plain; charset=utf-8",
+        ),
+        (
+            true,
+            "/v0.4/traces",
+            &wrong_type,
+            StatusCode::BAD_REQUEST,
+            "text/plain; charset=utf-8",
+        ),
+        (
+            true,
+            "/v0.5/traces",
+            b"",
+            StatusCode::BAD_REQUEST,
+            "text/plain; charset=utf-8",
+        ),
+        (
+            true,
+            "/v0.5/traces",
+            v05_truncated,
+            StatusCode::BAD_REQUEST,
+            "text/plain; charset=utf-8",
+        ),
+        (
+            true,
+            "/v0.5/traces",
+            &wrong_type,
+            StatusCode::BAD_REQUEST,
+            "text/plain; charset=utf-8",
+        ),
+        (
+            true,
+            "/v0.7/traces",
+            b"",
+            StatusCode::BAD_REQUEST,
+            "text/plain; charset=utf-8",
+        ),
+        (
+            true,
+            "/v0.7/traces",
+            v07_truncated,
+            StatusCode::BAD_REQUEST,
+            "text/plain; charset=utf-8",
+        ),
+        (
+            true,
+            "/v0.7/traces",
+            &wrong_type,
+            StatusCode::BAD_REQUEST,
+            "text/plain; charset=utf-8",
+        ),
+        // An unknown field is skipped.
+        (
+            true,
+            "/v0.7/traces",
+            &rmp_serde::to_vec(&json!({"unknown": 1})).unwrap(),
+            StatusCode::OK,
+            "",
+        ),
+    ];
+    for go_fields in [false, true] {
+        let mut config = create_tcp_test_config(8142);
+        config.v05_and_v07_traces_enabled = true;
+        config.agent_payload_fields = go_fields.then(|| AgentPayloadFields {
+            agent_version: "1.2.3".to_string(),
+            target_tps: 10.0,
+            install_signature: None,
+        });
+        let config = Arc::new(config);
+        let mini_agent = MiniAgent {
+            config: config.clone(),
+            trace_processor: Arc::new(ServerlessTraceProcessor::new(None, &config)),
+            trace_flusher: Arc::new(MockTraceFlusher),
+            stats_processor: Arc::new(MockStatsProcessor),
+            stats_flusher: Arc::new(MockStatsFlusher),
+            env_verifier: Arc::new(MockEnvVerifier),
+            proxy_flusher: Arc::new(ProxyFlusher::new(config)),
+        };
+        let agent_handle = tokio::spawn(async move {
+            let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            let _ = mini_agent.start_mini_agent(shutdown_rx, None).await;
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for (fields, path, body, expected_status, expected_content_type) in &cases {
+            if *fields != go_fields {
+                continue;
+            }
+            let response = send_tcp_request(8142, path, "POST", Some(body.to_vec()), &[])
+                .await
+                .expect("Failed to send the trace request");
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .map(|value| value.to_str().unwrap().to_string())
+                .unwrap_or_default();
+            let case = format!("fields {go_fields}, {path}, body {body:?}");
+            assert_eq!(response.status(), *expected_status, "{case}");
+            assert_eq!(content_type, *expected_content_type, "{case}");
+        }
+        agent_handle.abort();
+        let _ = agent_handle.await;
+    }
+}
+
+fn send_data_for(config: &Config, service: &str) -> SendData {
+    let tracer_payload = pb::TracerPayload {
+        chunks: vec![pb::TraceChunk {
+            spans: vec![pb::Span {
+                service: service.to_string(),
+                name: "operation".to_string(),
+                resource: "resource".to_string(),
+                trace_id: 1,
+                span_id: 1,
+                start: 1,
+                duration: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    SendData::new(
+        1,
+        TracerPayloadCollection::V07(vec![tracer_payload]),
+        TracerHeaderTags::default(),
+        &config.trace_intake,
+    )
+}
+
+/// A payload sent after shutdown fires, from a sender that is still alive, is still flushed.
+/// The trace processor enqueues in a spawned task, so this happens after an HTTP 200.
+#[tokio::test]
+#[serial]
+async fn test_trace_flusher_drains_channel_on_shutdown() {
+    use datadog_trace_agent::{aggregator::TraceAggregator, trace_flusher::ServerlessTraceFlusher};
+
+    let mock_intake = MockIntake::start().await;
+    let mut config = create_tcp_test_config(0);
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
+    config.trace_flush_interval_secs = 3600;
+    let config = Arc::new(config);
+
+    let trace_flusher = ServerlessTraceFlusher::new(
+        Arc::new(tokio::sync::Mutex::new(TraceAggregator::default())),
+        config.clone(),
+    );
+    let (trace_tx, trace_rx) = tokio::sync::mpsc::channel(10);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let flusher_handle = tokio::spawn(async move {
+        trace_flusher
+            .start_trace_flusher(trace_rx, shutdown_rx)
+            .await
+    });
+
+    trace_tx
+        .send(send_data_for(&config, "before-shutdown"))
+        .await
+        .unwrap();
+    let late_sender = trace_tx.clone();
+    let late_config = config.clone();
+    let late_send = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        late_sender
+            .send(send_data_for(&late_config, "after-shutdown"))
+            .await
+    });
+    drop(trace_tx);
+    shutdown_tx.send(()).unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), flusher_handle)
+        .await
+        .expect("the trace flusher did not return within 2 seconds")
+        .unwrap();
+    late_send.await.unwrap().unwrap();
+
+    let mut services: Vec<String> = mock_intake
+        .trace_payloads()
+        .iter()
+        .flat_map(|payload| payload.tracer_payloads.iter())
+        .flat_map(|tracer_payload| tracer_payload.chunks.iter())
+        .flat_map(|chunk| chunk.spans.iter())
+        .map(|span| span.service.clone())
+        .collect();
+    services.sort();
+    assert_eq!(services, vec!["after-shutdown", "before-shutdown"]);
+    assert_eq!(mock_intake.requests_for_path("/api/v0.2/traces").len(), 1);
+}
+
+/// Shutting down the mini agent flushes the buffered traces before the flush interval.
+#[tokio::test]
+#[serial]
+async fn test_mini_agent_flushes_traces_on_shutdown() {
+    let mock_intake = MockIntake::start().await;
+    let mut config = create_tcp_test_config(8139);
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
+    config.trace_flush_interval_secs = 3600;
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let agent_handle = tokio::spawn(async move {
+        mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await
+            .map_err(|error| error.to_string())
+    });
+
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    let trace_response = send_tcp_request(
+        test_port,
+        "/v0.4/traces",
+        "POST",
+        Some(create_test_trace_payload(None)),
+        &[],
+    )
+    .await
+    .expect("Failed to send /v0.4/traces request");
+    assert_eq!(trace_response.status(), StatusCode::OK);
+
+    shutdown_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), agent_handle)
+        .await
+        .expect("the mini agent did not return within 5 seconds")
+        .unwrap()
+        .unwrap();
+    assert_eq!(mock_intake.requests_for_path("/api/v0.2/traces").len(), 1);
 }
 
 #[cfg(test)]

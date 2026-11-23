@@ -9,6 +9,7 @@ use libdd_common::http_common;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::test_utils::create_test_json_span;
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::time::timeout;
 
@@ -24,6 +25,91 @@ pub fn create_test_trace_payload(service: Option<&str>) -> Vec<u8> {
         span["meta"]["service"] = serde_json::Value::String(name.into());
     }
     rmp_serde::to_vec(&vec![vec![span]]).expect("Failed to serialize test trace")
+}
+
+/// One v0.5 span: service, name, resource, trace ID, span ID, parent ID, start, duration, error,
+/// meta, metrics and type, with every string an index into the payload's string table.
+type V05Span = (
+    u32,
+    u32,
+    u32,
+    u64,
+    u64,
+    u64,
+    i64,
+    i64,
+    i32,
+    HashMap<u32, u32>,
+    HashMap<u32, f64>,
+    u32,
+);
+
+/// Create a msgpack v0.5 payload with two kept traces: spans `first` and `second` in one trace,
+/// and span `third` in the other.
+pub fn create_test_v05_trace_payload() -> Vec<u8> {
+    let strings = [
+        "",
+        "test-service",
+        "first",
+        "second",
+        "third",
+        "test-resource",
+        "web",
+        "_sampling_priority_v1",
+    ];
+    let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
+    let kept = HashMap::from([(7, 1.0)]);
+    let span = |name, trace_id, span_id, parent_id, metrics: &HashMap<u32, f64>| -> V05Span {
+        (
+            1,
+            name,
+            5,
+            trace_id,
+            span_id,
+            parent_id,
+            start,
+            5,
+            0,
+            HashMap::new(),
+            metrics.clone(),
+            6,
+        )
+    };
+    let traces = vec![
+        vec![
+            span(2, 1, 10, 0, &kept),
+            span(3, 1, 11, 10, &HashMap::new()),
+        ],
+        vec![span(4, 2, 20, 0, &kept)],
+    ];
+    rmp_serde::to_vec(&(strings, traces)).expect("Failed to serialize v0.5 test trace")
+}
+
+/// Create a msgpack v0.7 payload from a Python tracer with two traces: spans `first` and
+/// `second` in a chunk with priority 2, origin `synthetics` and the dropped flag, and span
+/// `third` in a chunk without a priority, whose span has priority 1.
+pub fn create_test_v07_trace_payload() -> Vec<u8> {
+    let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
+    let span = |name: &str, trace_id, span_id, parent_id| {
+        let mut span = create_test_json_span(trace_id, span_id, parent_id, start, false);
+        span["name"] = json!(name);
+        span
+    };
+    let mut third = span("third", 2, 20, 0);
+    third["metrics"]["_sampling_priority_v1"] = json!(1.0);
+    let payload = json!({
+        "language_name": "python",
+        "chunks": [
+            {
+                "priority": 2,
+                "origin": "synthetics",
+                "dropped_trace": true,
+                "spans": [span("first", 1, 10, 0), span("second", 1, 11, 10)],
+            },
+            {"priority": -128, "spans": [third]},
+        ],
+    });
+    rmp_serde::to_vec(&payload).expect("Failed to serialize v0.7 test trace")
 }
 
 /// Create a trace payload with a root span and two non-top-level, non-measured child spans:

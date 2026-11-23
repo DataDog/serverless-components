@@ -1,0 +1,188 @@
+{
+  "scenario": "process.missing-api-key",
+  "go_binary_sha256": "0dac40f4aa896118dcc40ddd40c200a8d8e2389a3fbe9e155c684bfc70435a80",
+  "inputs": {
+    "compare-defaults.yaml": "083c94571d24858427a78cc6ce76e8809495582b567acdf90ba59211c8a9ed13",
+    "normalize.yaml": "936a76b8175590ba77eccd17404026608869bd521b26d17521bf5cb4a86dbcbf",
+    "platforms/local.env": "ab26271d97666e7caf79076aa91e0b683e191e3c7c60b1d389b79176fce5c2f8",
+    "scenarios/process.missing-api-key.yaml": "8f529cb3bfacb7a48ab471fe9b626373f616c6fce2a2fddf85eefbd9444e3655"
+  },
+  "normalized": {
+    "series": [
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      }
+    ],
+    "sketches": null,
+    "logs": [
+      {
+        "message": "parity-child: running without an API key",
+        "status": "info",
+        "timestamp": "in window",
+        "service": "agent",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      }
+    ],
+    "traces": null,
+    "stats": null,
+    "check_runs": [
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      }
+    ],
+    "process": {
+      "exit_code": 4,
+      "arguments": [
+        "/parity-workload",
+        "--scenario",
+        "/parity/process.missing-api-key.yaml",
+        "--events",
+        "/parity-shared/events.jsonl"
+      ],
+      "environment": {
+        "DD_API_KEY": "",
+        "DD_APM_DD_URL": "http://fakeintake:80",
+        "DD_APM_DEBUGGER_DD_URL": "http://fakeintake:80",
+        "DD_APM_ENABLED": "true",
+        "DD_APM_PROFILING_DD_URL": "http://fakeintake:80/api/v2/profile",
+        "DD_APM_SYMDB_DD_URL": "http://fakeintake:80",
+        "DD_APM_TELEMETRY_DD_URL": "http://fakeintake:80",
+        "DD_DD_URL": "http://fakeintake:80",
+        "DD_EVP_PROXY_CONFIG_DD_URL": "http://fakeintake:80",
+        "DD_HOSTNAME": "none",
+        "DD_INSTRUMENTATION_TELEMETRY_ENABLED": "false",
+        "DD_LOGS_CONFIG_FORCE_USE_HTTP": "true",
+        "DD_LOGS_CONFIG_LOGS_DD_URL": "fakeintake:80",
+        "DD_LOGS_CONFIG_LOGS_NO_SSL": "true",
+        "DD_LOGS_ENABLED": "true",
+        "DD_REMOTE_CONFIGURATION_ENABLED": "false",
+        "DD_SKIP_SSL_VALIDATION": "true",
+        "DD_TRACE_ENABLED": "true"
+      },
+      "stdout": [
+        "parity-child: running without an API key"
+      ]
+    },
+    "timing": {
+      "arrivals": [
+        {
+          "area": "logs",
+          "at": "2026-11-23T10:58:33.73540963Z",
+          "items": [
+            "log:parity-child: running without an API key"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:58:33.736316675Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:58:33.736537801Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2"
+          ]
+        }
+      ],
+      "sent": [
+        {
+          "at": "2026-11-23T10:58:32.733986494Z",
+          "items": [
+            "metric:parity.requests|route:/"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:58:32.735730292Z",
+          "items": [
+            "log:parity-child: running without an API key"
+          ]
+        }
+      ],
+      "sigterm": "0001-01-01T00:00:00Z",
+      "exited": "2026-11-23T10:58:33.740567065Z"
+    }
+  },
+  "measures": {
+    "interval_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": false
+      },
+      "series": {
+        "measurable": false
+      },
+      "sketches": {
+        "measurable": false
+      },
+      "stats": {
+        "measurable": false
+      },
+      "traces": {
+        "measurable": false
+      }
+    },
+    "max_delay_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": true,
+        "value": "999.679338ms"
+      },
+      "series": {
+        "measurable": false
+      },
+      "sketches": {
+        "measurable": false
+      },
+      "stats": {
+        "measurable": false
+      },
+      "traces": {
+        "measurable": false
+      }
+    },
+    "missing_after_sigterm": [
+      "metric:parity.requests|route:/"
+    ],
+    "missing_sent_after_sigterm": [],
+    "ambiguous_items": [],
+    "sigterm": false,
+    "shutdown": {
+      "measurable": false
+    }
+  },
+  "resources": {
+    "startup": {
+      "measurable": false
+    },
+    "peak_memory_bytes": 39657144,
+    "peak_memory_known": true
+  }
+}

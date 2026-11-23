@@ -1,0 +1,17 @@
+# Without an API key the agent runs the child and passes on its exit code. Go 1.12.0 still sends
+# the child's logs, datadog.agent.running and the datadog.agent.up check run, with no API key.
+name: process.missing-api-key
+priority: P0
+features: [process.missing-api-key]
+mode: in-container
+platform: local
+environment:
+  DD_API_KEY: ""
+  DD_LOGS_ENABLED: "true"
+workload:
+  - at: 1s
+    send_dogstatsd: ["parity.requests:1|c|#route:/"]
+  - at: 1s
+    print: {stream: stdout, lines: ["parity-child: running without an API key"]}
+  - at: 2s
+    exit: 4

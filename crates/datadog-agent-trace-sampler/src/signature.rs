@@ -103,6 +103,16 @@ pub fn compute_signature_with_root_and_env(
     Signature::from(trace_hash)
 }
 
+/// Signature of a service and env: FNV-1a over `service,env`, as the Go agent's
+/// `ServiceSignature.Hash`.
+pub fn compute_service_signature(service: &str, env: &str) -> Signature {
+    let mut h = Fnv1a32::new();
+    h.write(service.as_bytes());
+    h.write_char(b',');
+    h.write(env.as_bytes());
+    Signature::from(h.sum32())
+}
+
 /// Returns whether to keep a trace based on its ID and a sampling rate.
 ///
 /// Assumes trace IDs are nearly uniformly distributed. Deterministic for a
@@ -218,6 +228,12 @@ mod tests {
     fn signature_env_difference() {
         let t = [span("x1", "y1", "z1", false)];
         assert_ne!(sig(&t, "test"), sig(&t, "prod"));
+    }
+
+    // Go's `ServiceSignature{"web", "prod"}.Hash()`, the FNV-1a hash of "web,prod".
+    #[test]
+    fn service_signature_matches_go() {
+        assert_eq!(compute_service_signature("web", "prod"), 2_726_573_998);
     }
 
     // sample_by_rate is deterministic: same (trace_id, rate) always yields the

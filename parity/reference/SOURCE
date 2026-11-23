@@ -1,0 +1,8 @@
+# The datadog-agent commit that the reference captures were recorded from, the serverless-init
+# release that it corresponds to, the SHA-256 of the Go binary that recorded them, and the commit
+# of the fakeintake checkout whose decoders read the payloads. parity record writes the commit, the
+# binary and the fakeintake commit; a person keeps the release line up to date.
+commit: 144c8aebb3a455ec264ccdbd82a156c5fac34ed3
+release: serverless-init 1.12.0 (tag serverless-init-1.12.0)
+go_binary_sha256: 0dac40f4aa896118dcc40ddd40c200a8d8e2389a3fbe9e155c684bfc70435a80
+fakeintake_commit: b0a93203c2c8f8c8391b67f93f81d73d51e3767f

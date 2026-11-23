@@ -67,7 +67,7 @@
 mod score_sampler;
 mod signature;
 
-pub use score_sampler::ErrorsSampler;
+pub use score_sampler::{ErrorsSampler, PrioritySampler};
 pub use signature::Signature;
 
 /// A read-only view of a single span, holding only the fields the sampler needs.

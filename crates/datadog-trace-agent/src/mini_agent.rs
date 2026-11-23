@@ -29,6 +29,8 @@ use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
 const TRACE_ENDPOINT_PATH: &str = "/v0.4/traces";
+pub(crate) const V05_TRACE_ENDPOINT_PATH: &str = "/v0.5/traces";
+pub(crate) const V07_TRACE_ENDPOINT_PATH: &str = "/v0.7/traces";
 const STATS_ENDPOINT_PATH: &str = "/v0.6/stats";
 const INFO_ENDPOINT_PATH: &str = "/info";
 const DSM_ENDPOINT_PATH: &str = "/v0.1/pipeline_stats";
@@ -40,6 +42,17 @@ const PROXY_PAYLOAD_CHANNEL_BUFFER_SIZE: usize = 10;
 /// JoinHandle type for a transport accept loop (TCP or named pipe).
 type TransportHandle =
     tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
+
+/// The address the receiver listens on: every interface with non-local traffic, otherwise only
+/// the loopback interface.
+fn receiver_address(port: u16, non_local_traffic: bool) -> SocketAddr {
+    let ip = if non_local_traffic {
+        [0, 0, 0, 0]
+    } else {
+        [127, 0, 0, 1]
+    };
+    SocketAddr::from((ip, port))
+}
 
 pub struct MiniAgent {
     pub config: Arc<config::Config>,
@@ -82,10 +95,13 @@ impl MiniAgent {
             mpsc::channel(TRACER_PAYLOAD_CHANNEL_BUFFER_SIZE);
 
         // start our trace flusher. receives trace payloads and handles buffering + deciding when to
-        // flush to backend.
+        // flush to backend. serve() signals its shutdown after the HTTP handlers drain.
         let trace_flusher = self.trace_flusher.clone();
+        let (trace_flusher_shutdown_tx, trace_flusher_shutdown_rx) = oneshot::channel::<()>();
         let trace_flusher_handle = tokio::spawn(async move {
-            trace_flusher.start_trace_flusher(trace_rx).await;
+            trace_flusher
+                .start_trace_flusher(trace_rx, trace_flusher_shutdown_rx)
+                .await;
         });
 
         // channels to send processed stats to our stats flusher.
@@ -97,14 +113,14 @@ impl MiniAgent {
         // Separate shutdown channel for the stats flusher: serve() drains all
         // in-flight HTTP handlers before triggering the final flush, preventing
         // AddChunk/ClientStatsPayload messages from being missed.
-        let (flusher_shutdown_tx, flusher_shutdown_rx) = oneshot::channel::<()>();
+        let (stats_flusher_shutdown_tx, stats_flusher_shutdown_rx) = oneshot::channel::<()>();
 
         // start our stats flusher.
         let stats_flusher = self.stats_flusher.clone();
         let stats_config = self.config.clone();
         let stats_flusher_handle = tokio::spawn(async move {
             stats_flusher
-                .start_stats_flusher(stats_config, stats_rx, flusher_shutdown_rx)
+                .start_stats_flusher(stats_config, stats_rx, stats_flusher_shutdown_rx)
                 .await;
         });
 
@@ -152,7 +168,10 @@ impl MiniAgent {
             now.elapsed().as_millis()
         );
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], self.config.dd_apm_receiver_port));
+        let addr = receiver_address(
+            self.config.dd_apm_receiver_port,
+            self.config.dd_apm_non_local_traffic,
+        );
 
         // TCP listener: required without a named pipe, fails safely when a named pipe is configured.
         // Multiple Azure apps share the same VM on certain windows Azure plans.
@@ -238,7 +257,8 @@ impl MiniAgent {
             stats_flusher_handle,
             stats_concentrator_service_handle,
             shutdown_rx,
-            flusher_shutdown_tx,
+            trace_flusher_shutdown_tx,
+            stats_flusher_shutdown_tx,
         )
         .await
     }
@@ -258,7 +278,8 @@ impl MiniAgent {
         mut stats_flusher_handle: tokio::task::JoinHandle<()>,
         mut stats_concentrator_service_handle: Option<tokio::task::JoinHandle<()>>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-        flusher_shutdown_tx: oneshot::Sender<()>,
+        trace_flusher_shutdown_tx: oneshot::Sender<()>,
+        stats_flusher_shutdown_tx: oneshot::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // task supervision cases: we react if...
         enum Event {
@@ -358,12 +379,16 @@ impl MiniAgent {
                 {
                     error!("Named pipe accept loop failed during shutdown: {e:?}");
                 }
-                // Now all handlers have written to the channels. Force-flush
-                // the stats flusher.
-                let _ = flusher_shutdown_tx.send(());
-                match (&mut stats_flusher_handle).await {
-                    Ok(()) => Ok(()),
-                    Err(e) => {
+                // Now every handler has finished. Both flushers drain their
+                // channels and flush concurrently.
+                let _ = trace_flusher_shutdown_tx.send(());
+                let _ = stats_flusher_shutdown_tx.send(());
+                match tokio::join!(&mut trace_flusher_handle, &mut stats_flusher_handle) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(e), _) => {
+                        Err(format!("Trace flusher task failed during shutdown: {e:?}").into())
+                    }
+                    (_, Err(e)) => {
                         Err(format!("Stats flusher task failed during shutdown: {e:?}").into())
                     }
                 }
@@ -607,7 +632,12 @@ impl MiniAgent {
         proxy_tx: Sender<ProxyRequest>,
     ) -> http::Result<http_common::HttpResponse> {
         match (req.method(), req.uri().path()) {
-            (&Method::PUT | &Method::POST, TRACE_ENDPOINT_PATH) => {
+            (&Method::PUT | &Method::POST, path)
+                if path == TRACE_ENDPOINT_PATH
+                    || (config.v05_and_v07_traces_enabled
+                        && (path == V05_TRACE_ENDPOINT_PATH
+                            || path == V07_TRACE_ENDPOINT_PATH)) =>
+            {
                 match trace_processor
                     .process_traces(config, req, trace_tx, mini_agent_metadata)
                     .await
@@ -664,6 +694,7 @@ impl MiniAgent {
                 config.dd_dogstatsd_port,
                 &config.peer_tags,
                 config.agent_stats_computation_enabled,
+                config.v05_and_v07_traces_enabled,
             ) {
                 Ok(res) => Ok(res),
                 Err(err) => log_and_create_http_response(
@@ -742,6 +773,7 @@ impl MiniAgent {
         dd_dogstatsd_port: u16,
         peer_tags: &[String],
         agent_stats_computation_enabled: bool,
+        v05_and_v07_traces_enabled: bool,
     ) -> http::Result<http_common::HttpResponse> {
         // pipe_name already includes \\.\pipe\ prefix from config
         let receiver_socket = dd_apm_windows_pipe_name.unwrap_or("");
@@ -757,15 +789,20 @@ impl MiniAgent {
         // so it can compute accurate stats. P0 traces must not be dropped by the tracer.
         let client_drop_p0s = !agent_stats_computation_enabled;
 
+        let mut endpoints = vec![TRACE_ENDPOINT_PATH];
+        if v05_and_v07_traces_enabled {
+            endpoints.extend([V05_TRACE_ENDPOINT_PATH, V07_TRACE_ENDPOINT_PATH]);
+        }
+        endpoints.extend([
+            STATS_ENDPOINT_PATH,
+            INFO_ENDPOINT_PATH,
+            DSM_ENDPOINT_PATH,
+            PROFILING_ENDPOINT_PATH,
+        ]);
+
         let response_json = json!(
             {
-                "endpoints": [
-                    TRACE_ENDPOINT_PATH,
-                    STATS_ENDPOINT_PATH,
-                    INFO_ENDPOINT_PATH,
-                    DSM_ENDPOINT_PATH,
-                    PROFILING_ENDPOINT_PATH
-                ],
+                "endpoints": endpoints,
                 "client_drop_p0s": client_drop_p0s,
                 "span_kinds_stats_computed": SPAN_KINDS_STATS_COMPUTED,
                 "peer_tags": peer_tags,
@@ -775,5 +812,28 @@ impl MiniAgent {
         Response::builder()
             .status(200)
             .body(http_common::Body::from(response_json.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::receiver_address;
+    use std::net::SocketAddr;
+
+    #[test]
+    fn receiver_address_table() {
+        let cases: &[(u16, bool, &str)] = &[
+            (8126, false, "127.0.0.1:8126"),
+            (8126, true, "0.0.0.0:8126"),
+            (9000, false, "127.0.0.1:9000"),
+        ];
+        for (port, non_local_traffic, expected) in cases {
+            let expected: SocketAddr = expected.parse().unwrap();
+            assert_eq!(
+                receiver_address(*port, *non_local_traffic),
+                expected,
+                "port {port}, non-local traffic {non_local_traffic}"
+            );
+        }
     }
 }

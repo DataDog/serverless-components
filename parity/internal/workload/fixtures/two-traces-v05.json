@@ -1,0 +1,14 @@
+{
+  "encoding": "v05",
+  "headers": {"Datadog-Meta-Lang": "python", "Datadog-Meta-Lang-Version": "3.12.7", "Datadog-Meta-Lang-Interpreter": "CPython", "Datadog-Meta-Tracer-Version": "2.18.1", "Datadog-Container-ID": "9d3bc1f2e8a74b6d5c0f1e2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e"},
+  "traces": [
+    [
+      {"service": "parity-app", "name": "parity.request", "resource": "GET /v05", "trace_id": 1051, "span_id": 2051, "parent_id": 0, "start": 1700000000000000000, "duration": 50000000, "error": 0, "type": "web", "meta": {"http.status_code": "200", "span.kind": "server"}, "metrics": {"_top_level": 1}},
+      {"service": "parity-app", "name": "parity.query", "resource": "SELECT name FROM v05_users", "trace_id": 1051, "span_id": 2052, "parent_id": 2051, "start": 1700000000010000000, "duration": 20000000, "error": 0, "type": "sql", "meta": {}, "metrics": {}}
+    ],
+    [
+      {"service": "parity-app", "name": "parity.request", "resource": "GET /v05/fail", "trace_id": 1052, "span_id": 2053, "parent_id": 0, "start": 1700000001000000000, "duration": 80000000, "error": 1, "type": "web", "meta": {"http.status_code": "500", "span.kind": "server"}, "metrics": {"_top_level": 1}},
+      {"service": "parity-app", "name": "parity.cache", "resource": "GET v05-session", "trace_id": 1052, "span_id": 2054, "parent_id": 2053, "start": 1700000001005000000, "duration": 10000000, "error": 0, "type": "cache", "meta": {}, "metrics": {}}
+    ]
+  ]
+}

@@ -45,7 +45,11 @@ impl TraceFlusher for MockTraceFlusher {
         MockTraceFlusher
     }
 
-    async fn start_trace_flusher(&self, mut trace_rx: Receiver<SendData>) {
+    async fn start_trace_flusher(
+        &self,
+        mut trace_rx: Receiver<SendData>,
+        _shutdown: tokio::sync::oneshot::Receiver<()>,
+    ) {
         // Consume messages from the channel without processing them
         while let Some(_trace) = trace_rx.recv().await {
             // Just discard the trace - we're not testing the flusher

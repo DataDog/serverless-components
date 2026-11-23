@@ -1,0 +1,14 @@
+# Client spans to the DogStatsD port, to the agent's port over TCP, and DNS lookups of 127.0.0.1
+# and 0.0.0.0 must be dropped; the client span to example.com must be kept.
+name: traces.internal-span-filter
+priority: P1
+features: [traces.internal-span-filter]
+mode: in-container
+platform: local
+environment:
+  DD_SERVICE: parity-app
+workload:
+  - at: 1s
+    send_spans: {fixture: internal-spans-v04}
+  - at: 2s
+    exit: 0

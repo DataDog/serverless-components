@@ -1,0 +1,962 @@
+{
+  "scenario": "logs.file-tailing",
+  "go_binary_sha256": "0dac40f4aa896118dcc40ddd40c200a8d8e2389a3fbe9e155c684bfc70435a80",
+  "inputs": {
+    "compare-defaults.yaml": "083c94571d24858427a78cc6ce76e8809495582b567acdf90ba59211c8a9ed13",
+    "normalize.yaml": "936a76b8175590ba77eccd17404026608869bd521b26d17521bf5cb4a86dbcbf",
+    "platforms/local.env": "ab26271d97666e7caf79076aa91e0b683e191e3c7c60b1d389b79176fce5c2f8",
+    "scenarios/logs.file-tailing.yaml": "011508f4dac1281b1d86bf8ab0512115948a4400da4ee20ad28dcdb30fef665a"
+  },
+  "normalized": {
+    "series": [
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.instance",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "instance:\u003cmasked\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.instance",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "instance:\u003cmasked\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.instance",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "instance:\u003cmasked\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      }
+    ],
+    "sketches": [
+      {
+        "metric": "datadog.serverless_agent.enhanced.cold_start",
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.limit",
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 3,
+            "min": 4000000000,
+            "max": 4000000000,
+            "avg": 4000000000,
+            "sum": 12000000000,
+            "k": [
+              2764
+            ],
+            "n": [
+              3
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.limit",
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 3,
+            "min": 4000000000,
+            "max": 4000000000,
+            "avg": 4000000000,
+            "sum": 12000000000,
+            "k": [
+              2764
+            ],
+            "n": [
+              3
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.limit",
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 4,
+            "min": 4000000000,
+            "max": 4000000000,
+            "avg": 4000000000,
+            "sum": 16000000000,
+            "k": [
+              2764
+            ],
+            "n": [
+              4
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.usage",
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 3,
+            "min": 5358522.382699174,
+            "max": 6899968.814340418,
+            "avg": 6159206.180509623,
+            "sum": 18477618.54152887,
+            "k": [
+              2337,
+              2347,
+              2354
+            ],
+            "n": [
+              1,
+              1,
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.usage",
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 3,
+            "min": 5676098.930034224,
+            "max": 6961599.859186839,
+            "avg": 6227285.020293822,
+            "sum": 18681855.060881466,
+            "k": [
+              2341,
+              2345,
+              2354
+            ],
+            "n": [
+              1,
+              1,
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.usage",
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 3,
+            "min": 5191025.7882239595,
+            "max": 7737335.523102295,
+            "avg": 6502069.703496955,
+            "sum": 19506209.110490866,
+            "k": [
+              2335,
+              2351,
+              2361
+            ],
+            "n": [
+              1,
+              1,
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.shutdown",
+        "tags": [
+          "datadog_sidecar_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      }
+    ],
+    "logs": [
+      {
+        "message": "parity-file: line 1",
+        "status": "info",
+        "timestamp": "in window",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_sidecar_version:\u003cplaceholder\u003e",
+          "dirname:/parity-shared",
+          "filename:app.log",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      },
+      {
+        "message": "parity-file: line 2",
+        "status": "info",
+        "timestamp": "in window",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_sidecar_version:\u003cplaceholder\u003e",
+          "dirname:/parity-shared",
+          "filename:app.log",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      },
+      {
+        "message": "parity-file: line 3",
+        "status": "info",
+        "timestamp": "in window",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_sidecar_version:\u003cplaceholder\u003e",
+          "dirname:/parity-shared",
+          "filename:app.log",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      },
+      {
+        "message": "parity-file: line 4",
+        "status": "info",
+        "timestamp": "in window",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_sidecar_version:\u003cplaceholder\u003e",
+          "dirname:/parity-shared",
+          "filename:app.log",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      },
+      {
+        "message": "parity-file: line 5",
+        "status": "info",
+        "timestamp": "in window",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_sidecar_version:\u003cplaceholder\u003e",
+          "dirname:/parity-shared",
+          "filename:app.log",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      },
+      {
+        "message": "parity-file: line 6",
+        "status": "info",
+        "timestamp": "in window",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_sidecar_version:\u003cplaceholder\u003e",
+          "dirname:/parity-shared",
+          "filename:app.log",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      },
+      {
+        "message": "parity-file: line 7",
+        "status": "info",
+        "timestamp": "in window",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_sidecar_version:\u003cplaceholder\u003e",
+          "dirname:/parity-shared",
+          "filename:app.log",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      },
+      {
+        "message": "parity-file: line 8",
+        "status": "info",
+        "timestamp": "in window",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_sidecar_version:\u003cplaceholder\u003e",
+          "dirname:/parity-shared",
+          "filename:app.log",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      }
+    ],
+    "traces": null,
+    "stats": null,
+    "check_runs": [
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      },
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      },
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      },
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      },
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      },
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      },
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      },
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      },
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      }
+    ],
+    "process": {
+      "exit_code": 0,
+      "arguments": [
+        "/parity-workload",
+        "--scenario",
+        "/parity/logs.file-tailing.yaml",
+        "--events",
+        "/parity-shared/events.jsonl"
+      ],
+      "signals": [
+        "SIGTERM"
+      ],
+      "environment": {
+        "DD_API_KEY": "00000000000000000000000000parity",
+        "DD_APM_DD_URL": "http://fakeintake:80",
+        "DD_APM_DEBUGGER_DD_URL": "http://fakeintake:80",
+        "DD_APM_PROFILING_DD_URL": "http://fakeintake:80/api/v2/profile",
+        "DD_APM_SYMDB_DD_URL": "http://fakeintake:80",
+        "DD_APM_TELEMETRY_DD_URL": "http://fakeintake:80",
+        "DD_DD_URL": "http://fakeintake:80",
+        "DD_EVP_PROXY_CONFIG_DD_URL": "http://fakeintake:80",
+        "DD_LOGS_CONFIG_FORCE_USE_HTTP": "true",
+        "DD_LOGS_CONFIG_LOGS_DD_URL": "fakeintake:80",
+        "DD_LOGS_CONFIG_LOGS_NO_SSL": "true",
+        "DD_SERVERLESS_LOG_PATH": "/parity-shared/app.log",
+        "DD_SKIP_SSL_VALIDATION": "true"
+      }
+    },
+    "timing": {
+      "arrivals": [
+        {
+          "area": "series",
+          "at": "2026-11-23T10:58:53.308519491Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:58:53.308912076Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "logs",
+          "at": "2026-11-23T10:58:55.312165543Z",
+          "items": [
+            "log:parity-file: line 1"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:58:56.307038338Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:58:56.307500756Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:58:59.307538072Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:58:59.308295742Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2"
+          ]
+        },
+        {
+          "area": "logs",
+          "at": "2026-11-23T10:59:00.311589318Z",
+          "items": [
+            "log:parity-file: line 2",
+            "log:parity-file: line 3"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:59:02.31114024Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:59:02.311604284Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2",
+            "metric:datadog.serverless_agent.enhanced.instance|datadog_sidecar_version:parity,instance:17342296291d,local:true,sidecar:true"
+          ]
+        },
+        {
+          "area": "sketches",
+          "at": "2026-11-23T10:59:02.311907493Z",
+          "items": [
+            "metric:datadog.serverless_agent.enhanced.cold_start|datadog_sidecar_version:parity,local:true,sidecar:true",
+            "metric:datadog.serverless_agent.enhanced.cpu.limit|datadog_sidecar_version:parity,local:true,sidecar:true",
+            "metric:datadog.serverless_agent.enhanced.cpu.usage|datadog_sidecar_version:parity,local:true,sidecar:true"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:59:05.307354221Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:59:05.308006099Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "logs",
+          "at": "2026-11-23T10:59:05.309986064Z",
+          "items": [
+            "log:parity-file: line 4",
+            "log:parity-file: line 5"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:59:08.305723591Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:59:08.306017758Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "logs",
+          "at": "2026-11-23T10:59:10.311123461Z",
+          "items": [
+            "log:parity-file: line 6"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:59:11.306366599Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2",
+            "metric:datadog.serverless_agent.enhanced.instance|datadog_sidecar_version:parity,instance:17342296291d,local:true,sidecar:true"
+          ]
+        },
+        {
+          "area": "sketches",
+          "at": "2026-11-23T10:59:11.306847976Z",
+          "items": [
+            "metric:datadog.serverless_agent.enhanced.cpu.limit|datadog_sidecar_version:parity,local:true,sidecar:true",
+            "metric:datadog.serverless_agent.enhanced.cpu.usage|datadog_sidecar_version:parity,local:true,sidecar:true"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:59:11.307142352Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:59:14.30663207Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:59:14.307222614Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "logs",
+          "at": "2026-11-23T10:59:15.310069573Z",
+          "items": [
+            "log:parity-file: line 7",
+            "log:parity-file: line 8"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:59:15.513203216Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "sketches",
+          "at": "2026-11-23T10:59:15.513961552Z",
+          "items": [
+            "metric:datadog.serverless_agent.enhanced.cpu.limit|datadog_sidecar_version:parity,local:true,sidecar:true",
+            "metric:datadog.serverless_agent.enhanced.cpu.usage|datadog_sidecar_version:parity,local:true,sidecar:true",
+            "metric:datadog.serverless_agent.enhanced.shutdown|datadog_sidecar_version:parity,local:true,sidecar:true"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:59:15.515422099Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2",
+            "metric:datadog.serverless_agent.enhanced.instance|datadog_sidecar_version:parity,instance:17342296291d,local:true,sidecar:true"
+          ]
+        }
+      ],
+      "sent": [
+        {
+          "at": "2026-11-23T10:58:51.504082525Z",
+          "items": [
+            "log:parity-file: line 1"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:58:54.503054828Z",
+          "items": [
+            "log:parity-file: line 2"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:58:57.502522347Z",
+          "items": [
+            "log:parity-file: line 3"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:59:00.501487412Z",
+          "items": [
+            "log:parity-file: line 4"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:59:03.503710369Z",
+          "items": [
+            "log:parity-file: line 5"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:59:06.505728415Z",
+          "items": [
+            "log:parity-file: line 6"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:59:09.50351216Z",
+          "items": [
+            "log:parity-file: line 7"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:59:12.507477724Z",
+          "items": [
+            "log:parity-file: line 8"
+          ]
+        }
+      ],
+      "sigterm": "2026-11-23T05:59:15.501616248-05:00",
+      "exited": "2026-11-23T10:59:15.526401638Z"
+    }
+  },
+  "measures": {
+    "interval_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": true,
+        "value": "4.999184943s"
+      },
+      "series": {
+        "measurable": false
+      },
+      "sketches": {
+        "measurable": false
+      },
+      "stats": {
+        "measurable": false
+      },
+      "traces": {
+        "measurable": false
+      }
+    },
+    "flush_interval_by_area": {
+      "check_runs": {
+        "measurable": true,
+        "value": "3.000080262s"
+      },
+      "logs": {
+        "measurable": true,
+        "value": "4.999184943s"
+      },
+      "series": {
+        "measurable": true,
+        "value": "3.000265471s"
+      }
+    },
+    "max_delay_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": true,
+        "value": "5.80853449s"
+      },
+      "series": {
+        "measurable": false
+      },
+      "sketches": {
+        "measurable": false
+      },
+      "stats": {
+        "measurable": false
+      },
+      "traces": {
+        "measurable": false
+      }
+    },
+    "missing_after_sigterm": [],
+    "missing_sent_after_sigterm": [],
+    "ambiguous_items": [],
+    "sigterm": true,
+    "shutdown": {
+      "measurable": true,
+      "value": "24.78539ms"
+    }
+  },
+  "resources": {
+    "startup": {
+      "measurable": false
+    },
+    "peak_memory_bytes": 56937676,
+    "peak_memory_known": true
+  }
+}

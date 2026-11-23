@@ -1,0 +1,16 @@
+# Both settings at once: no agent stats, and the _dd.compute_stats tag that asks the backend to
+# compute them.
+name: traces.stats-toggles
+priority: P1
+features: [traces.stats-toggles]
+mode: in-container
+platform: local
+environment:
+  DD_SERVICE: parity-app
+  DD_SERVERLESS_INIT_DISABLE_TRACE_STATS: "true"
+  DD_SERVERLESS_INIT_ENABLE_BACKEND_TRACE_STATS: "true"
+workload:
+  - at: 1s
+    send_spans: {fixture: two-traces-v04}
+  - at: 2s
+    exit: 0

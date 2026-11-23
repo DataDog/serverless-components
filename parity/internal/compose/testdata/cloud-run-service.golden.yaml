@@ -1,0 +1,73 @@
+name: parity-process-signal-forwarding-go
+services:
+    agent:
+        image: debian:12-slim
+        entrypoint:
+            - /datadog-init
+            - /parity-workload
+            - --scenario
+            - /parity/process.signal-forwarding.yaml
+            - --events
+            - /parity-shared/events.jsonl
+        environment:
+            DD_API_KEY: 00000000000000000000000000parity
+            DD_APM_DD_URL: http://fakeintake:80
+            DD_APM_DEBUGGER_DD_URL: http://fakeintake:80
+            DD_APM_PROFILING_DD_URL: http://fakeintake:80/api/v2/profile
+            DD_APM_SYMDB_DD_URL: http://fakeintake:80
+            DD_APM_TELEMETRY_DD_URL: http://fakeintake:80
+            DD_DD_URL: http://fakeintake:80
+            DD_EVP_PROXY_CONFIG_DD_URL: http://fakeintake:80
+            DD_LOGS_CONFIG_FORCE_USE_HTTP: "true"
+            DD_LOGS_CONFIG_LOGS_DD_URL: fakeintake:80
+            DD_LOGS_CONFIG_LOGS_NO_SSL: "true"
+            DD_SERVICE: parity-app
+            DD_SKIP_SSL_VALIDATION: "true"
+            K_SERVICE: parity-service
+        volumes:
+            - /repo/parity/out/bin/go/datadog-init:/datadog-init:ro
+            - /repo/parity/out/bin/workload/parity-workload:/parity-workload:ro
+            - /repo/parity/out/run/process.signal-forwarding/go/process.signal-forwarding.yaml:/parity/process.signal-forwarding.yaml:ro
+            - /repo/parity/out/run/process.signal-forwarding/go/shared:/parity-shared
+        depends_on:
+            fake-gcp-metadata:
+                condition: service_healthy
+            fakeintake:
+                condition: service_healthy
+    fake-gcp-metadata:
+        image: debian:12-slim
+        entrypoint:
+            - /fake-gcp-metadata
+            - --mode
+            - slow
+            - --delay
+            - 500ms
+        volumes:
+            - /repo/parity/out/bin/workload/fake-gcp-metadata:/fake-gcp-metadata:ro
+        networks:
+            default:
+                aliases:
+                    - metadata.google.internal
+        healthcheck:
+            test:
+                - CMD
+                - /fake-gcp-metadata
+                - --check
+            interval: 5s
+            start_period: 30s
+            start_interval: 250ms
+    fakeintake:
+        image: parity-fakeintake:local
+        volumes:
+            - /repo/parity/out/bin/workload/parity-workload:/parity-workload:ro
+        ports:
+            - 127.0.0.1::80
+        healthcheck:
+            test:
+                - CMD
+                - curl
+                - -fsS
+                - http://127.0.0.1/fakeintake/health
+            interval: 5s
+            start_period: 30s
+            start_interval: 250ms

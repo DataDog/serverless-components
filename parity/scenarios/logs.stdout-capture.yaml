@@ -1,0 +1,15 @@
+# One log message per stdout line.
+name: logs.stdout-capture
+priority: P0
+features: [logs.stdout-stderr-capture]
+mode: in-container
+platform: local
+environment:
+  DD_LOGS_ENABLED: "true"
+workload:
+  - at: 1s
+    print: {stream: stdout, lines: ["parity-child: stdout log 1", "parity-child: stdout log 2"]}
+  - at: 2s
+    print: {stream: stdout, lines: ["parity-child: stdout log 3"]}
+  - at: 3s
+    exit: 0

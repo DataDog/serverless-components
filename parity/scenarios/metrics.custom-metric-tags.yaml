@@ -1,0 +1,13 @@
+name: metrics.custom-metric-tags
+priority: P0
+features: [metrics.custom-metric-tags]
+mode: in-container
+platform: local
+environment:
+  DD_TAGS: "team:parity,tier:one"
+  DD_DOGSTATSD_TAGS: "pipeline:dogstatsd"
+workload:
+  - at: 1s
+    send_dogstatsd: ["parity.requests:1|c|#route:/", "parity.latency:12|d|#route:/"]
+  - at: 2s
+    exit: 0

@@ -1,0 +1,21 @@
+name: process.signal-forwarding
+priority: P0
+features: [process.signal-forwarding, process.shutdown-flush]
+mode: in-container
+platform: local
+environment:
+  DD_SERVICE: parity-app
+workload:
+  - at: 0s
+    send_spans: {fixture: two-traces-v04}
+  - at: 0s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:1", "parity.latency:12|d|#send:1"]
+  - at: 1s
+    print: {stream: stdout, lines: ["parity-child: started"]}
+  - at: 5s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:2"]
+  - wait_for_signal: {signal: SIGTERM, then: [{print: {stream: stdout, lines: ["parity-child: got SIGTERM"]}}, {exit: 7}]}
+stop:
+  send_signal: {signal: SIGTERM, after_seconds: 7}
+compare:
+  overrides: []

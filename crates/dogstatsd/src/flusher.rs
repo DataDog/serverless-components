@@ -72,8 +72,30 @@ impl Flusher {
         Vec<crate::datadog::Series>,
         Vec<datadog_protos::metrics::SketchPayload>,
     )> {
-        // Request flush through the channel - no lock needed!
-        let response = match self.aggregator_handle.flush().await {
+        self.ship_aggregator_response(self.aggregator_handle.flush().await)
+            .await
+    }
+
+    /// Flush only the metrics whose 10-second bucket has ended, and keep the others in the
+    /// aggregator.
+    pub async fn flush_closed_buckets(
+        &self,
+    ) -> Option<(
+        Vec<crate::datadog::Series>,
+        Vec<datadog_protos::metrics::SketchPayload>,
+    )> {
+        self.ship_aggregator_response(self.aggregator_handle.flush_closed_buckets().await)
+            .await
+    }
+
+    async fn ship_aggregator_response(
+        &self,
+        response: Result<crate::aggregator::FlushResponse, String>,
+    ) -> Option<(
+        Vec<crate::datadog::Series>,
+        Vec<datadog_protos::metrics::SketchPayload>,
+    )> {
+        let response = match response {
             Ok(response) => response,
             Err(e) => {
                 error!("Failed to flush aggregator: {}", e);

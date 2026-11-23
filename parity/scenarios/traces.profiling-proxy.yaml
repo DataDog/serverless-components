@@ -1,0 +1,15 @@
+# The workload has no step that posts a profile yet, so this only sends a trace. Once it can post
+# to /profiling/v1/input, the profile and its tags at the intake are what this scenario compares.
+name: traces.profiling-proxy
+priority: P1
+features: [traces.profiling-proxy]
+mode: in-container
+platform: local
+coverage_gap: "No workload step posts a profile, so it only sends a trace."
+environment:
+  DD_SERVICE: parity-app
+workload:
+  - at: 1s
+    send_spans: {fixture: two-traces-v04}
+  - at: 2s
+    exit: 0

@@ -1,0 +1,9 @@
+# The driver records its DD_* environment, which the process comparison checks.
+name: config.child-environment-defaults
+priority: P0
+features: [config.child-environment-defaults]
+mode: in-container
+platform: local
+workload:
+  - at: 0s
+    print: {stream: stdout, lines: ["parity-child: started"]}

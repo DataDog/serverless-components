@@ -182,6 +182,7 @@ fn describe_config(config: &LogFlusherConfig) -> (String, bool) {
             config.use_compression,
         ),
         Destination::ObservabilityPipelinesWorker { url } => (url.clone(), false),
+        Destination::CustomUrl { url, .. } => (url.clone(), config.use_compression),
     }
 }
 

@@ -1,9 +1,10 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::aggregator::Aggregator;
+use crate::aggregator::{Aggregator, SeriesFormat};
 use crate::datadog::Series;
 use crate::metric::{Metric, SortedTags};
+use crate::origin::{OriginCategory, OriginProduct, OriginService};
 use datadog_protos::metrics::SketchPayload;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
@@ -13,6 +14,8 @@ use ustr::Ustr;
 pub enum AggregatorCommand {
     InsertBatch(Vec<Metric>),
     Flush(oneshot::Sender<FlushResponse>),
+    /// Flushes only the metrics whose 10-second bucket has ended.
+    FlushClosedBuckets(oneshot::Sender<FlushResponse>),
     GetEntryById {
         name: Ustr,
         tags: Option<SortedTags>,
@@ -42,9 +45,22 @@ impl AggregatorHandle {
     }
 
     pub async fn flush(&self) -> Result<FlushResponse, String> {
+        self.request_flush(AggregatorCommand::Flush).await
+    }
+
+    /// Flushes only the metrics whose 10-second bucket has ended, and keeps the others.
+    pub async fn flush_closed_buckets(&self) -> Result<FlushResponse, String> {
+        self.request_flush(AggregatorCommand::FlushClosedBuckets)
+            .await
+    }
+
+    async fn request_flush(
+        &self,
+        command: fn(oneshot::Sender<FlushResponse>) -> AggregatorCommand,
+    ) -> Result<FlushResponse, String> {
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
-            .send(AggregatorCommand::Flush(response_tx))
+            .send(command(response_tx))
             .map_err(|e| format!("Failed to send flush command: {e}"))?;
 
         response_rx
@@ -98,6 +114,40 @@ impl AggregatorService {
         Ok((service, handle))
     }
 
+    /// Sets how series are encoded.
+    #[must_use]
+    pub fn with_series_format(mut self, series_format: SeriesFormat) -> Self {
+        self.aggregator = self.aggregator.with_series_format(series_format);
+        self
+    }
+
+    /// Sends a tag that is in both the base tags and a metric's tags once, as the Go agent does.
+    #[must_use]
+    pub fn with_unique_tags(mut self) -> Self {
+        self.aggregator = self.aggregator.with_unique_tags();
+        self
+    }
+
+    /// Gives every metric this origin, in place of the origin found from its name and tags.
+    #[must_use]
+    pub fn with_origin(
+        mut self,
+        product: OriginProduct,
+        category: OriginCategory,
+        service: OriginService,
+    ) -> Self {
+        self.aggregator = self.aggregator.with_origin(product, category, service);
+        self
+    }
+
+    /// With `with_origin`, gives metrics named `runtime.*` this origin service instead, as the Go
+    /// agent's serverless DogStatsD does.
+    #[must_use]
+    pub fn with_runtime_origin_service(mut self, service: OriginService) -> Self {
+        self.aggregator = self.aggregator.with_runtime_origin_service(service);
+        self
+    }
+
     pub async fn run(mut self) {
         debug!("Aggregator service started");
 
@@ -119,14 +169,21 @@ impl AggregatorService {
                 }
 
                 AggregatorCommand::Flush(response_tx) => {
-                    let series = self.aggregator.consume_metrics();
-                    let distributions = self.aggregator.consume_distributions();
-
                     let response = FlushResponse {
-                        series,
-                        distributions,
+                        series: self.aggregator.consume_metrics(),
+                        distributions: self.aggregator.consume_distributions(),
                     };
+                    if response_tx.send(response).is_err() {
+                        error!("Failed to send flush response - receiver dropped");
+                    }
+                }
 
+                AggregatorCommand::FlushClosedBuckets(response_tx) => {
+                    let now = now_seconds();
+                    let response = FlushResponse {
+                        series: self.aggregator.consume_closed_metrics(now),
+                        distributions: self.aggregator.consume_closed_distributions(now),
+                    };
                     if response_tx.send(response).is_err() {
                         error!("Failed to send flush response - receiver dropped");
                     }
@@ -154,6 +211,15 @@ impl AggregatorService {
 
         debug!("Aggregator service stopped");
     }
+}
+
+fn now_seconds() -> i64 {
+    std::time::UNIX_EPOCH
+        .elapsed()
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+        .try_into()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

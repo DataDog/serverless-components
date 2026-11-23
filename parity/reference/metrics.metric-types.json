@@ -1,0 +1,616 @@
+{
+  "scenario": "metrics.metric-types",
+  "go_binary_sha256": "0dac40f4aa896118dcc40ddd40c200a8d8e2389a3fbe9e155c684bfc70435a80",
+  "inputs": {
+    "compare-defaults.yaml": "083c94571d24858427a78cc6ce76e8809495582b567acdf90ba59211c8a9ed13",
+    "normalize.yaml": "936a76b8175590ba77eccd17404026608869bd521b26d17521bf5cb4a86dbcbf",
+    "platforms/local.env": "ab26271d97666e7caf79076aa91e0b683e191e3c7c60b1d389b79176fce5c2f8",
+    "scenarios/metrics.metric-types.yaml": "bde39193474773e91ea8ef48393b81533cd54eae0e636c04dbaad3de49718bb2"
+  },
+  "normalized": {
+    "series": [
+      {
+        "metric": "parity.count",
+        "type": "rate",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:count",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 0.2
+          }
+        ]
+      },
+      {
+        "metric": "parity.count_sampled",
+        "type": "rate",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:count",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 0.2
+          }
+        ]
+      },
+      {
+        "metric": "parity.gauge",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:gauge",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 7
+          }
+        ]
+      },
+      {
+        "metric": "parity.histogram.max",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:histogram",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 15
+          }
+        ]
+      },
+      {
+        "metric": "parity.histogram.median",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:histogram",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 5
+          }
+        ]
+      },
+      {
+        "metric": "parity.histogram.avg",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:histogram",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 10
+          }
+        ]
+      },
+      {
+        "metric": "parity.histogram.count",
+        "type": "rate",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:histogram",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 0.2
+          }
+        ]
+      },
+      {
+        "metric": "parity.histogram.95percentile",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:histogram",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 15
+          }
+        ]
+      },
+      {
+        "metric": "parity.set",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:set",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 2
+          }
+        ]
+      },
+      {
+        "metric": "parity.timer.max",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:timer",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 250
+          }
+        ]
+      },
+      {
+        "metric": "parity.timer.median",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:timer",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 250
+          }
+        ]
+      },
+      {
+        "metric": "parity.timer.avg",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:timer",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 250
+          }
+        ]
+      },
+      {
+        "metric": "parity.timer.count",
+        "type": "rate",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:timer",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 0.1
+          }
+        ]
+      },
+      {
+        "metric": "parity.timer.95percentile",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:timer",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 250
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.instance",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "instance:\u003cmasked\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      }
+    ],
+    "sketches": [
+      {
+        "metric": "datadog.serverless_agent.enhanced.cold_start",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.limit",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 2,
+            "min": 4000000000,
+            "max": 4000000000,
+            "avg": 4000000000,
+            "sum": 8000000000,
+            "k": [
+              2764
+            ],
+            "n": [
+              2
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.usage",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 10968391.313861901,
+            "max": 10968391.313861901,
+            "avg": 10968391.313861901,
+            "sum": 10968391.313861901,
+            "k": [
+              2384
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.shutdown",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "parity.distribution",
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "kind:distribution",
+          "local:true"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 2,
+            "min": 12,
+            "max": 30,
+            "avg": 21,
+            "sum": 42,
+            "k": [
+              1498,
+              1557
+            ],
+            "n": [
+              1,
+              1
+            ]
+          }
+        ]
+      }
+    ],
+    "logs": null,
+    "traces": null,
+    "stats": null,
+    "check_runs": [
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      }
+    ],
+    "process": {
+      "exit_code": 0,
+      "arguments": [
+        "/parity-workload",
+        "--scenario",
+        "/parity/metrics.metric-types.yaml",
+        "--events",
+        "/parity-shared/events.jsonl"
+      ],
+      "environment": {
+        "DD_API_KEY": "00000000000000000000000000parity",
+        "DD_APM_DD_URL": "http://fakeintake:80",
+        "DD_APM_DEBUGGER_DD_URL": "http://fakeintake:80",
+        "DD_APM_ENABLED": "true",
+        "DD_APM_PROFILING_DD_URL": "http://fakeintake:80/api/v2/profile",
+        "DD_APM_SYMDB_DD_URL": "http://fakeintake:80",
+        "DD_APM_TELEMETRY_DD_URL": "http://fakeintake:80",
+        "DD_DD_URL": "http://fakeintake:80",
+        "DD_EVP_PROXY_CONFIG_DD_URL": "http://fakeintake:80",
+        "DD_HOSTNAME": "none",
+        "DD_INSTRUMENTATION_TELEMETRY_ENABLED": "false",
+        "DD_LOGS_CONFIG_FORCE_USE_HTTP": "true",
+        "DD_LOGS_CONFIG_LOGS_DD_URL": "fakeintake:80",
+        "DD_LOGS_CONFIG_LOGS_NO_SSL": "true",
+        "DD_REMOTE_CONFIGURATION_ENABLED": "false",
+        "DD_SKIP_SSL_VALIDATION": "true",
+        "DD_TRACE_ENABLED": "true"
+      }
+    },
+    "timing": {
+      "arrivals": [
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:58:27.738740784Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:58:27.739119453Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2",
+            "metric:datadog.serverless_agent.enhanced.instance|datadog_init_version:parity,instance:c4f14c27c2cd,local:true,sidecar:false",
+            "metric:parity.count_sampled|_dd.datadog_init_version:parity,kind:count,local:true",
+            "metric:parity.count|_dd.datadog_init_version:parity,kind:count,local:true",
+            "metric:parity.gauge|_dd.datadog_init_version:parity,kind:gauge,local:true",
+            "metric:parity.histogram.95percentile|_dd.datadog_init_version:parity,kind:histogram,local:true",
+            "metric:parity.histogram.avg|_dd.datadog_init_version:parity,kind:histogram,local:true",
+            "metric:parity.histogram.count|_dd.datadog_init_version:parity,kind:histogram,local:true",
+            "metric:parity.histogram.max|_dd.datadog_init_version:parity,kind:histogram,local:true",
+            "metric:parity.histogram.median|_dd.datadog_init_version:parity,kind:histogram,local:true",
+            "metric:parity.set|_dd.datadog_init_version:parity,kind:set,local:true",
+            "metric:parity.timer.95percentile|_dd.datadog_init_version:parity,kind:timer,local:true",
+            "metric:parity.timer.avg|_dd.datadog_init_version:parity,kind:timer,local:true",
+            "metric:parity.timer.count|_dd.datadog_init_version:parity,kind:timer,local:true",
+            "metric:parity.timer.max|_dd.datadog_init_version:parity,kind:timer,local:true",
+            "metric:parity.timer.median|_dd.datadog_init_version:parity,kind:timer,local:true"
+          ]
+        },
+        {
+          "area": "sketches",
+          "at": "2026-11-23T10:58:27.739397828Z",
+          "items": [
+            "metric:datadog.serverless_agent.enhanced.cold_start|datadog_init_version:parity,local:true,sidecar:false",
+            "metric:datadog.serverless_agent.enhanced.cpu.limit|datadog_init_version:parity,local:true,sidecar:false",
+            "metric:datadog.serverless_agent.enhanced.cpu.usage|datadog_init_version:parity,local:true,sidecar:false",
+            "metric:datadog.serverless_agent.enhanced.shutdown|datadog_init_version:parity,local:true,sidecar:false",
+            "metric:parity.distribution|_dd.datadog_init_version:parity,kind:distribution,local:true"
+          ]
+        }
+      ],
+      "sent": [
+        {
+          "at": "2026-11-23T10:58:26.733670932Z",
+          "items": [
+            "metric:parity.count|kind:count",
+            "metric:parity.count_sampled|kind:count",
+            "metric:parity.gauge|kind:gauge",
+            "metric:parity.distribution|kind:distribution",
+            "metric:parity.histogram|kind:histogram",
+            "metric:parity.set|kind:set",
+            "metric:parity.timer|kind:timer"
+          ]
+        }
+      ],
+      "sigterm": "0001-01-01T00:00:00Z",
+      "exited": "2026-11-23T10:58:27.744353096Z"
+    }
+  },
+  "measures": {
+    "interval_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": false
+      },
+      "series": {
+        "measurable": false
+      },
+      "sketches": {
+        "measurable": false
+      },
+      "stats": {
+        "measurable": false
+      },
+      "traces": {
+        "measurable": false
+      }
+    },
+    "max_delay_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": false
+      },
+      "series": {
+        "measurable": true,
+        "value": "1.005448521s"
+      },
+      "sketches": {
+        "measurable": true,
+        "value": "1.005726896s"
+      },
+      "stats": {
+        "measurable": false
+      },
+      "traces": {
+        "measurable": false
+      }
+    },
+    "missing_after_sigterm": [
+      "metric:parity.histogram|kind:histogram",
+      "metric:parity.timer|kind:timer"
+    ],
+    "missing_sent_after_sigterm": [],
+    "ambiguous_items": [],
+    "sigterm": false,
+    "shutdown": {
+      "measurable": false
+    }
+  },
+  "resources": {
+    "startup": {
+      "measurable": false
+    },
+    "peak_memory_bytes": 15089008,
+    "peak_memory_known": true
+  }
+}

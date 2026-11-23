@@ -1,0 +1,21 @@
+# One log message per stderr write: the stack trace is one write with several lines.
+name: logs.stderr-multiline
+priority: P0
+features: [logs.stdout-stderr-capture]
+mode: in-container
+platform: local
+coverage_gap: "Stderr log messages reach the intake with a trailing newline, so their delivery delay is not timed; their content is compared exactly."
+environment:
+  DD_LOGS_ENABLED: "true"
+workload:
+  - at: 1s
+    print: {stream: stderr, lines: ["parity-child: error before the stack trace"]}
+  - at: 1s
+    print:
+      stream: stderr
+      lines:
+        - "parity-child: panic: parity failure\n\ngoroutine 1 [running]:\nmain.main()\n\t/app/main.go:12 +0x1d"
+  - at: 2s
+    print: {stream: stderr, lines: ["parity-child: error after the stack trace"]}
+  - at: 3s
+    exit: 0

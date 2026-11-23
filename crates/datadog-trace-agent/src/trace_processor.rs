@@ -1,11 +1,12 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use datadog_agent_trace_sampler::{
-    ErrorSamplerConfig, ErrorsSampler, SampleDecision, SpanView, TraceView,
+    ErrorSamplerConfig, ErrorsSampler, PrioritySampler, SampleDecision, SpanView, TraceView,
 };
 use http_body_util::BodyExt;
 use hyper::{StatusCode, http};
@@ -16,6 +17,8 @@ use tokio::sync::{Mutex, mpsc::Sender};
 use tracing::{debug, error, warn};
 
 use libdd_trace_obfuscation::obfuscate::obfuscate_pb_span;
+use libdd_trace_obfuscation::obfuscation_config::{DbmsKind, SqlConfig};
+use libdd_trace_obfuscation::sql::obfuscate_sql_resource;
 use libdd_trace_protobuf::pb;
 use libdd_trace_utils::trace_utils::{self};
 use libdd_trace_utils::trace_utils::{EnvironmentType, SendData};
@@ -24,9 +27,12 @@ use prost::Message;
 
 use crate::{
     aggregator::MAX_CONTENT_SIZE_BYTES,
-    config::{Config, resolve_payload_env},
+    config::{Config, InstallSignature, SpanTags, resolve_payload_env},
     http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
+    internal_span_filter,
+    mini_agent::{V05_TRACE_ENDPOINT_PATH, V07_TRACE_ENDPOINT_PATH},
     stats_concentrator_service::StatsConcentratorHandle,
+    v07_payload,
 };
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
@@ -35,8 +41,30 @@ const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
 /// A positive value signals error sampling; backend retention also depends on
 /// its ingestion-reason handling (for example, probabilistic decision makers).
 const ERRORS_SR_METRIC_KEY: &str = "_dd.errors_sr";
-const DECISION_MAKER_KEY: &str = "_dd.p.dm";
+/// The root-span metric with the rate of the sampler for chunks without a priority.
+const NO_PRIORITY_RATE_METRIC_KEY: &str = "_dd.no_p_sr";
+/// The root-span metric with the priority sampler's rate, which the agent sets when the tracer
+/// sent none of the rate metrics.
+const PRIORITY_RATE_METRIC_KEY: &str = "_sampling_priority_rate_v1";
+/// The root-span metrics with the rates that tracers apply with the agent's rates and with rules.
+const TRACER_PRIORITY_RATE_METRIC_KEYS: [&str; 2] = ["_dd.agent_psr", "_dd.rule_psr"];
+/// The chunk priority of a trace without a sampling priority.
+pub(crate) const PRIORITY_NONE: i32 = -128;
+/// The chunk priority that the Go agent gives a chunk kept by single span sampling.
+const PRIORITY_USER_KEEP: i32 = 2;
+const SPAN_SAMPLING_MECHANISM_KEY: &str = "_dd.span_sampling.mechanism";
+/// The analytics event extraction rate of a span.
+const EVENT_EXTRACTION_RATE_KEY: &str = "_dd1.sr.eausr";
+pub(crate) const DECISION_MAKER_KEY: &str = "_dd.p.dm";
+const ORIGIN_KEY: &str = "_dd.origin";
 const MANUAL_DECISION_MAKER: &str = "-4";
+/// The payload version that the Go agent converted the spans from.
+const CONVERTED_V1_KEY: &str = "_dd.convertedv1";
+const SQL_QUERY_KEY: &str = "sql.query";
+const DBMS_KEY: &str = "db.type";
+const INSTALL_ID_KEY: &str = "_dd.install.id";
+const INSTALL_TYPE_KEY: &str = "_dd.install.type";
+const INSTALL_TIME_KEY: &str = "_dd.install.time";
 
 /// Rough upper bound on the protobuf framing overhead added when a V07 `TracerPayload` is
 /// wrapped in the outer `AgentPayload` envelope before being sent
@@ -101,6 +129,10 @@ pub trait TraceProcessor {
 struct ChunkProcessor {
     config: Arc<Config>,
     mini_agent_metadata: Arc<trace_utils::MiniAgentMetadata>,
+    /// The `_dd.convertedv1` value of every span, set with the agent payload fields.
+    converted_v1: Option<&'static str>,
+    /// The fields of each chunk of a v0.7 payload, in the order of the chunks.
+    v07_chunk_fields: VecDeque<v07_payload::ChunkFields>,
 }
 
 impl TraceChunkProcessor for ChunkProcessor {
@@ -117,15 +149,31 @@ impl TraceChunkProcessor for ChunkProcessor {
                 .tags
                 .insert(DECISION_MAKER_KEY.to_string(), value.clone());
         }
+        // `collect_pb_trace_chunks` processes every non-empty trace in order, and the v0.7 traces
+        // are all non-empty.
+        if let Some(fields) = self.v07_chunk_fields.pop_front() {
+            fields.apply_to_chunk(chunk);
+        }
 
         // Clone app_name once instead of once per span
         let app_name = self.config.app_name.clone();
 
-        trace_utils::set_serverless_root_span_tags(
-            &mut chunk.spans[root_span_index],
-            app_name.clone(),
-            &self.config.env_type,
-        );
+        let go_fields = self.config.agent_payload_fields.is_some();
+        if go_fields && let Some(converted_v1) = self.converted_v1 {
+            // Configured tags replace the value.
+            for span in &mut chunk.spans {
+                span.meta
+                    .insert(CONVERTED_V1_KEY.to_string(), converted_v1.to_string());
+            }
+        }
+        match &self.config.span_tags {
+            Some(span_tags) => apply_span_tags(chunk, span_tags),
+            None => trace_utils::set_serverless_root_span_tags(
+                &mut chunk.spans[root_span_index],
+                app_name.clone(),
+                &self.config.env_type,
+            ),
+        }
         for span in chunk.spans.iter_mut() {
             trace_utils::enrich_span_with_mini_agent_metadata(span, &self.mini_agent_metadata);
             trace_utils::enrich_span_with_azure_function_metadata(span);
@@ -136,24 +184,88 @@ impl TraceChunkProcessor for ChunkProcessor {
                     app_name.clone(),
                 );
             }
+            let sql_query = (go_fields
+                && matches!(span.r#type.as_str(), "sql" | "cassandra")
+                && !span.resource.is_empty())
+            .then(|| (span.resource.clone(), span.meta.get(SQL_QUERY_KEY).cloned()));
             obfuscate_pb_span(span, &self.config.obfuscation_config);
+            if let Some((raw_resource, tracer_query)) = sql_query {
+                restore_sql_query(
+                    span,
+                    &raw_resource,
+                    tracer_query,
+                    &self.config.obfuscation_config.sql,
+                );
+            }
         }
     }
 }
+
+/// Gives `sql.query` the Go agent's value after `obfuscate_pb_span`, which sets it to the
+/// obfuscated resource. Go obfuscates only the tracer's non-empty value, reusing the obfuscated
+/// resource when the value equals the raw resource, and removes an empty one.
+fn restore_sql_query(
+    span: &mut pb::Span,
+    raw_resource: &str,
+    tracer_query: Option<String>,
+    config: &SqlConfig,
+) {
+    match tracer_query.filter(|query| !query.is_empty()) {
+        None => {
+            span.meta.remove(SQL_QUERY_KEY);
+        }
+        Some(query) if query == raw_resource => {}
+        Some(query) => {
+            let dbms: DbmsKind = span
+                .meta
+                .get(DBMS_KEY)
+                .and_then(|dbms| dbms.as_str().try_into().ok())
+                .unwrap_or_default();
+            span.meta.insert(
+                SQL_QUERY_KEY.to_string(),
+                obfuscate_sql_resource(&query, config, dbms),
+            );
+        }
+    }
+}
+
+/// Adds the configured origin and tags to the chunk and its spans, as the Go trace agent applies
+/// its global tags and the serverless span modifier.
+fn apply_span_tags(chunk: &mut pb::TraceChunk, span_tags: &SpanTags) {
+    if let Some(origin) = span_tags.tags.get(ORIGIN_KEY) {
+        chunk.origin = origin.clone();
+    } else if chunk.origin.is_empty() {
+        chunk.origin = span_tags.origin.clone();
+    }
+    for span in &mut chunk.spans {
+        if !span_tags.origin.is_empty() && span.meta.get(ORIGIN_KEY).is_none_or(String::is_empty) {
+            span.meta
+                .insert(ORIGIN_KEY.to_string(), span_tags.origin.clone());
+        }
+        for (key, value) in &span_tags.tags {
+            if key != ORIGIN_KEY {
+                span.meta.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
 /// Maximum number of trace-enqueue tasks that may be in flight (spawned but not yet finished
 /// handing their pieces to the flusher) at once
 const MAX_IN_FLIGHT_ENQUEUES: usize = 10;
 
-/// Error rescue sampler and its monotonic timestamp floor, shared under one mutex.
-struct ErrorRescueState {
-    sampler: ErrorsSampler,
+/// A sampler and its monotonic timestamp floor, shared under one mutex.
+struct SamplerState<S> {
+    sampler: S,
     last_sampler_timestamp: i64,
 }
 
-impl ErrorRescueState {
-    fn new(config: ErrorSamplerConfig) -> Self {
+type ScoreSamplerState = SamplerState<ErrorsSampler>;
+
+impl<S> SamplerState<S> {
+    fn new(sampler: S) -> Self {
         Self {
-            sampler: ErrorsSampler::new(config),
+            sampler,
             last_sampler_timestamp: i64::MIN,
         }
     }
@@ -170,9 +282,15 @@ pub struct ServerlessTraceProcessor {
     pub stats_concentrator: Option<StatsConcentratorHandle>,
     enqueue_permits: Arc<tokio::sync::Semaphore>,
     /// Processor clones share one TPS budget and timestamp floor under the same lock.
-    error_rescue_state: Arc<Mutex<ErrorRescueState>>,
+    error_rescue_state: Arc<Mutex<ScoreSamplerState>>,
     /// False when the configured TPS disables the sampler, so rescue never locks.
     error_rescue_enabled: bool,
+    /// The sampler for chunks without a priority, present when `agent_payload_fields` is set.
+    no_priority_state: Option<Arc<Mutex<ScoreSamplerState>>>,
+    /// The priority sampler's rate loop, present when `agent_payload_fields` is set.
+    priority_state: Option<Arc<Mutex<SamplerState<PrioritySampler>>>>,
+    /// The services whose first sampled trace got the install signature.
+    first_trace_services: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 impl ServerlessTraceProcessor {
@@ -183,38 +301,298 @@ impl ServerlessTraceProcessor {
                 "error_rare_sample_tracer_drop is enabled but DD_APM_ERROR_TPS <= 0 disables error rescue"
             );
         }
-        let error_rescue_state = ErrorRescueState::new(config.error_sampler);
+        let error_rescue_state = SamplerState::new(ErrorsSampler::new(config.error_sampler));
         ServerlessTraceProcessor {
             stats_concentrator,
             enqueue_permits: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_ENQUEUES)),
             error_rescue_enabled: !error_rescue_state.sampler.is_disabled(),
             error_rescue_state: Arc::new(Mutex::new(error_rescue_state)),
+            no_priority_state: config.agent_payload_fields.as_ref().map(|fields| {
+                Arc::new(Mutex::new(SamplerState::new(ErrorsSampler::new(
+                    ErrorSamplerConfig {
+                        target_tps: fields.target_tps,
+                        ..ErrorSamplerConfig::default()
+                    },
+                ))))
+            }),
+            priority_state: config.agent_payload_fields.as_ref().map(|fields| {
+                Arc::new(Mutex::new(SamplerState::new(PrioritySampler::new(
+                    fields.target_tps,
+                    1.0,
+                ))))
+            }),
+            first_trace_services: Arc::default(),
         }
     }
 
-    /// Samples V07 chunks selected by [`rescue_root_index`] and stamps
-    /// `_dd.errors_sr` on kept roots. Priorities and chunk order are unchanged;
-    /// every chunk is forwarded, with retention decided by the backend.
-    async fn apply_error_rescue(&self, payload: &mut TracerPayloadCollection, config: &Config) {
-        self.apply_error_rescue_with_clock(payload, config, || {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs() as i64)
-        })
-        .await;
-    }
-
-    async fn apply_error_rescue_with_clock<F: FnOnce() -> i64>(
+    /// Runs the agent samplers on V07 chunks, as the Go agent does after it computes stats:
+    /// - the priority sampler's rate loop on chunks with priority 0 or 1, see
+    ///   [`Self::apply_priority_sampler`];
+    /// - the no-priority sampler on chunks without a priority, stamping `_dd.no_p_sr` on kept
+    ///   roots;
+    /// - the error sampler on the chunks selected by [`rescue_root_index`] and on errored chunks
+    ///   that the no-priority sampler drops, stamping `_dd.errors_sr` on kept roots.
+    ///
+    /// Of a chunk that the no-priority sampler drops and the error sampler does not keep, only what
+    /// [`keep_sampled_spans`] keeps is forwarded. A chunk with nothing kept is removed, with the
+    /// tracer payloads left empty by it. Every other chunk is forwarded.
+    async fn apply_samplers(
         &self,
         payload: &mut TracerPayloadCollection,
         config: &Config,
-        read_clock: F,
+        client_dropped_p0s: usize,
     ) {
+        self.apply_samplers_with_clock(payload, config, client_dropped_p0s, unix_now_secs)
+            .await;
+    }
+
+    async fn apply_samplers_with_clock(
+        &self,
+        payload: &mut TracerPayloadCollection,
+        config: &Config,
+        client_dropped_p0s: usize,
+        read_clock: impl Fn() -> i64,
+    ) {
+        let dropped = self
+            .apply_no_priority_sampler(payload, config, &read_clock)
+            .await;
+        let rescued: HashSet<(usize, usize)> = self
+            .apply_error_rescue_with_clock(payload, config, &dropped, &read_clock)
+            .await
+            .into_iter()
+            .collect();
+        let dropped: HashSet<(usize, usize)> = dropped.into_iter().collect();
+        self.apply_priority_sampler(
+            payload,
+            config,
+            client_dropped_p0s,
+            &dropped,
+            &rescued,
+            &read_clock,
+        )
+        .await;
         let TracerPayloadCollection::V07(tracer_payloads) = payload else {
             return;
         };
-        if !self.error_rescue_enabled {
+        if let Some(signature) = config
+            .agent_payload_fields
+            .as_ref()
+            .and_then(|fields| fields.install_signature.as_ref())
+        {
+            for (payload_index, tracer_payload) in tracer_payloads.iter_mut().enumerate() {
+                for (chunk_index, chunk) in tracer_payload.chunks.iter_mut().enumerate() {
+                    let index = (payload_index, chunk_index);
+                    // Single span sampling keeps a chunk that the samplers drop, and Go then tags
+                    // its original root, which is sent only when it is one of the kept spans.
+                    let sampled = kept_by_samplers(index, chunk, &dropped, &rescued)
+                        || chunk.spans.iter().any(is_single_span_sampled);
+                    if sampled {
+                        self.set_first_trace_tags(chunk, signature);
+                    }
+                }
+            }
+        }
+        let removed: HashSet<(usize, usize)> = dropped
+            .into_iter()
+            .filter(|&(payload_index, chunk_index)| {
+                !rescued.contains(&(payload_index, chunk_index))
+                    && !keep_sampled_spans(&mut tracer_payloads[payload_index].chunks[chunk_index])
+            })
+            .collect();
+        if removed.is_empty() {
             return;
+        }
+        let mut payload_index = 0;
+        tracer_payloads.retain_mut(|tracer_payload| {
+            let mut chunk_index = 0;
+            let chunk_count = tracer_payload.chunks.len();
+            tracer_payload.chunks.retain(|_| {
+                chunk_index += 1;
+                !removed.contains(&(payload_index, chunk_index - 1))
+            });
+            payload_index += 1;
+            tracer_payload.chunks.len() == chunk_count || !tracer_payload.chunks.is_empty()
+        });
+    }
+
+    /// Sets the install signature on the root span of the first sampled chunk of the root's
+    /// service, keeping the tracer's values.
+    fn set_first_trace_tags(&self, chunk: &mut pb::TraceChunk, signature: &InstallSignature) {
+        let Ok(root_index) = trace_utils::get_root_span_index(&chunk.spans) else {
+            return;
+        };
+        let root = &mut chunk.spans[root_index];
+        let first = self
+            .first_trace_services
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(root.service.clone());
+        if !first {
+            return;
+        }
+        for (key, value) in [
+            (INSTALL_ID_KEY, signature.id.clone()),
+            (INSTALL_TYPE_KEY, signature.install_type.clone()),
+            (INSTALL_TIME_KEY, signature.time.to_string()),
+        ] {
+            root.meta.entry(key.to_string()).or_insert(value);
+        }
+    }
+
+    /// Counts V07 chunks with priority 0 or 1 in the priority sampler, as the Go agent does, and
+    /// sets the sampler's rate as `_sampling_priority_rate_v1` on the root of each priority 1
+    /// chunk whose root has no parent and none of the tracer's rate metrics.
+    ///
+    /// Chunks are counted in the order of [`go_processing_order`], given the chunks that Go drops
+    /// whole: those that the samplers don't keep (see [`kept_by_samplers`]) and that have no
+    /// sampled spans. Each chunk also weighs `client_dropped_p0s` divided by the chunks left in
+    /// its tracer payload.
+    async fn apply_priority_sampler(
+        &self,
+        payload: &mut TracerPayloadCollection,
+        config: &Config,
+        client_dropped_p0s: usize,
+        dropped: &HashSet<(usize, usize)>,
+        rescued: &HashSet<(usize, usize)>,
+        read_clock: impl Fn() -> i64,
+    ) {
+        let (Some(state), TracerPayloadCollection::V07(tracer_payloads)) =
+            (&self.priority_state, payload)
+        else {
+            return;
+        };
+        if !tracer_payloads
+            .iter()
+            .flat_map(|tracer_payload| &tracer_payload.chunks)
+            .any(|chunk| matches!(chunk.priority, 0 | 1))
+        {
+            return;
+        }
+        let orders: Vec<Vec<(usize, usize)>> = tracer_payloads
+            .iter()
+            .enumerate()
+            .map(|(payload_index, tracer_payload)| {
+                let removed: Vec<bool> = tracer_payload
+                    .chunks
+                    .iter()
+                    .enumerate()
+                    .map(|(chunk_index, chunk)| {
+                        !kept_by_samplers((payload_index, chunk_index), chunk, dropped, rescued)
+                            && !has_sampled_spans(chunk)
+                    })
+                    .collect();
+                go_processing_order(&removed)
+            })
+            .collect();
+        let mut state = state.lock().await;
+        let now_unix_secs = state.clamp_timestamp(read_clock());
+        for (tracer_payload, order) in tracer_payloads.iter_mut().zip(orders) {
+            let env = resolve_payload_env(&tracer_payload.env, &config.env).to_string();
+            for (chunk_index, chunks_left) in order {
+                let chunk = &mut tracer_payload.chunks[chunk_index];
+                if !matches!(chunk.priority, 0 | 1) {
+                    continue;
+                }
+                let Ok(root_index) = trace_utils::get_root_span_index(&chunk.spans) else {
+                    continue;
+                };
+                let root = &mut chunk.spans[root_index];
+                let rate = state.sampler.count(
+                    now_unix_secs,
+                    &root.service,
+                    &env,
+                    global_sample_rate(root),
+                    client_dropped_p0s as f64 / chunks_left as f64,
+                );
+                if chunk.priority == 1
+                    && root.parent_id == 0
+                    && !TRACER_PRIORITY_RATE_METRIC_KEYS
+                        .iter()
+                        .any(|key| root.metrics.contains_key(*key))
+                {
+                    root.metrics
+                        .entry(PRIORITY_RATE_METRIC_KEY.to_string())
+                        .or_insert(rate);
+                }
+            }
+        }
+    }
+
+    /// Samples V07 chunks without a priority, as the Go agent's no-priority sampler does, and
+    /// stamps `_dd.no_p_sr` on kept roots. Returns the tracer payload and chunk indices of the
+    /// chunks it drops.
+    async fn apply_no_priority_sampler(
+        &self,
+        payload: &mut TracerPayloadCollection,
+        config: &Config,
+        read_clock: impl Fn() -> i64,
+    ) -> Vec<(usize, usize)> {
+        let mut dropped = Vec::new();
+        let (Some(state), TracerPayloadCollection::V07(tracer_payloads)) =
+            (&self.no_priority_state, payload)
+        else {
+            return dropped;
+        };
+        let has_candidates = tracer_payloads
+            .iter()
+            .flat_map(|tracer_payload| &tracer_payload.chunks)
+            .any(|chunk| chunk.priority == PRIORITY_NONE);
+        if !has_candidates {
+            return dropped;
+        }
+        let mut state = state.lock().await;
+        let now_unix_secs = state.clamp_timestamp(read_clock());
+        for (payload_index, tracer_payload) in tracer_payloads.iter_mut().enumerate() {
+            let env = resolve_payload_env(&tracer_payload.env, &config.env).to_string();
+            for (chunk_index, chunk) in tracer_payload.chunks.iter_mut().enumerate() {
+                if chunk.priority != PRIORITY_NONE {
+                    continue;
+                }
+                let Ok(root_index) = trace_utils::get_root_span_index(&chunk.spans) else {
+                    continue;
+                };
+                let decision = {
+                    let views: Vec<SpanView> = chunk.spans.iter().map(span_view).collect();
+                    let root = &chunk.spans[root_index];
+                    state.sampler.sample(
+                        now_unix_secs,
+                        &TraceView {
+                            env: &env,
+                            trace_id: root.trace_id,
+                            root_index,
+                            root_global_sample_rate: global_sample_rate(root),
+                            spans: &views,
+                        },
+                    )
+                };
+                match decision {
+                    SampleDecision::Keep { errors_sr: rate } => {
+                        chunk.spans[root_index]
+                            .metrics
+                            .insert(NO_PRIORITY_RATE_METRIC_KEY.to_string(), rate);
+                    }
+                    SampleDecision::Drop => dropped.push((payload_index, chunk_index)),
+                }
+            }
+        }
+        dropped
+    }
+
+    /// Samples V07 chunks selected by [`rescue_root_index`], and the errored chunks among
+    /// `extra_candidates` (tracer payload and chunk indices), and stamps `_dd.errors_sr` on kept
+    /// roots. Priorities and chunk order are unchanged. Returns the indices of the kept chunks.
+    async fn apply_error_rescue_with_clock(
+        &self,
+        payload: &mut TracerPayloadCollection,
+        config: &Config,
+        extra_candidates: &[(usize, usize)],
+        read_clock: impl Fn() -> i64,
+    ) -> Vec<(usize, usize)> {
+        let TracerPayloadCollection::V07(tracer_payloads) = payload else {
+            return Vec::new();
+        };
+        if !self.error_rescue_enabled {
+            return Vec::new();
         }
 
         // Build the sampler inputs before locking, so the shared lock covers
@@ -228,7 +606,11 @@ impl ServerlessTraceProcessor {
                     tracer_payload.chunks.iter().enumerate().filter_map(
                         move |(chunk_index, chunk)| {
                             let root_index =
-                                rescue_root_index(chunk, config.error_rare_sample_tracer_drop)?;
+                                if extra_candidates.contains(&(payload_index, chunk_index)) {
+                                    errored_root_index(chunk)
+                                } else {
+                                    rescue_root_index(chunk, config.error_rare_sample_tracer_drop)
+                                }?;
                             let views = chunk.spans.iter().map(span_view).collect();
                             Some((payload_index, chunk_index, env, root_index, views))
                         },
@@ -236,7 +618,7 @@ impl ServerlessTraceProcessor {
                 })
                 .collect();
         if candidates.is_empty() {
-            return;
+            return Vec::new();
         }
 
         let kept: Vec<(usize, usize, usize, f64)> = {
@@ -253,12 +635,7 @@ impl ServerlessTraceProcessor {
                         env,
                         trace_id: root.trace_id,
                         root_index: *root_index,
-                        // The shared sampler sanitizes the raw wire rate.
-                        root_global_sample_rate: root
-                            .metrics
-                            .get("_sample_rate")
-                            .copied()
-                            .unwrap_or(1.0),
+                        root_global_sample_rate: global_sample_rate(root),
                         spans: views,
                     };
                     match state.sampler.sample(now_unix_secs, &trace) {
@@ -271,11 +648,14 @@ impl ServerlessTraceProcessor {
                 .collect()
         };
 
-        for (payload_index, chunk_index, root_index, errors_sr) in kept {
-            tracer_payloads[payload_index].chunks[chunk_index].spans[root_index]
-                .metrics
-                .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
-        }
+        kept.into_iter()
+            .map(|(payload_index, chunk_index, root_index, errors_sr)| {
+                tracer_payloads[payload_index].chunks[chunk_index].spans[root_index]
+                    .metrics
+                    .insert(ERRORS_SR_METRIC_KEY.to_string(), errors_sr);
+                (payload_index, chunk_index)
+            })
+            .collect()
     }
 
     /// Test-only variant that injects a synthetic clock reading through the
@@ -287,13 +667,16 @@ impl ServerlessTraceProcessor {
         config: &Config,
         now_unix_secs: i64,
     ) {
-        self.apply_error_rescue_with_clock(payload, config, || now_unix_secs)
+        self.apply_error_rescue_with_clock(payload, config, &[], || now_unix_secs)
             .await;
     }
 
+    /// With `go_fields`, the stats get the payload's hostname and no tracer version, as the Go
+    /// agent's stats aggregation key has.
     fn send_to_concentrator(
         concentrator: &StatsConcentratorHandle,
         payload: &TracerPayloadCollection,
+        go_fields: bool,
     ) {
         if let TracerPayloadCollection::V07(tracer_payloads) = payload {
             for tracer_payload in tracer_payloads {
@@ -309,8 +692,16 @@ impl ServerlessTraceProcessor {
                     schema_version: 2,
                     runtime_id: None,
                     tracer_language: tracer_payload.language_name.clone(),
-                    tracer_version: tracer_payload.tracer_version.clone(),
-                    hostname: String::new(),
+                    tracer_version: if go_fields {
+                        String::new()
+                    } else {
+                        tracer_payload.tracer_version.clone()
+                    },
+                    hostname: if go_fields {
+                        tracer_payload.hostname.clone()
+                    } else {
+                        String::new()
+                    },
                     service_name,
                     service_env: Some(tracer_payload.env.clone()),
                     service_version: Some(tracer_payload.app_version.clone()),
@@ -334,6 +725,17 @@ impl ServerlessTraceProcessor {
             error!("Unsupported tracer payload version {version}. Failed to send trace stats.");
         }
     }
+}
+
+fn unix_now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// The root's raw `_sample_rate`, else 1. The shared sampler sanitizes the raw wire rate.
+fn global_sample_rate(root: &pb::Span) -> f64 {
+    root.metrics.get("_sample_rate").copied().unwrap_or(1.0)
 }
 
 /// Builds the sampler's read-only view of a span from its already enriched and
@@ -368,6 +770,75 @@ fn rescue_root_index(chunk: &pb::TraceChunk, tracer_drop_enabled: bool) -> Optio
     if !eligible {
         return None;
     }
+    errored_root_index(chunk)
+}
+
+/// Keeps what the Go agent keeps of a chunk that its samplers drop, and returns whether anything
+/// is kept. Single span sampling keeps only the spans with `_dd.span_sampling.mechanism`, with
+/// priority user keep. Otherwise a chunk with an analytics event candidate (a positive
+/// `_dd1.sr.eausr`) is kept whole: Go sends only the events that its event processor samples.
+fn keep_sampled_spans(chunk: &mut pb::TraceChunk) -> bool {
+    if chunk.spans.iter().any(is_single_span_sampled) {
+        chunk.spans.retain(is_single_span_sampled);
+        chunk.priority = PRIORITY_USER_KEEP;
+        chunk.dropped_trace = false;
+        return true;
+    }
+    has_sampled_spans(chunk)
+}
+
+/// Whether [`keep_sampled_spans`] keeps anything of a chunk that the samplers drop.
+fn has_sampled_spans(chunk: &pb::TraceChunk) -> bool {
+    chunk.spans.iter().any(|span| {
+        is_single_span_sampled(span)
+            || span
+                .metrics
+                .get(EVENT_EXTRACTION_RATE_KEY)
+                .is_some_and(|rate| *rate > 0.0)
+    })
+}
+
+/// Whether the samplers keep the chunk at `index` (tracer payload and chunk indices): a positive
+/// priority, a chunk without a priority that the no-priority sampler doesn't drop, or a chunk
+/// that the error sampler keeps.
+fn kept_by_samplers(
+    index: (usize, usize),
+    chunk: &pb::TraceChunk,
+    dropped: &HashSet<(usize, usize)>,
+    rescued: &HashSet<(usize, usize)>,
+) -> bool {
+    rescued.contains(&index)
+        || match chunk.priority {
+            PRIORITY_NONE => !dropped.contains(&index),
+            priority => priority > 0,
+        }
+}
+
+/// The order in which the Go agent processes the chunks of a tracer payload, as each chunk's
+/// index with the number of chunks left in the payload at that point. Go removes a chunk that it
+/// drops whole (`removed`) by moving the last chunk into its place.
+fn go_processing_order(removed: &[bool]) -> Vec<(usize, usize)> {
+    let mut slots: Vec<usize> = (0..removed.len()).collect();
+    let mut order = Vec::with_capacity(removed.len());
+    let mut slot = 0;
+    while slot < slots.len() {
+        let index = slots[slot];
+        order.push((index, slots.len()));
+        if removed[index] {
+            slots.swap_remove(slot);
+        } else {
+            slot += 1;
+        }
+    }
+    order
+}
+
+fn is_single_span_sampled(span: &pb::Span) -> bool {
+    span.metrics.contains_key(SPAN_SAMPLING_MECHANISM_KEY)
+}
+
+/// Returns the root index of a chunk with an errored span, otherwise `None`.
+fn errored_root_index(chunk: &pb::TraceChunk) -> Option<usize> {
     // Skip root resolution for healthy chunks.
     if !chunk.spans.iter().any(|span| span.error != 0) {
         return None;
@@ -409,7 +880,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
                 // kept alive for the next request instead of being closed.
                 warn!("Could not acquire an enqueue permit in time; dropping traces");
                 if let Err(err) = body.collect().await {
-                    debug!("Error draining /v0.4/traces request body while dropping traces: {err}");
+                    debug!("Error draining the trace request body while dropping traces: {err}");
                 }
                 return log_and_create_traces_success_http_response(
                     "Dropped traces due to enqueue capacity",
@@ -418,12 +889,45 @@ impl TraceProcessor for ServerlessTraceProcessor {
             }
         };
 
-        let tracer_header_tags = (&parts.headers).into();
+        let mut tracer_header_tags: trace_utils::TracerHeaderTags = (&parts.headers).into();
+        if config.agent_payload_fields.is_some() {
+            // Go's serverless receiver has no container features, so it reads no container ID.
+            tracer_header_tags.container_id = "";
+        }
 
         // deserialize traces from the request body, convert to protobuf structs (see trace-protobuf
         // crate)
-        let (body_size, traces) = match trace_utils::get_traces_from_request_body(body).await {
+        let go_fields = config.agent_payload_fields.is_some();
+        let path = parts.uri.path();
+        let v05_payload = path == V05_TRACE_ENDPOINT_PATH;
+        let v07_payload = path == V07_TRACE_ENDPOINT_PATH;
+        let decoded = if v05_payload {
+            trace_utils::get_v05_traces_from_request_body(body)
+                .await
+                .map(|(size, traces)| (size, traces, None))
+        } else if v07_payload {
+            match body.collect().await {
+                Ok(collected) => {
+                    let bytes = collected.to_bytes();
+                    v07_payload::decode(&bytes)
+                        .map(|(fields, chunks)| (bytes.len(), Vec::new(), Some((fields, chunks))))
+                }
+                Err(err) => Err(err.into()),
+            }
+        } else {
+            trace_utils::get_traces_from_request_body(body)
+                .await
+                .map(|(size, traces)| (size, traces, None))
+        };
+        let (body_size, mut traces, mut v07) = match decoded {
             Ok(res) => res,
+            // Go answers a body it cannot decode with 400 and the error.
+            Err(err) if go_fields => {
+                return http_utils::log_and_create_plain_text_http_response(
+                    &format!("{err:#}"),
+                    StatusCode::BAD_REQUEST,
+                );
+            }
             Err(err) => {
                 return log_and_create_http_response(
                     &format!("Error deserializing trace from request body: {err}"),
@@ -440,13 +944,58 @@ impl TraceProcessor for ServerlessTraceProcessor {
             );
         }
 
+        // Go's v0.5 decoder tags only the payload's first span, to save allocations.
+        if v05_payload
+            && go_fields
+            && let Some(span) = traces.iter_mut().find_map(|trace| trace.first_mut())
+        {
+            span.meta
+                .insert(CONVERTED_V1_KEY.to_string(), "v05".to_string());
+        }
+
+        // Go removes the internal spans before normalization, so they reach neither the traces
+        // nor the stats, and it sends nothing when no chunk is left.
+        let all_spans_internal = go_fields
+            && match &mut v07 {
+                Some((_, chunks)) => {
+                    internal_span_filter::discard_internal_spans(chunks) && chunks.is_empty()
+                }
+                None => {
+                    internal_span_filter::discard_internal_spans(&mut traces) && traces.is_empty()
+                }
+            };
+        if all_spans_internal {
+            return log_and_create_traces_success_http_response(
+                "Successfully buffered traces to be flushed.",
+                StatusCode::OK,
+            );
+        }
+
+        let mut v07_chunk_fields = VecDeque::new();
+        let v07_payload_fields = v07.map(|(fields, chunks)| {
+            for chunk in chunks {
+                v07_chunk_fields.push_back(chunk.fields);
+                traces.push(chunk.spans);
+            }
+            fields
+        });
+
+        let mut chunk_processor = ChunkProcessor {
+            config: config.clone(),
+            mini_agent_metadata: mini_agent_metadata.clone(),
+            converted_v1: if v05_payload {
+                None
+            } else if v07_payload {
+                Some("v07-pb")
+            } else {
+                Some("v04")
+            },
+            v07_chunk_fields,
+        };
         let mut payload = match trace_utils::collect_pb_trace_chunks(
             traces,
             &tracer_header_tags,
-            &mut ChunkProcessor {
-                config: config.clone(),
-                mini_agent_metadata: mini_agent_metadata.clone(),
-            },
+            &mut chunk_processor,
             true, // In mini agent, we always send agentless
         ) {
             Ok(res) => res,
@@ -457,6 +1006,14 @@ impl TraceProcessor for ServerlessTraceProcessor {
                 );
             }
         };
+
+        if let Some(fields) = &v07_payload_fields
+            && let TracerPayloadCollection::V07(ref mut tracer_payloads) = payload
+        {
+            for tracer_payload in tracer_payloads {
+                fields.apply_to_payload(tracer_payload);
+            }
+        }
 
         // Add function_tags to payload if we can
         if let Some(function_tags) = config.tags.function_tags()
@@ -475,15 +1032,23 @@ impl TraceProcessor for ServerlessTraceProcessor {
         if let Some(ref concentrator) = self.stats_concentrator
             && config.agent_stats_computation_enabled
         {
-            Self::send_to_concentrator(concentrator, &payload);
+            Self::send_to_concentrator(
+                concentrator,
+                &payload,
+                config.agent_payload_fields.is_some(),
+            );
         }
 
-        // Error rescue is independent of agent stats computation: eligible errored
-        // chunks can arrive whether or not the agent computes stats. Run it after
-        // conditional stats submission so the concentrator observes chunks before
-        // rescue stamping, and before payload splitting so the inserted metric is
-        // included in the recomputed outbound size.
-        self.apply_error_rescue(&mut payload, &config).await;
+        // The samplers run whether or not the agent computes stats. They run after
+        // stats submission, so the concentrator observes every chunk before sampling
+        // stamps or drops it, and before payload splitting, so the inserted metrics
+        // are included in the recomputed outbound size.
+        self.apply_samplers(
+            &mut payload,
+            &config,
+            tracer_header_tags.generic.dropped_p0_traces,
+        )
+        .await;
 
         let pieces: Vec<(TracerPayloadCollection, usize)> = match payload {
             TracerPayloadCollection::V07(payloads) => {
@@ -607,6 +1172,8 @@ mod tests {
             },
             dd_site: "datadoghq.com".to_string(),
             dd_apm_receiver_port: 8126,
+            dd_apm_non_local_traffic: false,
+            v05_and_v07_traces_enabled: false,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name: None,
             dd_dogstatsd_port: 8125,
@@ -630,6 +1197,8 @@ mod tests {
             agent_stats_computation_enabled: false,
             error_sampler: ErrorSamplerConfig::default(),
             error_rare_sample_tracer_drop: false,
+            span_tags: None,
+            agent_payload_fields: None,
         }
     }
 
@@ -794,6 +1363,91 @@ mod tests {
                 None
             };
         assert_eq!(expected_tracer_payload, received_payload.unwrap());
+    }
+
+    /// Each case gives whether `agent_payload_fields` is set and whether the request has the
+    /// trace with a kept root, then the span IDs of each chunk that is sent, which are also the
+    /// chunks that stats are computed from. The other trace is one internal span.
+    #[tokio::test]
+    async fn test_process_trace_discards_internal_spans() {
+        use crate::config::AgentPayloadFields;
+        use crate::stats_concentrator_service::{ConcentratorCommand, StatsConcentratorHandle};
+        type Case = (bool, bool, Option<Vec<Vec<u64>>>);
+        let cases: [Case; 3] = [
+            (false, true, Some(vec![vec![10, 11], vec![20]])),
+            (true, true, Some(vec![vec![10]])),
+            // Nothing is sent when every span is internal.
+            (true, false, None),
+        ];
+        let start = get_current_timestamp_nanos();
+        let with_meta = |mut span: serde_json::Value, key: &str, value: &str| {
+            span["meta"][key] = value.into();
+            span
+        };
+        for (go_fields, with_kept_root, expected) in cases {
+            let mut traces = vec![vec![with_meta(
+                create_test_json_span(2, 20, 0, start, false),
+                "dns.address",
+                "127.0.0.1",
+            )]];
+            if with_kept_root {
+                traces.insert(
+                    0,
+                    vec![
+                        create_test_json_span(1, 10, 0, start, false),
+                        with_meta(
+                            create_test_json_span(1, 11, 10, start, false),
+                            "http.url",
+                            "http://127.0.0.1:8125/",
+                        ),
+                    ],
+                );
+            }
+            let body = rmp_serde::to_vec(&traces).unwrap();
+            let request = Request::builder()
+                .header("content-length", body.len())
+                .body(http_common::Body::from(body))
+                .unwrap();
+            let config = Config {
+                agent_payload_fields: go_fields.then(|| AgentPayloadFields {
+                    agent_version: "1.2.3".to_string(),
+                    target_tps: 10.0,
+                    install_signature: None,
+                }),
+                agent_stats_computation_enabled: true,
+                ..create_test_config()
+            };
+            let (stats_tx, mut stats_rx) = mpsc::unbounded_channel();
+            let (tx, mut rx) = mpsc::channel(1);
+            let processor = trace_processor::ServerlessTraceProcessor::new(
+                Some(StatsConcentratorHandle::new(stats_tx)),
+                &config,
+            );
+            let res = processor
+                .process_traces(
+                    Arc::new(config),
+                    request,
+                    tx,
+                    Arc::new(create_test_metadata()),
+                )
+                .await;
+            assert!(res.is_ok());
+            let span_ids =
+                |chunk: &pb::TraceChunk| chunk.spans.iter().map(|span| span.span_id).collect();
+            let sent: Option<Vec<Vec<u64>>> = rx.recv().await.map(|send_data| {
+                let TracerPayloadCollection::V07(payloads) = send_data.get_payloads() else {
+                    unreachable!()
+                };
+                payloads[0].chunks.iter().map(span_ids).collect()
+            });
+            let mut stats: Vec<Vec<u64>> = Vec::new();
+            while let Ok(ConcentratorCommand::AddChunk(chunk, _)) = stats_rx.try_recv() {
+                stats.push(span_ids(&chunk));
+            }
+            let case = format!("{go_fields} {with_kept_root}");
+            assert_eq!(sent, expected, "{case}");
+            assert_eq!(stats, expected.unwrap_or_default(), "{case}");
+        }
     }
 
     #[tokio::test]
@@ -1234,6 +1888,8 @@ mod tests {
             super::ChunkProcessor {
                 config: Arc::new(create_test_config()),
                 mini_agent_metadata: Arc::new(create_test_metadata()),
+                converted_v1: Some("v04"),
+                v07_chunk_fields: std::collections::VecDeque::new(),
             }
             .process(&mut chunk, usize::from(child_first));
             assert_eq!(
@@ -1242,6 +1898,624 @@ mod tests {
                     .get(super::DECISION_MAKER_KEY)
                     .map(String::as_str),
                 expected
+            );
+        }
+    }
+
+    /// Each case gives the tracer's chunk origin and root `_dd.origin`, the configured tags, then
+    /// the expected chunk origin and the expected meta of the root and the child span.
+    #[test]
+    fn test_span_tags() {
+        use crate::config::SpanTags;
+        use libdd_trace_utils::tracer_payload::TraceChunkProcessor as _;
+        type Meta = &'static [(&'static str, &'static str)];
+        type Case = (
+            &'static str,
+            Option<&'static str>,
+            Meta,
+            &'static str,
+            Meta,
+            Meta,
+        );
+        let cases: [Case; 3] = [
+            (
+                "",
+                None,
+                &[("local", "true"), ("service", "parity-app")],
+                "local",
+                &[
+                    ("_dd.origin", "local"),
+                    ("local", "true"),
+                    ("service", "parity-app"),
+                ],
+                &[
+                    ("_dd.origin", "local"),
+                    ("local", "true"),
+                    ("service", "parity-app"),
+                ],
+            ),
+            // The tracer's origins are kept.
+            (
+                "synthetics",
+                Some("synthetics"),
+                &[],
+                "synthetics",
+                &[("_dd.origin", "synthetics"), ("service", "from-tracer")],
+                &[("_dd.origin", "local")],
+            ),
+            // A `_dd.origin` tag replaces the chunk origin, not the span tag.
+            (
+                "synthetics",
+                None,
+                &[("_dd.origin", "configured")],
+                "configured",
+                &[("_dd.origin", "local"), ("service", "from-tracer")],
+                &[("_dd.origin", "local")],
+            ),
+        ];
+        let to_map = |meta: Meta| {
+            meta.iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect::<HashMap<_, _>>()
+        };
+        for (chunk_origin, root_origin, tags, expected_origin, root_meta, child_meta) in cases {
+            let mut root = test_span(1, 2, 0, 0);
+            root.meta.insert("service".into(), "from-tracer".into());
+            if let Some(origin) = root_origin {
+                root.meta.insert("_dd.origin".into(), origin.into());
+            }
+            let mut chunk = test_chunk(vec![root, test_span(1, 3, 2, 0)], 1);
+            chunk.origin = chunk_origin.into();
+            let config = Config {
+                span_tags: Some(SpanTags {
+                    origin: "local".to_string(),
+                    tags: tags
+                        .iter()
+                        .map(|(key, value)| (key.to_string(), value.to_string()))
+                        .collect(),
+                }),
+                env_type: trace_utils::EnvironmentType::AzureSpringApp,
+                ..create_test_config()
+            };
+            super::ChunkProcessor {
+                config: Arc::new(config),
+                mini_agent_metadata: Arc::new(MiniAgentMetadata::default()),
+                converted_v1: Some("v04"),
+                v07_chunk_fields: std::collections::VecDeque::new(),
+            }
+            .process(&mut chunk, 0);
+            assert_eq!(chunk.origin, expected_origin, "tags {tags:?}");
+            assert_eq!(chunk.spans[0].meta, to_map(root_meta), "tags {tags:?}");
+            assert_eq!(chunk.spans[1].meta, to_map(child_meta), "tags {tags:?}");
+        }
+    }
+
+    /// Each case gives the chunk priority, the no-priority and error targets, and the child's
+    /// error, then the root's expected `_dd.no_p_sr` and `_dd.errors_sr`, or `None` when the chunk
+    /// is dropped. The root comes after its child, and a second tracer payload is always kept.
+    #[tokio::test]
+    async fn test_no_priority_sampler() {
+        use crate::config::AgentPayloadFields;
+        type Case = (i32, f64, f64, i32, Option<(Option<f64>, Option<f64>)>);
+        let cases: [Case; 9] = [
+            (-128, 10.0, 10.0, 0, Some((Some(1.0), None))),
+            (-128, 10.0, 10.0, 1, Some((Some(1.0), None))),
+            (-128, 0.0, 10.0, 0, None),
+            // The error sampler rescues an errored chunk that the no-priority sampler drops.
+            (-128, 0.0, 10.0, 1, Some((None, Some(1.0)))),
+            (-128, 0.0, 0.0, 1, None),
+            (-1, 0.0, 10.0, 0, Some((None, None))),
+            (0, 0.0, 10.0, 0, Some((None, None))),
+            (1, 0.0, 10.0, 0, Some((None, None))),
+            (2, 0.0, 10.0, 0, Some((None, None))),
+        ];
+        for (priority, target_tps, error_tps, child_error, expected) in cases {
+            let config = Config {
+                agent_payload_fields: Some(AgentPayloadFields {
+                    agent_version: "1.2.3".to_string(),
+                    target_tps,
+                    install_signature: None,
+                }),
+                error_sampler: rate_limited_sampler_config(error_tps),
+                ..create_test_config()
+            };
+            let processor = trace_processor::ServerlessTraceProcessor::new(None, &config);
+            let chunk = test_chunk(
+                vec![test_span(1, 3, 2, child_error), test_span(1, 2, 0, 0)],
+                priority,
+            );
+            let kept = test_chunk(vec![test_span(9, 10, 0, 0)], 2);
+            let mut payload = TracerPayloadCollection::V07(vec![
+                make_payload(vec![chunk]),
+                make_payload(vec![kept.clone()]),
+            ]);
+            processor
+                .apply_samplers_with_clock(&mut payload, &config, 0, || RESCUE_NOW)
+                .await;
+            let TracerPayloadCollection::V07(payloads) = payload else {
+                unreachable!()
+            };
+            let case = format!("priority {priority}, targets {target_tps} {error_tps}");
+            assert_eq!(payloads.last().unwrap().chunks, vec![kept], "{case}");
+            let metrics = (payloads.len() == 2).then(|| {
+                let spans = &payloads[0].chunks[0].spans;
+                assert_eq!(spans[0].metrics.get("_dd.no_p_sr"), None, "{case}");
+                (
+                    spans[1].metrics.get("_dd.no_p_sr").copied(),
+                    spans[1].metrics.get("_dd.errors_sr").copied(),
+                )
+            });
+            assert_eq!(metrics, expected, "{case}");
+        }
+    }
+
+    /// Each case gives whether `agent_payload_fields` is set, the chunk priority, the root's parent
+    /// and a rate metric on the root, then the root's expected `_sampling_priority_rate_v1`.
+    #[tokio::test]
+    async fn test_priority_rate() {
+        use crate::config::AgentPayloadFields;
+        type Case = (bool, i32, u64, Option<(&'static str, f64)>, Option<f64>);
+        let cases: [Case; 9] = [
+            (true, 1, 0, None, Some(1.0)),
+            (false, 1, 0, None, None),
+            (true, 0, 0, None, None),
+            (true, 2, 0, None, None),
+            (true, -1, 0, None, None),
+            // A root whose parent is not in the chunk.
+            (true, 1, 5, None, None),
+            (true, 1, 0, Some(("_dd.agent_psr", 0.3)), None),
+            (true, 1, 0, Some(("_dd.rule_psr", 0.3)), None),
+            (
+                true,
+                1,
+                0,
+                Some(("_sampling_priority_rate_v1", 0.3)),
+                Some(0.3),
+            ),
+        ];
+        for (go_fields, priority, parent_id, metric, expected) in cases {
+            let config = Config {
+                agent_payload_fields: go_fields.then(|| AgentPayloadFields {
+                    agent_version: "1.2.3".to_string(),
+                    target_tps: 10.0,
+                    install_signature: None,
+                }),
+                ..create_test_config()
+            };
+            let processor = trace_processor::ServerlessTraceProcessor::new(None, &config);
+            let mut root = test_span(1, 2, parent_id, 0);
+            root.metrics
+                .extend(metric.map(|(key, value)| (key.to_string(), value)));
+            let mut payload = TracerPayloadCollection::V07(vec![make_payload(vec![test_chunk(
+                vec![root],
+                priority,
+            )])]);
+            processor
+                .apply_samplers_with_clock(&mut payload, &config, 0, || RESCUE_NOW)
+                .await;
+            let TracerPayloadCollection::V07(payloads) = payload else {
+                unreachable!()
+            };
+            assert_eq!(
+                payloads[0].chunks[0].spans[0]
+                    .metrics
+                    .get("_sampling_priority_rate_v1")
+                    .copied(),
+                expected,
+                "fields {go_fields}, priority {priority}, parent {parent_id}, metric {metric:?}"
+            );
+        }
+    }
+
+    /// Each case gives the target, then the requests, as the second, the payload env, the
+    /// tracer's dropped P0 chunks and the chunks as groups of a count, a priority and a
+    /// `_sample_rate`, then the expected `_sampling_priority_rate_v1` of a chunk of the last
+    /// request. Chunks without errors at priority 0 or below are dropped by Go, which counts them
+    /// in [`trace_processor::go_processing_order`].
+    #[tokio::test]
+    async fn test_priority_rate_counts() {
+        use crate::config::AgentPayloadFields;
+        type Request = (i64, &'static str, usize, &'static [(usize, i32, f64)]);
+        let cases: [(f64, &[Request], usize, f64); 8] = [
+            // Kept chunks before the checked one: 101 chunks in one 5-second bucket are 20.2 per
+            // second.
+            (
+                10.0,
+                &[(0, "", 0, &[(100, 1, 1.0), (1, 1, 1.0)])],
+                100,
+                0.49504950495049505,
+            ),
+            (10.0, &[(0, "", 0, &[(100, 2, 1.0), (1, 1, 1.0)])], 100, 1.0),
+            // The dropped chunks after the first put the last chunk second in Go's order.
+            (10.0, &[(0, "", 0, &[(100, 0, 1.0), (1, 1, 1.0)])], 100, 1.0),
+            // Dropped chunks at priority 0 are counted, and at priority -1 they are not.
+            (
+                10.0,
+                &[(0, "", 0, &[(100, 0, 1.0)]), (0, "", 0, &[(1, 1, 1.0)])],
+                0,
+                0.49504950495049505,
+            ),
+            (
+                10.0,
+                &[(0, "", 0, &[(100, -1, 1.0)]), (0, "", 0, &[(1, 1, 1.0)])],
+                0,
+                1.0,
+            ),
+            // A `_sample_rate` of 0.5 counts each chunk twice.
+            (
+                10.0,
+                &[(0, "", 0, &[(50, 1, 0.5), (1, 1, 1.0)])],
+                50,
+                0.49504950495049505,
+            ),
+            // 3 dropped P0 chunks: the dropped chunk weighs 1 + 3 / 3, then the two others,
+            // counted last-first, weigh 1 + 3 / 2. 7 in one bucket are 1.4 per second.
+            (0.7, &[(0, "", 3, &[(1, 0, 1.0), (2, 1, 1.0)])], 1, 0.5),
+            // A signature per payload env: once the next bucket starts, the signature of env-b
+            // gets its own rate instead of sharing the 100 chunks of env-a.
+            (
+                10.0,
+                &[
+                    (0, "env-a", 0, &[(100, 1, 1.0)]),
+                    (0, "env-b", 0, &[(1, 1, 1.0)]),
+                    (5, "env-b", 0, &[(1, 1, 1.0)]),
+                ],
+                0,
+                1.0,
+            ),
+        ];
+        for (target_tps, requests, checked, expected) in cases {
+            let config = Config {
+                agent_payload_fields: Some(AgentPayloadFields {
+                    agent_version: "1.2.3".to_string(),
+                    target_tps,
+                    install_signature: None,
+                }),
+                ..create_test_config()
+            };
+            let processor = trace_processor::ServerlessTraceProcessor::new(None, &config);
+            let mut trace_id = 0;
+            let mut chunks = Vec::new();
+            for &(second, env, client_dropped_p0s, groups) in requests {
+                chunks.clear();
+                for &(count, priority, sample_rate) in groups {
+                    for _ in 0..count {
+                        trace_id += 1;
+                        let mut root = test_span(trace_id, trace_id, 0, 0);
+                        root.metrics.insert("_sample_rate".to_string(), sample_rate);
+                        chunks.push(test_chunk(vec![root], priority));
+                    }
+                }
+                let mut payload = TracerPayloadCollection::V07(vec![pb::TracerPayload {
+                    env: env.to_string(),
+                    chunks: chunks.clone(),
+                    ..Default::default()
+                }]);
+                processor
+                    .apply_samplers_with_clock(&mut payload, &config, client_dropped_p0s, || {
+                        RESCUE_NOW + second
+                    })
+                    .await;
+                let TracerPayloadCollection::V07(mut payloads) = payload else {
+                    unreachable!()
+                };
+                chunks = payloads.remove(0).chunks;
+            }
+            assert_eq!(
+                chunks[checked].spans[0]
+                    .metrics
+                    .get("_sampling_priority_rate_v1")
+                    .copied(),
+                Some(expected),
+                "target {target_tps}, requests {requests:?}"
+            );
+        }
+    }
+
+    /// Each case gives which chunks Go drops whole, then each chunk's index with the number of
+    /// chunks left, in Go's order.
+    #[test]
+    fn test_go_processing_order() {
+        type Case = (&'static [bool], &'static [(usize, usize)]);
+        let cases: [Case; 4] = [
+            (&[], &[]),
+            (&[false, false], &[(0, 2), (1, 2)]),
+            (&[true, false, false], &[(0, 3), (2, 2), (1, 2)]),
+            // The `traces.sampling` fixture: priority 0, 1, 2, errored 0 and -1.
+            (
+                &[true, false, false, false, true],
+                &[(0, 5), (4, 4), (3, 3), (1, 3), (2, 3)],
+            ),
+        ];
+        for (removed, expected) in cases {
+            assert_eq!(
+                trace_processor::go_processing_order(removed),
+                expected,
+                "{removed:?}"
+            );
+        }
+    }
+
+    /// Each case gives the metrics of a root and its child, then the span IDs and priority of what
+    /// is kept from a dropped chunk, or `None` when nothing is kept.
+    #[test]
+    fn test_kept_from_dropped_chunk() {
+        type Metrics = &'static [(&'static str, f64)];
+        type Case = (Metrics, Metrics, Option<(Vec<u64>, i32)>);
+        let cases: [Case; 5] = [
+            (&[], &[], None),
+            (
+                &[],
+                &[("_dd.span_sampling.mechanism", 8.0)],
+                Some((vec![3], 2)),
+            ),
+            // Single span sampling wins over analytics events.
+            (
+                &[("_dd1.sr.eausr", 1.0)],
+                &[("_dd.span_sampling.mechanism", 8.0)],
+                Some((vec![3], 2)),
+            ),
+            (&[("_dd1.sr.eausr", 0.5)], &[], Some((vec![2, 3], -128))),
+            (&[("_dd1.sr.eausr", 0.0)], &[], None),
+        ];
+        for (root_metrics, child_metrics, expected) in cases {
+            let mut root = test_span(1, 2, 0, 0);
+            root.metrics.extend(
+                root_metrics
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), *value)),
+            );
+            let mut child = test_span(1, 3, 2, 0);
+            child.metrics.extend(
+                child_metrics
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), *value)),
+            );
+            let mut chunk = test_chunk(vec![root, child], -128);
+            let kept = super::keep_sampled_spans(&mut chunk).then(|| {
+                let span_ids = chunk.spans.iter().map(|span| span.span_id).collect();
+                (span_ids, chunk.priority)
+            });
+            assert_eq!(kept, expected, "metrics {root_metrics:?} {child_metrics:?}");
+        }
+    }
+
+    /// A chunk that the no-priority sampler drops keeps its single-span-sampled spans.
+    #[tokio::test]
+    async fn test_no_priority_drop_keeps_single_span_sampled_spans() {
+        use crate::config::AgentPayloadFields;
+        let config = Config {
+            agent_payload_fields: Some(AgentPayloadFields {
+                agent_version: "1.2.3".to_string(),
+                target_tps: 0.0,
+                install_signature: None,
+            }),
+            ..create_test_config()
+        };
+        let processor = trace_processor::ServerlessTraceProcessor::new(None, &config);
+        let mut child = test_span(1, 3, 2, 0);
+        child
+            .metrics
+            .insert("_dd.span_sampling.mechanism".into(), 8.0);
+        let chunk = test_chunk(vec![test_span(1, 2, 0, 0), child], -128);
+        let mut payload = TracerPayloadCollection::V07(vec![make_payload(vec![chunk])]);
+        processor
+            .apply_samplers_with_clock(&mut payload, &config, 0, || RESCUE_NOW)
+            .await;
+        let TracerPayloadCollection::V07(payloads) = payload else {
+            unreachable!()
+        };
+        let chunks = &payloads[0].chunks;
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].priority, 2);
+        assert_eq!(
+            chunks[0]
+                .spans
+                .iter()
+                .map(|span| span.span_id)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+    }
+
+    /// Each case gives the chunks of one request, as the root's service, the chunk priority, the
+    /// root's error, the root's `_dd.install.id` from the tracer and whether single span sampling
+    /// keeps the root, then the install tags that each forwarded root gets. The error sampler keeps
+    /// every errored chunk.
+    #[tokio::test]
+    async fn test_first_trace_tags() {
+        use crate::config::{AgentPayloadFields, InstallSignature};
+        type Install = Option<(&'static str, &'static str, &'static str)>;
+        type Case = (
+            &'static [(&'static str, i32, i32, Option<&'static str>, bool)],
+            Vec<Install>,
+        );
+        let signature = Some(("install-1", "manual", "1700000000"));
+        let cases: [Case; 6] = [
+            (&[("a", 1, 0, None, false)], vec![signature]),
+            (
+                &[
+                    ("a", -128, 0, None, false),
+                    ("a", 2, 0, None, false),
+                    ("b", 1, 0, None, false),
+                ],
+                vec![signature, None, signature],
+            ),
+            // A chunk that the samplers do not keep does not count as the service's first.
+            (
+                &[("a", 0, 0, None, false), ("a", 1, 0, None, false)],
+                vec![None, signature],
+            ),
+            (&[("a", 0, 1, None, false)], vec![signature]),
+            // A chunk that single span sampling keeps counts, and its root gets the tags.
+            (
+                &[("a", 0, 0, None, true), ("a", 1, 0, None, false)],
+                vec![signature, None],
+            ),
+            // A tracer's value is kept.
+            (
+                &[("a", 1, 0, Some("from-tracer"), false)],
+                vec![Some(("from-tracer", "manual", "1700000000"))],
+            ),
+        ];
+        for (chunks, expected) in cases {
+            let config = Config {
+                agent_payload_fields: Some(AgentPayloadFields {
+                    agent_version: "1.2.3".to_string(),
+                    target_tps: 10.0,
+                    install_signature: Some(InstallSignature {
+                        id: "install-1".to_string(),
+                        install_type: "manual".to_string(),
+                        time: 1_700_000_000,
+                    }),
+                }),
+                error_sampler: always_keep_sampler_config(),
+                ..create_test_config()
+            };
+            let processor = trace_processor::ServerlessTraceProcessor::new(None, &config);
+            let traces: Vec<pb::TraceChunk> = chunks
+                .iter()
+                .enumerate()
+                .map(
+                    |(index, (service, priority, error, tracer_id, single_span))| {
+                        let mut root = test_span(index as u64 + 1, 1, 0, *error);
+                        root.service = service.to_string();
+                        if let Some(id) = tracer_id {
+                            root.meta.insert("_dd.install.id".into(), id.to_string());
+                        }
+                        if *single_span {
+                            root.metrics
+                                .insert("_dd.span_sampling.mechanism".into(), 8.0);
+                        }
+                        test_chunk(vec![root], *priority)
+                    },
+                )
+                .collect();
+            let mut payload = TracerPayloadCollection::V07(vec![make_payload(traces)]);
+            processor
+                .apply_samplers_with_clock(&mut payload, &config, 0, || RESCUE_NOW)
+                .await;
+            let TracerPayloadCollection::V07(payloads) = payload else {
+                unreachable!()
+            };
+            let install: Vec<Option<(&str, &str, &str)>> = payloads[0]
+                .chunks
+                .iter()
+                .map(|chunk| {
+                    let meta = &chunk.spans[0].meta;
+                    let get = |key: &str| meta.get(key).map(String::as_str);
+                    Some((
+                        get("_dd.install.id")?,
+                        get("_dd.install.type")?,
+                        get("_dd.install.time")?,
+                    ))
+                })
+                .collect();
+            assert_eq!(install, expected, "chunks {chunks:?}");
+        }
+    }
+
+    /// Each case gives whether the agent payload fields are set, a span's type and the tracer's
+    /// `sql.query`, then the span's expected `sql.query` and `_dd.convertedv1`.
+    #[test]
+    fn test_go_span_meta() {
+        use crate::config::{AgentPayloadFields, SpanTags};
+        use libdd_trace_utils::tracer_payload::TraceChunkProcessor as _;
+        type Case = (
+            bool,
+            &'static str,
+            Option<&'static str>,
+            Option<&'static str>,
+            Option<&'static str>,
+            Option<&'static str>,
+        );
+        let cases: [Case; 8] = [
+            (true, "sql", None, None, None, Some("v04")),
+            (true, "sql", Some(""), None, None, Some("v04")),
+            (
+                true,
+                "sql",
+                Some("SELECT 1"),
+                None,
+                Some("SELECT ?"),
+                Some("v04"),
+            ),
+            (
+                true,
+                "sql",
+                Some("SELECT 2 FROM users"),
+                None,
+                Some("SELECT ? FROM users"),
+                Some("v04"),
+            ),
+            (
+                true,
+                "web",
+                Some("SELECT 1"),
+                None,
+                Some("SELECT 1"),
+                Some("v04"),
+            ),
+            // A configured tag replaces the value from the payload version.
+            (
+                true,
+                "web",
+                None,
+                Some("configured"),
+                None,
+                Some("configured"),
+            ),
+            (false, "sql", None, None, Some("SELECT ?"), None),
+            (
+                false,
+                "sql",
+                Some("SELECT 2 FROM users"),
+                None,
+                Some("SELECT ?"),
+                None,
+            ),
+        ];
+        for (go_fields, span_type, tracer_query, configured, expected_query, expected_converted) in
+            cases
+        {
+            let config = Config {
+                agent_payload_fields: go_fields.then(|| AgentPayloadFields {
+                    agent_version: "1.2.3".to_string(),
+                    target_tps: 10.0,
+                    install_signature: None,
+                }),
+                span_tags: configured.map(|value| SpanTags {
+                    origin: String::new(),
+                    tags: [("_dd.convertedv1".to_string(), value.to_string())].into(),
+                }),
+                env_type: trace_utils::EnvironmentType::AzureSpringApp,
+                ..create_test_config()
+            };
+            let mut span = test_span(1, 2, 0, 0);
+            span.r#type = span_type.to_string();
+            span.resource = "SELECT 1".to_string();
+            if let Some(query) = tracer_query {
+                span.meta.insert("sql.query".into(), query.to_string());
+            }
+            let mut chunk = test_chunk(vec![span], 1);
+            super::ChunkProcessor {
+                config: Arc::new(config),
+                mini_agent_metadata: Arc::new(MiniAgentMetadata::default()),
+                converted_v1: Some("v04"),
+                v07_chunk_fields: std::collections::VecDeque::new(),
+            }
+            .process(&mut chunk, 0);
+            let meta = &chunk.spans[0].meta;
+            let case = format!("{go_fields} {span_type} {tracer_query:?} {configured:?}");
+            assert_eq!(
+                meta.get("sql.query").map(String::as_str),
+                expected_query,
+                "{case}"
+            );
+            assert_eq!(
+                meta.get("_dd.convertedv1").map(String::as_str),
+                expected_converted,
+                "{case}"
             );
         }
     }
@@ -1464,7 +2738,7 @@ mod tests {
             };
             let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
             processor
-                .apply_error_rescue_with_clock(&mut payload, &config, || {
+                .apply_error_rescue_with_clock(&mut payload, &config, &[], || {
                     panic!("disabled sampler must not read the clock");
                 })
                 .await;
@@ -1659,7 +2933,7 @@ mod tests {
         let mut payload = TracerPayloadCollection::V07(vec![original.clone()]);
 
         processor
-            .apply_error_rescue_with_clock(&mut payload, &config, || {
+            .apply_error_rescue_with_clock(&mut payload, &config, &[], || {
                 panic!("a payload without rescue candidates must not consult the sampler");
             })
             .await;

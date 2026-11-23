@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 
 use crate::aggregator::AggregatorHandle;
 use crate::errors::ParseError::UnsupportedType;
-use crate::metric::{Metric, id, parse};
+use crate::metric::{self, Metric, id, parse_applying_sample_rate, parse_with_options};
 use socket2::{Domain, Protocol, Socket, Type};
 use tracing::{debug, error, trace};
 
@@ -187,8 +187,18 @@ pub struct DogStatsD {
     aggregator_handle: AggregatorHandle,
     transport: Transport,
     metric_namespace: Option<String>,
+    apply_sample_rate: bool,
+    metric_types: metric::ParseOptions,
     buf_size: usize,
     queue_size: usize,
+}
+
+/// How metric strings are turned into metrics.
+#[derive(Clone, Copy)]
+struct ParseOptions<'a> {
+    namespace: Option<&'a str>,
+    apply_sample_rate: bool,
+    metric_types: metric::ParseOptions,
 }
 
 impl DogStatsD {
@@ -301,8 +311,37 @@ impl DogStatsD {
             aggregator_handle,
             transport,
             metric_namespace: config.metric_namespace.clone(),
+            apply_sample_rate: false,
+            metric_types: metric::ParseOptions::default(),
             buf_size,
             queue_size,
+        }
+    }
+
+    /// Scales each count by its sample rate, as the Go agent does. Off by default.
+    #[must_use]
+    pub fn applying_sample_rates(mut self) -> Self {
+        self.apply_sample_rate = true;
+        self
+    }
+
+    /// Parses histograms, timers and sets, which the aggregator flushes as the Go agent does.
+    /// Off by default.
+    #[must_use]
+    pub fn with_extended_metric_types(mut self) -> Self {
+        self.metric_types.extended_metric_types = true;
+        self
+    }
+
+    fn parse_options(
+        metric_namespace: Option<&str>,
+        apply_sample_rate: bool,
+        metric_types: metric::ParseOptions,
+    ) -> ParseOptions<'_> {
+        ParseOptions {
+            namespace: metric_namespace,
+            apply_sample_rate,
+            metric_types,
         }
     }
 
@@ -327,6 +366,8 @@ impl DogStatsD {
             aggregator_handle,
             transport,
             metric_namespace,
+            apply_sample_rate,
+            metric_types,
             buf_size,
             queue_size,
         } = self;
@@ -357,7 +398,11 @@ impl DogStatsD {
                     &mut rx,
                     &cancel_token,
                     &aggregator_handle,
-                    metric_namespace.as_deref(),
+                    Self::parse_options(
+                        metric_namespace.as_deref(),
+                        apply_sample_rate,
+                        metric_types,
+                    ),
                     pool_tx,
                 )
                 .await;
@@ -378,7 +423,11 @@ impl DogStatsD {
                     },
                     &cancel_token,
                     &aggregator_handle,
-                    metric_namespace.as_deref(),
+                    Self::parse_options(
+                        metric_namespace.as_deref(),
+                        apply_sample_rate,
+                        metric_types,
+                    ),
                     buf_size,
                     queue_size,
                 )
@@ -407,7 +456,11 @@ impl DogStatsD {
             &buf[..len],
             &src,
             &self.aggregator_handle,
-            self.metric_namespace.as_deref(),
+            Self::parse_options(
+                self.metric_namespace.as_deref(),
+                self.apply_sample_rate,
+                self.metric_types,
+            ),
         );
     }
 }
@@ -542,7 +595,7 @@ async fn process_loop(
     rx: &mut tokio::sync::mpsc::Receiver<Packet>,
     cancel: &tokio_util::sync::CancellationToken,
     aggregator: &AggregatorHandle,
-    namespace: Option<&str>,
+    options: ParseOptions<'_>,
     pool: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
 ) {
     loop {
@@ -550,7 +603,7 @@ async fn process_loop(
             packet = rx.recv() => {
                 match packet {
                     Some(packet) => {
-                        process_packet(packet.data(), &packet.source, aggregator, namespace);
+                        process_packet(packet.data(), &packet.source, aggregator, options);
                         if packet.is_pooled() {
                             let _ = pool.send(packet.buf);
                         }
@@ -560,7 +613,7 @@ async fn process_loop(
             }
             _ = cancel.cancelled() => {
                 while let Ok(packet) = rx.try_recv() {
-                    process_packet(packet.data(), &packet.source, aggregator, namespace);
+                    process_packet(packet.data(), &packet.source, aggregator, options);
                     if packet.is_pooled() {
                         let _ = pool.send(packet.buf);
                     }
@@ -576,7 +629,7 @@ fn process_packet(
     buf: &[u8],
     src: &MessageSource,
     aggregator: &AggregatorHandle,
-    namespace: Option<&str>,
+    options: ParseOptions<'_>,
 ) {
     if buf.is_empty() {
         debug!("Received empty buffer from {}, skipping", src);
@@ -604,7 +657,7 @@ fn process_packet(
         .filter(|m| !m.is_empty())
         .count();
     trace!("Packet contains {} metric strings", metric_count_in_packet);
-    insert_metrics(statsd_metric_strings.into_iter(), aggregator, namespace);
+    insert_metrics(statsd_metric_strings.into_iter(), aggregator, options);
 }
 
 fn prepend_namespace(namespace: &str, metric: &mut Metric) {
@@ -614,7 +667,7 @@ fn prepend_namespace(namespace: &str, metric: &mut Metric) {
 }
 
 /// Parses metric strings, applies optional namespace, and sends them to the aggregator.
-fn insert_metrics<'a, I>(msg: I, aggregator: &AggregatorHandle, namespace: Option<&str>)
+fn insert_metrics<'a, I>(msg: I, aggregator: &AggregatorHandle, options: ParseOptions<'_>)
 where
     I: Iterator<Item = &'a str>,
 {
@@ -630,20 +683,27 @@ where
                 && !m.starts_with("aws.lambda.enhanced.invocations")
         }) // exclude empty messages, service checks, and events
         .map(|m| m.replace('\n', ""))
-        .filter_map(|m| match parse(m.as_str()) {
-            Ok(metric) => Some(metric),
-            Err(e) => {
-                // unsupported type is quite common with dd_trace metrics. Avoid perf issue and
-                // log spam in that case
-                match e {
-                    UnsupportedType(_) => debug!("Unsupported metric type: {}. {}", m, e),
-                    _ => error!("Failed to parse metric {}: {}", m, e),
+        .filter_map(|m| {
+            let parsed = if options.apply_sample_rate {
+                parse_applying_sample_rate(m.as_str(), options.metric_types)
+            } else {
+                parse_with_options(m.as_str(), options.metric_types)
+            };
+            match parsed {
+                Ok(metric) => Some(metric),
+                Err(e) => {
+                    // unsupported type is quite common with dd_trace metrics. Avoid perf issue and
+                    // log spam in that case
+                    match e {
+                        UnsupportedType(_) => debug!("Unsupported metric type: {}. {}", m, e),
+                        _ => error!("Failed to parse metric {}: {}", m, e),
+                    }
+                    None
                 }
-                None
             }
         })
         .map(|mut metric| {
-            if let Some(ns) = namespace {
+            if let Some(ns) = options.namespace {
                 prepend_namespace(ns, &mut metric);
             }
             metric
@@ -796,7 +856,7 @@ async fn spin_named_pipe(
     queue: QueueEnds,
     cancel_token: &tokio_util::sync::CancellationToken,
     aggregator: &AggregatorHandle,
-    namespace: Option<&str>,
+    options: ParseOptions<'_>,
     buf_size: usize,
     queue_size: usize,
 ) {
@@ -849,7 +909,7 @@ async fn spin_named_pipe(
 
     tokio::join!(
         supervise,
-        process_loop(&mut rx, &stop, aggregator, namespace, pool_tx)
+        process_loop(&mut rx, &stop, aggregator, options, pool_tx)
     );
 }
 
@@ -1156,6 +1216,8 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
             )),
             metric_namespace: None,
+            apply_sample_rate: false,
+            metric_types: metric::ParseOptions::default(),
             buf_size: custom_buf_size,
             queue_size: DEFAULT_QUEUE_SIZE,
         };
@@ -1216,6 +1278,8 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(111, 112, 113, 114)), 0),
             )),
             metric_namespace,
+            apply_sample_rate: false,
+            metric_types: metric::ParseOptions::default(),
             buf_size: DEFAULT_BUFFER_SIZE,
             queue_size: DEFAULT_QUEUE_SIZE,
         };
@@ -1242,7 +1306,12 @@ single_machine_performance.rouster.metrics_max_timestamp_latency:1376.90870216|d
         let invalid_bytes: &[u8] = &[0xFF, 0xFE, b':', b'1', b'|', b'c'];
         let src =
             MessageSource::Network(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0));
-        process_packet(invalid_bytes, &src, &handle, None);
+        process_packet(
+            invalid_bytes,
+            &src,
+            &handle,
+            DogStatsD::parse_options(None, false, Default::default()),
+        );
 
         assert!(logs_contain("Received non-UTF-8 packet"));
 

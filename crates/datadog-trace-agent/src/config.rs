@@ -4,7 +4,7 @@
 use crate::peer_tags::peer_tag_keys;
 use libdd_common::Endpoint;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -127,10 +127,52 @@ impl Tags {
     }
 }
 
+/// The tags and origin that the receiver adds to every span, as the Go serverless trace agent's
+/// span modifier does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpanTags {
+    /// The origin of chunks without one, and the `_dd.origin` tag of spans without one. Empty for
+    /// no origin.
+    pub origin: String,
+    /// Set on every span, replacing the span's own value. A `_dd.origin` tag sets the chunk
+    /// origin instead.
+    pub tags: BTreeMap<String, String>,
+}
+
+/// The agent fields that the Go trace agent reports in its payloads, the target of its sampler
+/// for chunks without a sampling priority, and its install signature. With these fields, spans
+/// also get the Go agent's `_dd.convertedv1` and `sql.query` tags.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentPayloadFields {
+    /// The `agent_version` of trace and stats payloads.
+    pub agent_version: String,
+    /// The traces per second that the sampler for chunks without a priority aims to keep,
+    /// reported as `target_tps`.
+    pub target_tps: f64,
+    /// Set on the root span of the first sampled trace of each service.
+    pub install_signature: Option<InstallSignature>,
+}
+
+/// How the agent was installed, as the `_dd.install.id`, `_dd.install.type` and
+/// `_dd.install.time` tags report it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallSignature {
+    pub id: String,
+    pub install_type: String,
+    /// Unix seconds.
+    pub time: i64,
+}
+
 #[derive(Debug)]
 pub struct Config {
     pub dd_site: String,
     pub dd_apm_receiver_port: u16,
+    /// Whether the receiver accepts traffic from other hosts. When false, it listens only on the
+    /// loopback interface.
+    pub dd_apm_non_local_traffic: bool,
+    /// Whether the receiver also takes msgpack v0.5 and v0.7 payloads at `/v0.5/traces` and
+    /// `/v0.7/traces`, as the Go trace agent does. False by default.
+    pub v05_and_v07_traces_enabled: bool,
     #[cfg(any(all(windows, feature = "windows-pipes"), test))]
     pub dd_apm_windows_pipe_name: Option<String>,
     pub dd_dogstatsd_port: u16,
@@ -182,6 +224,13 @@ pub struct Config {
     pub error_sampler: ErrorSamplerConfig,
     /// Opt-in eligibility for tracer-dropped errors, independent of sampler enablement.
     pub error_rare_sample_tracer_drop: bool,
+    /// When set, the receiver adds these tags and origin to every span in place of the root span
+    /// origin tags of `env_type`. `None` by default.
+    pub span_tags: Option<SpanTags>,
+    /// When set, trace payloads report `env`, `agent_version`, `target_tps` and `error_tps`, stats
+    /// payloads report `agent_env` and `agent_version`, and roots of chunks without a priority get
+    /// `_dd.no_p_sr`, as in the Go trace agent. `None` by default.
+    pub agent_payload_fields: Option<AgentPayloadFields>,
 }
 
 impl Config {
@@ -303,6 +352,8 @@ impl Config {
             verify_env_timeout_ms: 100,
             enqueue_permit_timeout_secs: 2,
             dd_apm_receiver_port,
+            dd_apm_non_local_traffic: false,
+            v05_and_v07_traces_enabled: false,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name,
             dd_dogstatsd_port,
@@ -365,6 +416,8 @@ impl Config {
             error_sampler: parse_error_sampler_config(env::var("DD_APM_ERROR_TPS").ok().as_deref()),
             error_rare_sample_tracer_drop: env::var("DD_APM_FEATURES")
                 .is_ok_and(|raw| error_rare_sample_tracer_drop_enabled(&raw)),
+            span_tags: None,
+            agent_payload_fields: None,
         })
     }
 }
@@ -1080,6 +1133,8 @@ pub mod test_helpers {
         Config {
             dd_site: "mock-datadoghq.com".to_string(),
             dd_apm_receiver_port: port,
+            dd_apm_non_local_traffic: false,
+            v05_and_v07_traces_enabled: false,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name: None,
             dd_dogstatsd_port: 8125,
@@ -1111,6 +1166,8 @@ pub mod test_helpers {
             agent_stats_computation_enabled: true,
             error_sampler: ErrorSamplerConfig::default(),
             error_rare_sample_tracer_drop: false,
+            span_tags: None,
+            agent_payload_fields: None,
         }
     }
 }

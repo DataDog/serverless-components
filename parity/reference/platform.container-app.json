@@ -1,0 +1,632 @@
+{
+  "scenario": "platform.container-app",
+  "go_binary_sha256": "0dac40f4aa896118dcc40ddd40c200a8d8e2389a3fbe9e155c684bfc70435a80",
+  "inputs": {
+    "compare-defaults.yaml": "083c94571d24858427a78cc6ce76e8809495582b567acdf90ba59211c8a9ed13",
+    "normalize.yaml": "936a76b8175590ba77eccd17404026608869bd521b26d17521bf5cb4a86dbcbf",
+    "platforms/container-app.env": "1cee19e5cdf6ae2d77025e549a0ac61241279cf333b06e9fe78f3d65143da740",
+    "scenarios/platform.container-app.yaml": "96a7594d897eda289f67e6266e35ad88dd95a7d301b3190eca0955021c17f897"
+  },
+  "normalized": {
+    "series": [
+      {
+        "metric": "azure.app_containerapps.enhanced.replica",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "name:parity-app",
+          "origin:containerapp",
+          "region:eastus",
+          "replica:parity-app--0000001-6b8f9c7d5-x2k4q",
+          "resource_group:parity-resource-group",
+          "revisionname:parity-app--0000001",
+          "service:parity-app",
+          "sidecar:false",
+          "subscription_id:00000000-0000-0000-0000-000000000000"
+        ],
+        "origin": {
+          "product": 1,
+          "category": 37,
+          "service": 473
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "parity.requests",
+        "type": "rate",
+        "interval": 10,
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "_dd.origin:containerapp",
+          "aca.app.name:parity-app",
+          "aca.app.region:eastus",
+          "aca.app.revision:parity-app--0000001",
+          "aca.resource.group:parity-resource-group",
+          "aca.resource.id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+          "aca.subscription.id:00000000-0000-0000-0000-000000000000",
+          "app_name:parity-app",
+          "origin:containerapp",
+          "region:eastus",
+          "resource_group:parity-resource-group",
+          "resource_id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+          "revision:parity-app--0000001",
+          "route:/",
+          "service:parity-app",
+          "subscription_id:00000000-0000-0000-0000-000000000000"
+        ],
+        "origin": {
+          "product": 1,
+          "category": 37,
+          "service": 472
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 0.1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      }
+    ],
+    "sketches": [
+      {
+        "metric": "azure.app_containerapps.enhanced.cold_start",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "name:parity-app",
+          "origin:containerapp",
+          "region:eastus",
+          "resource_group:parity-resource-group",
+          "revisionname:parity-app--0000001",
+          "service:parity-app",
+          "sidecar:false",
+          "subscription_id:00000000-0000-0000-0000-000000000000"
+        ],
+        "origin": {
+          "product": 1,
+          "category": 37,
+          "service": 473
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "azure.app_containerapps.enhanced.cpu.limit",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "name:parity-app",
+          "origin:containerapp",
+          "region:eastus",
+          "resource_group:parity-resource-group",
+          "revisionname:parity-app--0000001",
+          "service:parity-app",
+          "sidecar:false",
+          "subscription_id:00000000-0000-0000-0000-000000000000"
+        ],
+        "origin": {
+          "product": 1,
+          "category": 37,
+          "service": 473
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 2,
+            "min": 4000000000,
+            "max": 4000000000,
+            "avg": 4000000000,
+            "sum": 8000000000,
+            "k": [
+              2764
+            ],
+            "n": [
+              2
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "azure.app_containerapps.enhanced.cpu.usage",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "name:parity-app",
+          "origin:containerapp",
+          "region:eastus",
+          "resource_group:parity-resource-group",
+          "revisionname:parity-app--0000001",
+          "service:parity-app",
+          "sidecar:false",
+          "subscription_id:00000000-0000-0000-0000-000000000000"
+        ],
+        "origin": {
+          "product": 1,
+          "category": 37,
+          "service": 473
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 22764054.10823654,
+            "max": 22764054.10823654,
+            "avg": 22764054.10823654,
+            "sum": 22764054.10823654,
+            "k": [
+              2431
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "azure.app_containerapps.enhanced.shutdown",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "name:parity-app",
+          "origin:containerapp",
+          "region:eastus",
+          "resource_group:parity-resource-group",
+          "revisionname:parity-app--0000001",
+          "service:parity-app",
+          "sidecar:false",
+          "subscription_id:00000000-0000-0000-0000-000000000000"
+        ],
+        "origin": {
+          "product": 1,
+          "category": 37,
+          "service": 473
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "azure.containerapp.enhanced.cold_start",
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "_dd.origin:containerapp",
+          "aca.app.name:parity-app",
+          "aca.app.region:eastus",
+          "aca.app.revision:parity-app--0000001",
+          "aca.resource.group:parity-resource-group",
+          "aca.resource.id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+          "aca.subscription.id:00000000-0000-0000-0000-000000000000",
+          "app_name:parity-app",
+          "origin:containerapp",
+          "region:eastus",
+          "resource_group:parity-resource-group",
+          "resource_id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+          "revision:parity-app--0000001",
+          "service:parity-app",
+          "subscription_id:00000000-0000-0000-0000-000000000000"
+        ],
+        "origin": {
+          "product": 1,
+          "category": 37,
+          "service": 473
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "azure.containerapp.enhanced.shutdown",
+        "tags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "_dd.origin:containerapp",
+          "aca.app.name:parity-app",
+          "aca.app.region:eastus",
+          "aca.app.revision:parity-app--0000001",
+          "aca.resource.group:parity-resource-group",
+          "aca.resource.id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+          "aca.subscription.id:00000000-0000-0000-0000-000000000000",
+          "app_name:parity-app",
+          "origin:containerapp",
+          "region:eastus",
+          "resource_group:parity-resource-group",
+          "resource_id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+          "revision:parity-app--0000001",
+          "service:parity-app",
+          "subscription_id:00000000-0000-0000-0000-000000000000"
+        ],
+        "origin": {
+          "product": 1,
+          "category": 37,
+          "service": 473
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      }
+    ],
+    "logs": [
+      {
+        "message": "parity-child: container app log",
+        "status": "info",
+        "timestamp": "in window",
+        "service": "parity-app",
+        "ddsource": "containerapp",
+        "ddtags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "_dd.origin:containerapp",
+          "aca.app.name:parity-app",
+          "aca.app.region:eastus",
+          "aca.app.revision:parity-app--0000001",
+          "aca.replica.name:parity-app--0000001-6b8f9c7d5-x2k4q",
+          "aca.resource.group:parity-resource-group",
+          "aca.resource.id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+          "aca.subscription.id:00000000-0000-0000-0000-000000000000",
+          "app_name:parity-app",
+          "origin:containerapp",
+          "region:eastus",
+          "replica_name:parity-app--0000001-6b8f9c7d5-x2k4q",
+          "resource_group:parity-resource-group",
+          "resource_id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+          "revision:parity-app--0000001",
+          "service:parity-app",
+          "subscription_id:00000000-0000-0000-0000-000000000000"
+        ]
+      }
+    ],
+    "traces": [
+      {
+        "env": "none",
+        "agent_version": "\u003cplaceholder\u003e",
+        "target_tps": 10,
+        "error_tps": 10,
+        "tracer_payloads": [
+          {
+            "chunks": [
+              {
+                "priority": -128,
+                "origin": "containerapp",
+                "spans": [
+                  {
+                    "service": "parity-app",
+                    "name": "parity.request",
+                    "resource": "GET /send-1",
+                    "trace_id": "trace-1",
+                    "span_id": "span-1",
+                    "start": 1700000001000000000,
+                    "duration": 50000000,
+                    "type": "web",
+                    "meta": {
+                      "_dd.convertedv1": "v04",
+                      "_dd.datadog_init_version": "\u003cplaceholder\u003e",
+                      "_dd.install.id": "\u003cmasked\u003e",
+                      "_dd.install.time": "\u003cmasked\u003e",
+                      "_dd.install.type": "manual",
+                      "_dd.origin": "containerapp",
+                      "aca.app.name": "parity-app",
+                      "aca.app.region": "eastus",
+                      "aca.app.revision": "parity-app--0000001",
+                      "aca.replica.name": "parity-app--0000001-6b8f9c7d5-x2k4q",
+                      "aca.resource.group": "parity-resource-group",
+                      "aca.resource.id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+                      "aca.subscription.id": "00000000-0000-0000-0000-000000000000",
+                      "app_name": "parity-app",
+                      "http.status_code": "200",
+                      "origin": "containerapp",
+                      "region": "eastus",
+                      "replica_name": "parity-app--0000001-6b8f9c7d5-x2k4q",
+                      "resource_group": "parity-resource-group",
+                      "resource_id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app",
+                      "revision": "parity-app--0000001",
+                      "service": "parity-app",
+                      "span.kind": "server",
+                      "subscription_id": "00000000-0000-0000-0000-000000000000"
+                    },
+                    "metrics": {
+                      "_dd.no_p_sr": 1,
+                      "_top_level": 1
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "stats": [
+      {
+        "agent_env": "none",
+        "agent_version": "\u003cplaceholder\u003e",
+        "stats": [
+          {
+            "env": "none",
+            "buckets": [
+              {
+                "start": "in window, aligned",
+                "duration": 10000000000,
+                "stats": [
+                  {
+                    "service": "parity-app",
+                    "name": "parity.request",
+                    "resource": "GET /send-1",
+                    "http_status_code": 200,
+                    "type": "web",
+                    "span_kind": "server",
+                    "is_trace_root": "TRUE",
+                    "hits": 1,
+                    "top_level_hits": 1,
+                    "duration": 50000000,
+                    "ok_summary": {
+                      "gamma": 1.02020202020202,
+                      "index_offset": 0,
+                      "positive": {
+                        "886": 1
+                      },
+                      "zero_count": 0
+                    },
+                    "error_summary": {
+                      "gamma": 1.02020202020202,
+                      "index_offset": 0,
+                      "zero_count": 0
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "check_runs": [
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      }
+    ],
+    "process": {
+      "exit_code": 0,
+      "arguments": [
+        "/parity-workload",
+        "--scenario",
+        "/parity/platform.container-app.yaml",
+        "--events",
+        "/parity-shared/events.jsonl"
+      ],
+      "environment": {
+        "DD_API_KEY": "00000000000000000000000000parity",
+        "DD_APM_DD_URL": "http://fakeintake:80",
+        "DD_APM_DEBUGGER_DD_URL": "http://fakeintake:80",
+        "DD_APM_ENABLED": "true",
+        "DD_APM_PROFILING_DD_URL": "http://fakeintake:80/api/v2/profile",
+        "DD_APM_SYMDB_DD_URL": "http://fakeintake:80",
+        "DD_APM_TELEMETRY_DD_URL": "http://fakeintake:80",
+        "DD_AZURE_RESOURCE_GROUP": "parity-resource-group",
+        "DD_AZURE_SUBSCRIPTION_ID": "00000000-0000-0000-0000-000000000000",
+        "DD_DD_URL": "http://fakeintake:80",
+        "DD_EVP_PROXY_CONFIG_DD_URL": "http://fakeintake:80",
+        "DD_HOSTNAME": "none",
+        "DD_INSTRUMENTATION_TELEMETRY_ENABLED": "false",
+        "DD_LOGS_CONFIG_FORCE_USE_HTTP": "true",
+        "DD_LOGS_CONFIG_LOGS_DD_URL": "fakeintake:80",
+        "DD_LOGS_CONFIG_LOGS_NO_SSL": "true",
+        "DD_LOGS_ENABLED": "true",
+        "DD_REMOTE_CONFIGURATION_ENABLED": "false",
+        "DD_SERVICE": "parity-app",
+        "DD_SKIP_SSL_VALIDATION": "true",
+        "DD_TRACE_ENABLED": "true"
+      },
+      "stdout": [
+        "parity-child: container app log"
+      ]
+    },
+    "timing": {
+      "arrivals": [
+        {
+          "area": "stats",
+          "at": "2026-11-23T11:38:17.703127825Z",
+          "items": [
+            "span:GET /send-1"
+          ]
+        },
+        {
+          "area": "traces",
+          "at": "2026-11-23T11:38:17.714105033Z",
+          "items": [
+            "span:GET /send-1"
+          ]
+        },
+        {
+          "area": "logs",
+          "at": "2026-11-23T11:38:17.726817747Z",
+          "items": [
+            "log:parity-child: container app log"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T11:38:17.729049797Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T11:38:17.729586675Z",
+          "items": [
+            "metric:azure.app_containerapps.enhanced.replica|datadog_init_version:parity,name:parity-app,origin:containerapp,region:eastus,replica:parity-app--0000001-6b8f9c7d5-x2k4q,resource_group:parity-resource-group,revisionname:parity-app--0000001,service:parity-app,sidecar:false,subscription_id:00000000-0000-0000-0000-000000000000",
+            "metric:datadog.agent.running|version:7.85.2",
+            "metric:parity.requests|_dd.datadog_init_version:parity,_dd.origin:containerapp,aca.app.name:parity-app,aca.app.region:eastus,aca.app.revision:parity-app--0000001,aca.resource.group:parity-resource-group,aca.resource.id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app,aca.subscription.id:00000000-0000-0000-0000-000000000000,app_name:parity-app,origin:containerapp,region:eastus,resource_group:parity-resource-group,resource_id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app,revision:parity-app--0000001,route:/,service:parity-app,subscription_id:00000000-0000-0000-0000-000000000000"
+          ]
+        },
+        {
+          "area": "sketches",
+          "at": "2026-11-23T11:38:17.730247052Z",
+          "items": [
+            "metric:azure.app_containerapps.enhanced.cold_start|datadog_init_version:parity,name:parity-app,origin:containerapp,region:eastus,resource_group:parity-resource-group,revisionname:parity-app--0000001,service:parity-app,sidecar:false,subscription_id:00000000-0000-0000-0000-000000000000",
+            "metric:azure.app_containerapps.enhanced.cpu.limit|datadog_init_version:parity,name:parity-app,origin:containerapp,region:eastus,resource_group:parity-resource-group,revisionname:parity-app--0000001,service:parity-app,sidecar:false,subscription_id:00000000-0000-0000-0000-000000000000",
+            "metric:azure.app_containerapps.enhanced.cpu.usage|datadog_init_version:parity,name:parity-app,origin:containerapp,region:eastus,resource_group:parity-resource-group,revisionname:parity-app--0000001,service:parity-app,sidecar:false,subscription_id:00000000-0000-0000-0000-000000000000",
+            "metric:azure.app_containerapps.enhanced.shutdown|datadog_init_version:parity,name:parity-app,origin:containerapp,region:eastus,resource_group:parity-resource-group,revisionname:parity-app--0000001,service:parity-app,sidecar:false,subscription_id:00000000-0000-0000-0000-000000000000",
+            "metric:azure.containerapp.enhanced.cold_start|_dd.datadog_init_version:parity,_dd.origin:containerapp,aca.app.name:parity-app,aca.app.region:eastus,aca.app.revision:parity-app--0000001,aca.resource.group:parity-resource-group,aca.resource.id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app,aca.subscription.id:00000000-0000-0000-0000-000000000000,app_name:parity-app,origin:containerapp,region:eastus,resource_group:parity-resource-group,resource_id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app,revision:parity-app--0000001,service:parity-app,subscription_id:00000000-0000-0000-0000-000000000000",
+            "metric:azure.containerapp.enhanced.shutdown|_dd.datadog_init_version:parity,_dd.origin:containerapp,aca.app.name:parity-app,aca.app.region:eastus,aca.app.revision:parity-app--0000001,aca.resource.group:parity-resource-group,aca.resource.id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app,aca.subscription.id:00000000-0000-0000-0000-000000000000,app_name:parity-app,origin:containerapp,region:eastus,resource_group:parity-resource-group,resource_id:/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/parity-resource-group/providers/microsoft.app/containerapps/parity-app,revision:parity-app--0000001,service:parity-app,subscription_id:00000000-0000-0000-0000-000000000000"
+          ]
+        }
+      ],
+      "sent": [
+        {
+          "at": "2026-11-23T11:38:16.698148838Z",
+          "items": [
+            "span:GET /send-1"
+          ]
+        },
+        {
+          "at": "2026-11-23T11:38:16.703573566Z",
+          "items": [
+            "metric:parity.requests|route:/"
+          ]
+        },
+        {
+          "at": "2026-11-23T11:38:16.704858571Z",
+          "items": [
+            "log:parity-child: container app log"
+          ]
+        }
+      ],
+      "sigterm": "0001-01-01T00:00:00Z",
+      "exited": "2026-11-23T11:38:17.738788667Z"
+    }
+  },
+  "measures": {
+    "interval_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": false
+      },
+      "series": {
+        "measurable": false
+      },
+      "sketches": {
+        "measurable": false
+      },
+      "stats": {
+        "measurable": false
+      },
+      "traces": {
+        "measurable": false
+      }
+    },
+    "max_delay_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": true,
+        "value": "1.021959176s"
+      },
+      "series": {
+        "measurable": true,
+        "value": "1.026013109s"
+      },
+      "sketches": {
+        "measurable": false
+      },
+      "stats": {
+        "measurable": true,
+        "value": "1.004978987s"
+      },
+      "traces": {
+        "measurable": true,
+        "value": "1.015956195s"
+      }
+    },
+    "missing_after_sigterm": [],
+    "missing_sent_after_sigterm": [],
+    "ambiguous_items": [],
+    "sigterm": false,
+    "shutdown": {
+      "measurable": false
+    }
+  },
+  "resources": {
+    "startup": {
+      "measurable": true,
+      "value": "1.157223476s"
+    },
+    "peak_memory_bytes": 59401830,
+    "peak_memory_known": true
+  }
+}
