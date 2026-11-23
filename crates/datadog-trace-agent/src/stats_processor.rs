@@ -144,6 +144,7 @@ mod tests {
             dd_site: "datadoghq.com".to_string(),
             dd_apm_receiver_port: 8126,
             dd_apm_non_local_traffic: false,
+            v05_and_v07_traces_enabled: false,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name: None,
             dd_dogstatsd_port: 8125,

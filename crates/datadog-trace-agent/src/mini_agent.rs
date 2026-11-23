@@ -29,6 +29,8 @@ use libdd_trace_utils::trace_utils;
 use libdd_trace_utils::trace_utils::SendData;
 
 const TRACE_ENDPOINT_PATH: &str = "/v0.4/traces";
+pub(crate) const V05_TRACE_ENDPOINT_PATH: &str = "/v0.5/traces";
+pub(crate) const V07_TRACE_ENDPOINT_PATH: &str = "/v0.7/traces";
 const STATS_ENDPOINT_PATH: &str = "/v0.6/stats";
 const INFO_ENDPOINT_PATH: &str = "/info";
 const DSM_ENDPOINT_PATH: &str = "/v0.1/pipeline_stats";
@@ -630,7 +632,12 @@ impl MiniAgent {
         proxy_tx: Sender<ProxyRequest>,
     ) -> http::Result<http_common::HttpResponse> {
         match (req.method(), req.uri().path()) {
-            (&Method::PUT | &Method::POST, TRACE_ENDPOINT_PATH) => {
+            (&Method::PUT | &Method::POST, path)
+                if path == TRACE_ENDPOINT_PATH
+                    || (config.v05_and_v07_traces_enabled
+                        && (path == V05_TRACE_ENDPOINT_PATH
+                            || path == V07_TRACE_ENDPOINT_PATH)) =>
+            {
                 match trace_processor
                     .process_traces(config, req, trace_tx, mini_agent_metadata)
                     .await
@@ -687,6 +694,7 @@ impl MiniAgent {
                 config.dd_dogstatsd_port,
                 &config.peer_tags,
                 config.agent_stats_computation_enabled,
+                config.v05_and_v07_traces_enabled,
             ) {
                 Ok(res) => Ok(res),
                 Err(err) => log_and_create_http_response(
@@ -765,6 +773,7 @@ impl MiniAgent {
         dd_dogstatsd_port: u16,
         peer_tags: &[String],
         agent_stats_computation_enabled: bool,
+        v05_and_v07_traces_enabled: bool,
     ) -> http::Result<http_common::HttpResponse> {
         // pipe_name already includes \\.\pipe\ prefix from config
         let receiver_socket = dd_apm_windows_pipe_name.unwrap_or("");
@@ -780,15 +789,20 @@ impl MiniAgent {
         // so it can compute accurate stats. P0 traces must not be dropped by the tracer.
         let client_drop_p0s = !agent_stats_computation_enabled;
 
+        let mut endpoints = vec![TRACE_ENDPOINT_PATH];
+        if v05_and_v07_traces_enabled {
+            endpoints.extend([V05_TRACE_ENDPOINT_PATH, V07_TRACE_ENDPOINT_PATH]);
+        }
+        endpoints.extend([
+            STATS_ENDPOINT_PATH,
+            INFO_ENDPOINT_PATH,
+            DSM_ENDPOINT_PATH,
+            PROFILING_ENDPOINT_PATH,
+        ]);
+
         let response_json = json!(
             {
-                "endpoints": [
-                    TRACE_ENDPOINT_PATH,
-                    STATS_ENDPOINT_PATH,
-                    INFO_ENDPOINT_PATH,
-                    DSM_ENDPOINT_PATH,
-                    PROFILING_ENDPOINT_PATH
-                ],
+                "endpoints": endpoints,
                 "client_drop_p0s": client_drop_p0s,
                 "span_kinds_stats_computed": SPAN_KINDS_STATS_COMPUTED,
                 "peer_tags": peer_tags,

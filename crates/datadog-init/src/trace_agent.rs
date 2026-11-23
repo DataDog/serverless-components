@@ -297,6 +297,7 @@ pub fn build_config(
         dd_site: settings.site.clone(),
         dd_apm_receiver_port: settings.receiver_port,
         dd_apm_non_local_traffic: settings.non_local_traffic,
+        v05_and_v07_traces_enabled: true,
         dd_dogstatsd_port: settings.dogstatsd_port,
         env_type: EnvironmentType::AzureSpringApp,
         app_name: None,
@@ -758,6 +759,7 @@ mod tests {
         let config = build_config(settings, span_tags, Some(signature.clone())).unwrap();
         assert_eq!(config.dd_apm_receiver_port, 9126);
         assert!(config.dd_apm_non_local_traffic);
+        assert!(config.v05_and_v07_traces_enabled);
         assert_eq!(
             config.trace_intake.url.to_string(),
             "http://fakeintake:80/api/v0.2/traces"

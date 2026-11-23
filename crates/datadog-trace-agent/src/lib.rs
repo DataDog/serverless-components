@@ -20,3 +20,4 @@ pub mod stats_flusher;
 pub mod stats_processor;
 pub mod trace_flusher;
 pub mod trace_processor;
+mod v07_payload;

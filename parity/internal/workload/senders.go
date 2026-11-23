@@ -94,7 +94,7 @@ func (r *RealSenders) DogStatsD(lines []string) (time.Time, error) {
 
 // Spans waits once for the trace receiver, then posts the fixture.
 func (r *RealSenders) Spans(fixture string) (time.Time, error) {
-	payload, traceCount, err := encodeSpanFixture(fixture)
+	encoded, err := encodeSpanFixture(fixture)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -107,12 +107,15 @@ func (r *RealSenders) Spans(fixture string) (time.Time, error) {
 	if readyErr != nil {
 		return time.Time{}, readyErr
 	}
-	request, err := http.NewRequest(http.MethodPost, r.traceURL()+"/v0.4/traces", bytes.NewReader(payload))
+	request, err := http.NewRequest(http.MethodPost, r.traceURL()+encoded.path, bytes.NewReader(encoded.body))
 	if err != nil {
 		return time.Time{}, err
 	}
 	request.Header.Set("Content-Type", "application/msgpack")
-	request.Header.Set("X-Datadog-Trace-Count", fmt.Sprint(traceCount))
+	request.Header.Set("X-Datadog-Trace-Count", fmt.Sprint(encoded.traceCount))
+	for name, value := range encoded.headers {
+		request.Header.Set(name, value)
+	}
 	sentAt := time.Now()
 	response, err := r.client().Do(request)
 	if err != nil {
@@ -182,9 +185,23 @@ type fixtureSpan struct {
 	Metrics  map[string]float64 `json:"metrics"`
 }
 
+// fixtureTracerPayload holds the tracer fields of a v07 payload body.
+type fixtureTracerPayload struct {
+	LanguageName    string `json:"language_name"`
+	LanguageVersion string `json:"language_version"`
+	TracerVersion   string `json:"tracer_version"`
+	RuntimeID       string `json:"runtime_id"`
+	Env             string `json:"env"`
+	Hostname        string `json:"hostname"`
+	AppVersion      string `json:"app_version"`
+}
+
 type spanFixture struct {
-	Encoding string          `json:"encoding"`
-	Traces   [][]fixtureSpan `json:"traces"`
+	Encoding string `json:"encoding"`
+	// Headers are added to the request, such as the tracer metadata headers a tracer sends.
+	Headers       map[string]string    `json:"headers"`
+	TracerPayload fixtureTracerPayload `json:"tracer_payload"`
+	Traces        [][]fixtureSpan      `json:"traces"`
 }
 
 func readSpanFixture(name string) (spanFixture, error) {
@@ -214,25 +231,138 @@ func FixtureResources(name string) ([]string, error) {
 	return out, nil
 }
 
-// encodeSpanFixture reads the named fixture and returns the /v0.4 msgpack payload
-// (an array of traces, each an array of span maps) and the number of traces.
-func encodeSpanFixture(name string) ([]byte, int, error) {
+// encodedFixture is a span fixture ready to post to the trace receiver.
+type encodedFixture struct {
+	path       string // the receiver endpoint for the fixture's encoding
+	body       []byte
+	traceCount int
+	headers    map[string]string // the fixture's extra request headers
+}
+
+// encodeSpanFixture reads the named fixture and encodes it in the msgpack format its
+// "encoding" field names:
+//   - v04: an array of traces, each an array of span maps.
+//   - v05: a two-element array of the string table and the traces, each an array of
+//     12-element span arrays whose strings are indexes into the table.
+//   - v07: a tracer payload map with the fixture's tracer fields, whose chunks hold the spans
+//     as v04 span maps.
+func encodeSpanFixture(name string) (encodedFixture, error) {
 	fixture, err := readSpanFixture(name)
 	if err != nil {
-		return nil, 0, err
+		return encodedFixture{}, err
 	}
-	if fixture.Encoding != "v04" {
-		return nil, 0, fmt.Errorf("span fixture %q: encoding %q is not supported yet, only v04", name, fixture.Encoding)
+	encoded := encodedFixture{traceCount: len(fixture.Traces), headers: fixture.Headers}
+	switch fixture.Encoding {
+	case "v04":
+		encoded.path, encoded.body = "/v0.4/traces", encodeV04(fixture.Traces)
+	case "v05":
+		encoded.path, encoded.body = "/v0.5/traces", encodeV05(fixture.Traces)
+	case "v07":
+		encoded.path, encoded.body = "/v0.7/traces", encodeV07(fixture.TracerPayload, fixture.Traces)
+	default:
+		return encodedFixture{}, fmt.Errorf("span fixture %q: encoding %q is not supported, only v04, v05 and v07", name, fixture.Encoding)
 	}
-	var out []byte
-	out = msgp.AppendArrayHeader(out, uint32(len(fixture.Traces)))
-	for _, trace := range fixture.Traces {
-		out = msgp.AppendArrayHeader(out, uint32(len(trace)))
-		for _, span := range trace {
-			out = appendSpanV04(out, span)
+	return encoded, nil
+}
+
+func encodeV04(traces [][]fixtureSpan) []byte {
+	out := msgp.AppendArrayHeader(nil, uint32(len(traces)))
+	for _, trace := range traces {
+		out = appendTraceV04(out, trace)
+	}
+	return out
+}
+
+func appendTraceV04(out []byte, trace []fixtureSpan) []byte {
+	out = msgp.AppendArrayHeader(out, uint32(len(trace)))
+	for _, span := range trace {
+		out = appendSpanV04(out, span)
+	}
+	return out
+}
+
+// encodeV05 writes the traces first, collecting the string table, and then puts the table
+// in front. As in the tracers, index 0 of the table is the empty string.
+func encodeV05(traces [][]fixtureSpan) []byte {
+	table := stringTable{index: map[string]uint32{}}
+	table.ref("")
+	body := msgp.AppendArrayHeader(nil, uint32(len(traces)))
+	for _, trace := range traces {
+		body = msgp.AppendArrayHeader(body, uint32(len(trace)))
+		for _, s := range trace {
+			body = msgp.AppendArrayHeader(body, 12)
+			body = msgp.AppendUint32(body, table.ref(s.Service))
+			body = msgp.AppendUint32(body, table.ref(s.Name))
+			body = msgp.AppendUint32(body, table.ref(s.Resource))
+			body = msgp.AppendUint64(body, s.TraceID)
+			body = msgp.AppendUint64(body, s.SpanID)
+			body = msgp.AppendUint64(body, s.ParentID)
+			body = msgp.AppendInt64(body, s.Start)
+			body = msgp.AppendInt64(body, s.Duration)
+			body = msgp.AppendInt32(body, s.Error)
+			body = msgp.AppendMapHeader(body, uint32(len(s.Meta)))
+			for _, key := range slices.Sorted(maps.Keys(s.Meta)) {
+				body = msgp.AppendUint32(body, table.ref(key))
+				body = msgp.AppendUint32(body, table.ref(s.Meta[key]))
+			}
+			body = msgp.AppendMapHeader(body, uint32(len(s.Metrics)))
+			for _, key := range slices.Sorted(maps.Keys(s.Metrics)) {
+				body = msgp.AppendUint32(body, table.ref(key))
+				body = msgp.AppendFloat64(body, s.Metrics[key])
+			}
+			body = msgp.AppendUint32(body, table.ref(s.Type))
 		}
 	}
-	return out, len(fixture.Traces), nil
+	out := msgp.AppendArrayHeader(nil, 2)
+	out = msgp.AppendArrayHeader(out, uint32(len(table.strings)))
+	for _, str := range table.strings {
+		out = msgp.AppendString(out, str)
+	}
+	return append(out, body...)
+}
+
+// stringTable assigns each distinct string an index, in order of first use.
+type stringTable struct {
+	strings []string
+	index   map[string]uint32
+}
+
+func (t *stringTable) ref(s string) uint32 {
+	if i, ok := t.index[s]; ok {
+		return i
+	}
+	i := uint32(len(t.strings))
+	t.strings = append(t.strings, s)
+	t.index[s] = i
+	return i
+}
+
+// encodeV07 writes a tracer payload with each trace as one chunk with priority -128, which
+// means no sampling priority, as the agent sets for v04 and v05 traces.
+func encodeV07(tracer fixtureTracerPayload, traces [][]fixtureSpan) []byte {
+	out := msgp.AppendMapHeader(nil, 8)
+	for _, field := range []struct{ key, value string }{
+		{"language_name", tracer.LanguageName},
+		{"language_version", tracer.LanguageVersion},
+		{"tracer_version", tracer.TracerVersion},
+		{"runtime_id", tracer.RuntimeID},
+		{"env", tracer.Env},
+		{"hostname", tracer.Hostname},
+		{"app_version", tracer.AppVersion},
+	} {
+		out = msgp.AppendString(out, field.key)
+		out = msgp.AppendString(out, field.value)
+	}
+	out = msgp.AppendString(out, "chunks")
+	out = msgp.AppendArrayHeader(out, uint32(len(traces)))
+	for _, trace := range traces {
+		out = msgp.AppendMapHeader(out, 2)
+		out = msgp.AppendString(out, "priority")
+		out = msgp.AppendInt32(out, -128)
+		out = msgp.AppendString(out, "spans")
+		out = appendTraceV04(out, trace)
+	}
+	return out
 }
 
 func appendSpanV04(out []byte, s fixtureSpan) []byte {

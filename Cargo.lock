@@ -707,6 +707,7 @@ dependencies = [
  "prost 0.14.3",
  "reqwest",
  "rmp-serde",
+ "rmpv",
  "serde",
  "serde_json",
  "serial_test",

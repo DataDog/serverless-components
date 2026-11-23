@@ -1,7 +1,7 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -30,7 +30,9 @@ use crate::{
     config::{Config, InstallSignature, SpanTags, resolve_payload_env},
     http_utils::{self, log_and_create_http_response, log_and_create_traces_success_http_response},
     internal_span_filter,
+    mini_agent::{V05_TRACE_ENDPOINT_PATH, V07_TRACE_ENDPOINT_PATH},
     stats_concentrator_service::StatsConcentratorHandle,
+    v07_payload,
 };
 
 const TRACER_PAYLOAD_FUNCTION_TAGS_TAG_KEY: &str = "_dd.tags.function";
@@ -47,13 +49,13 @@ const PRIORITY_RATE_METRIC_KEY: &str = "_sampling_priority_rate_v1";
 /// The root-span metrics with the rates that tracers apply with the agent's rates and with rules.
 const TRACER_PRIORITY_RATE_METRIC_KEYS: [&str; 2] = ["_dd.agent_psr", "_dd.rule_psr"];
 /// The chunk priority of a trace without a sampling priority.
-const PRIORITY_NONE: i32 = -128;
+pub(crate) const PRIORITY_NONE: i32 = -128;
 /// The chunk priority that the Go agent gives a chunk kept by single span sampling.
 const PRIORITY_USER_KEEP: i32 = 2;
 const SPAN_SAMPLING_MECHANISM_KEY: &str = "_dd.span_sampling.mechanism";
 /// The analytics event extraction rate of a span.
 const EVENT_EXTRACTION_RATE_KEY: &str = "_dd1.sr.eausr";
-const DECISION_MAKER_KEY: &str = "_dd.p.dm";
+pub(crate) const DECISION_MAKER_KEY: &str = "_dd.p.dm";
 const ORIGIN_KEY: &str = "_dd.origin";
 const MANUAL_DECISION_MAKER: &str = "-4";
 /// The payload version that the Go agent converted the spans from.
@@ -127,6 +129,10 @@ pub trait TraceProcessor {
 struct ChunkProcessor {
     config: Arc<Config>,
     mini_agent_metadata: Arc<trace_utils::MiniAgentMetadata>,
+    /// The `_dd.convertedv1` value of every span, set with the agent payload fields.
+    converted_v1: Option<&'static str>,
+    /// The fields of each chunk of a v0.7 payload, in the order of the chunks.
+    v07_chunk_fields: VecDeque<v07_payload::ChunkFields>,
 }
 
 impl TraceChunkProcessor for ChunkProcessor {
@@ -143,16 +149,21 @@ impl TraceChunkProcessor for ChunkProcessor {
                 .tags
                 .insert(DECISION_MAKER_KEY.to_string(), value.clone());
         }
+        // `collect_pb_trace_chunks` processes every non-empty trace in order, and the v0.7 traces
+        // are all non-empty.
+        if let Some(fields) = self.v07_chunk_fields.pop_front() {
+            fields.apply_to_chunk(chunk);
+        }
 
         // Clone app_name once instead of once per span
         let app_name = self.config.app_name.clone();
 
         let go_fields = self.config.agent_payload_fields.is_some();
-        if go_fields {
-            // The receiver accepts only msgpack v0.4 payloads. Configured tags replace the value.
+        if go_fields && let Some(converted_v1) = self.converted_v1 {
+            // Configured tags replace the value.
             for span in &mut chunk.spans {
                 span.meta
-                    .insert(CONVERTED_V1_KEY.to_string(), "v04".to_string());
+                    .insert(CONVERTED_V1_KEY.to_string(), converted_v1.to_string());
             }
         }
         match &self.config.span_tags {
@@ -660,9 +671,12 @@ impl ServerlessTraceProcessor {
             .await;
     }
 
+    /// With `go_fields`, the stats get the payload's hostname and no tracer version, as the Go
+    /// agent's stats aggregation key has.
     fn send_to_concentrator(
         concentrator: &StatsConcentratorHandle,
         payload: &TracerPayloadCollection,
+        go_fields: bool,
     ) {
         if let TracerPayloadCollection::V07(tracer_payloads) = payload {
             for tracer_payload in tracer_payloads {
@@ -678,8 +692,16 @@ impl ServerlessTraceProcessor {
                     schema_version: 2,
                     runtime_id: None,
                     tracer_language: tracer_payload.language_name.clone(),
-                    tracer_version: tracer_payload.tracer_version.clone(),
-                    hostname: String::new(),
+                    tracer_version: if go_fields {
+                        String::new()
+                    } else {
+                        tracer_payload.tracer_version.clone()
+                    },
+                    hostname: if go_fields {
+                        tracer_payload.hostname.clone()
+                    } else {
+                        String::new()
+                    },
                     service_name,
                     service_env: Some(tracer_payload.env.clone()),
                     service_version: Some(tracer_payload.app_version.clone()),
@@ -858,7 +880,7 @@ impl TraceProcessor for ServerlessTraceProcessor {
                 // kept alive for the next request instead of being closed.
                 warn!("Could not acquire an enqueue permit in time; dropping traces");
                 if let Err(err) = body.collect().await {
-                    debug!("Error draining /v0.4/traces request body while dropping traces: {err}");
+                    debug!("Error draining the trace request body while dropping traces: {err}");
                 }
                 return log_and_create_traces_success_http_response(
                     "Dropped traces due to enqueue capacity",
@@ -867,12 +889,45 @@ impl TraceProcessor for ServerlessTraceProcessor {
             }
         };
 
-        let tracer_header_tags = (&parts.headers).into();
+        let mut tracer_header_tags: trace_utils::TracerHeaderTags = (&parts.headers).into();
+        if config.agent_payload_fields.is_some() {
+            // Go's serverless receiver has no container features, so it reads no container ID.
+            tracer_header_tags.container_id = "";
+        }
 
         // deserialize traces from the request body, convert to protobuf structs (see trace-protobuf
         // crate)
-        let (body_size, mut traces) = match trace_utils::get_traces_from_request_body(body).await {
+        let go_fields = config.agent_payload_fields.is_some();
+        let path = parts.uri.path();
+        let v05_payload = path == V05_TRACE_ENDPOINT_PATH;
+        let v07_payload = path == V07_TRACE_ENDPOINT_PATH;
+        let decoded = if v05_payload {
+            trace_utils::get_v05_traces_from_request_body(body)
+                .await
+                .map(|(size, traces)| (size, traces, None))
+        } else if v07_payload {
+            match body.collect().await {
+                Ok(collected) => {
+                    let bytes = collected.to_bytes();
+                    v07_payload::decode(&bytes)
+                        .map(|(fields, chunks)| (bytes.len(), Vec::new(), Some((fields, chunks))))
+                }
+                Err(err) => Err(err.into()),
+            }
+        } else {
+            trace_utils::get_traces_from_request_body(body)
+                .await
+                .map(|(size, traces)| (size, traces, None))
+        };
+        let (body_size, mut traces, mut v07) = match decoded {
             Ok(res) => res,
+            // Go answers a body it cannot decode with 400 and the error.
+            Err(err) if go_fields => {
+                return http_utils::log_and_create_plain_text_http_response(
+                    &format!("{err:#}"),
+                    StatusCode::BAD_REQUEST,
+                );
+            }
             Err(err) => {
                 return log_and_create_http_response(
                     &format!("Error deserializing trace from request body: {err}"),
@@ -889,25 +944,58 @@ impl TraceProcessor for ServerlessTraceProcessor {
             );
         }
 
+        // Go's v0.5 decoder tags only the payload's first span, to save allocations.
+        if v05_payload
+            && go_fields
+            && let Some(span) = traces.iter_mut().find_map(|trace| trace.first_mut())
+        {
+            span.meta
+                .insert(CONVERTED_V1_KEY.to_string(), "v05".to_string());
+        }
+
         // Go removes the internal spans before normalization, so they reach neither the traces
         // nor the stats, and it sends nothing when no chunk is left.
-        if config.agent_payload_fields.is_some()
-            && internal_span_filter::discard_internal_spans(&mut traces)
-            && traces.is_empty()
-        {
+        let all_spans_internal = go_fields
+            && match &mut v07 {
+                Some((_, chunks)) => {
+                    internal_span_filter::discard_internal_spans(chunks) && chunks.is_empty()
+                }
+                None => {
+                    internal_span_filter::discard_internal_spans(&mut traces) && traces.is_empty()
+                }
+            };
+        if all_spans_internal {
             return log_and_create_traces_success_http_response(
                 "Successfully buffered traces to be flushed.",
                 StatusCode::OK,
             );
         }
 
+        let mut v07_chunk_fields = VecDeque::new();
+        let v07_payload_fields = v07.map(|(fields, chunks)| {
+            for chunk in chunks {
+                v07_chunk_fields.push_back(chunk.fields);
+                traces.push(chunk.spans);
+            }
+            fields
+        });
+
+        let mut chunk_processor = ChunkProcessor {
+            config: config.clone(),
+            mini_agent_metadata: mini_agent_metadata.clone(),
+            converted_v1: if v05_payload {
+                None
+            } else if v07_payload {
+                Some("v07-pb")
+            } else {
+                Some("v04")
+            },
+            v07_chunk_fields,
+        };
         let mut payload = match trace_utils::collect_pb_trace_chunks(
             traces,
             &tracer_header_tags,
-            &mut ChunkProcessor {
-                config: config.clone(),
-                mini_agent_metadata: mini_agent_metadata.clone(),
-            },
+            &mut chunk_processor,
             true, // In mini agent, we always send agentless
         ) {
             Ok(res) => res,
@@ -918,6 +1006,14 @@ impl TraceProcessor for ServerlessTraceProcessor {
                 );
             }
         };
+
+        if let Some(fields) = &v07_payload_fields
+            && let TracerPayloadCollection::V07(ref mut tracer_payloads) = payload
+        {
+            for tracer_payload in tracer_payloads {
+                fields.apply_to_payload(tracer_payload);
+            }
+        }
 
         // Add function_tags to payload if we can
         if let Some(function_tags) = config.tags.function_tags()
@@ -936,7 +1032,11 @@ impl TraceProcessor for ServerlessTraceProcessor {
         if let Some(ref concentrator) = self.stats_concentrator
             && config.agent_stats_computation_enabled
         {
-            Self::send_to_concentrator(concentrator, &payload);
+            Self::send_to_concentrator(
+                concentrator,
+                &payload,
+                config.agent_payload_fields.is_some(),
+            );
         }
 
         // The samplers run whether or not the agent computes stats. They run after
@@ -1073,6 +1173,7 @@ mod tests {
             dd_site: "datadoghq.com".to_string(),
             dd_apm_receiver_port: 8126,
             dd_apm_non_local_traffic: false,
+            v05_and_v07_traces_enabled: false,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name: None,
             dd_dogstatsd_port: 8125,
@@ -1787,6 +1888,8 @@ mod tests {
             super::ChunkProcessor {
                 config: Arc::new(create_test_config()),
                 mini_agent_metadata: Arc::new(create_test_metadata()),
+                converted_v1: Some("v04"),
+                v07_chunk_fields: std::collections::VecDeque::new(),
             }
             .process(&mut chunk, usize::from(child_first));
             assert_eq!(
@@ -1877,6 +1980,8 @@ mod tests {
             super::ChunkProcessor {
                 config: Arc::new(config),
                 mini_agent_metadata: Arc::new(MiniAgentMetadata::default()),
+                converted_v1: Some("v04"),
+                v07_chunk_fields: std::collections::VecDeque::new(),
             }
             .process(&mut chunk, 0);
             assert_eq!(chunk.origin, expected_origin, "tags {tags:?}");
@@ -2396,6 +2501,8 @@ mod tests {
             super::ChunkProcessor {
                 config: Arc::new(config),
                 mini_agent_metadata: Arc::new(MiniAgentMetadata::default()),
+                converted_v1: Some("v04"),
+                v07_chunk_fields: std::collections::VecDeque::new(),
             }
             .process(&mut chunk, 0);
             let meta = &chunk.spans[0].meta;

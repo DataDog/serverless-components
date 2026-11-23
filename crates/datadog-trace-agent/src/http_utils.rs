@@ -36,6 +36,19 @@ pub fn log_and_create_http_response(
         .body(http_common::Body::from(body))
 }
 
+/// Logs the message and answers with it as plain text, as Go's `http.Error` does.
+pub fn log_and_create_plain_text_http_response(
+    message: &str,
+    status: StatusCode,
+) -> http::Result<Response<http_common::Body>> {
+    error!("{message}");
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(http_common::Body::from(format!("{message}\n")))
+}
+
 /// Does two things:
 /// 1. Logs the given message
 /// 2. Returns the rate_by_service map to use to set the sampling priority in the body of JSON

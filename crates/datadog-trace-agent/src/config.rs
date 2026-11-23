@@ -170,6 +170,9 @@ pub struct Config {
     /// Whether the receiver accepts traffic from other hosts. When false, it listens only on the
     /// loopback interface.
     pub dd_apm_non_local_traffic: bool,
+    /// Whether the receiver also takes msgpack v0.5 and v0.7 payloads at `/v0.5/traces` and
+    /// `/v0.7/traces`, as the Go trace agent does. False by default.
+    pub v05_and_v07_traces_enabled: bool,
     #[cfg(any(all(windows, feature = "windows-pipes"), test))]
     pub dd_apm_windows_pipe_name: Option<String>,
     pub dd_dogstatsd_port: u16,
@@ -350,6 +353,7 @@ impl Config {
             enqueue_permit_timeout_secs: 2,
             dd_apm_receiver_port,
             dd_apm_non_local_traffic: false,
+            v05_and_v07_traces_enabled: false,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name,
             dd_dogstatsd_port,
@@ -1130,6 +1134,7 @@ pub mod test_helpers {
             dd_site: "mock-datadoghq.com".to_string(),
             dd_apm_receiver_port: port,
             dd_apm_non_local_traffic: false,
+            v05_and_v07_traces_enabled: false,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name: None,
             dd_dogstatsd_port: 8125,

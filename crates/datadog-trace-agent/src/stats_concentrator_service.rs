@@ -188,8 +188,9 @@ impl StatsConcentratorService {
                     return None;
                 }
                 Some(ClientStatsPayload {
-                    // Do not set hostname so the trace stats backend can aggregate stats properly
-                    hostname: String::new(),
+                    // Empty unless the trace processor reports the Go agent's fields, so the
+                    // trace stats backend can aggregate stats properly
+                    hostname: metadata.hostname.clone(),
                     // Prefer env from the tracer payload, fall back to agent config
                     env: resolve_payload_env(
                         metadata.service_env.as_deref().unwrap_or(""),

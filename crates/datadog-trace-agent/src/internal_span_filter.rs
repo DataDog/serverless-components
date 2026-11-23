@@ -18,14 +18,15 @@ const INTERNAL_DNS_ADDRESS_PREFIXES: [&str; 2] = ["0.0.0.0", "127.0.0.1"];
 
 /// Removes the internal spans from each trace, then the traces left empty. Returns whether any
 /// span was removed.
-pub(crate) fn discard_internal_spans(traces: &mut Vec<Vec<pb::Span>>) -> bool {
+pub(crate) fn discard_internal_spans<T: AsMut<Vec<pb::Span>>>(traces: &mut Vec<T>) -> bool {
     let mut removed = false;
     for trace in traces.iter_mut() {
+        let trace = trace.as_mut();
         let count = trace.len();
         trace.retain(|span| !is_internal_span(span));
         removed |= trace.len() != count;
     }
-    traces.retain(|trace| !trace.is_empty());
+    traces.retain_mut(|trace| !trace.as_mut().is_empty());
     removed
 }
 

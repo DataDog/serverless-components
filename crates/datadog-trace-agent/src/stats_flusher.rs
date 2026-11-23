@@ -129,7 +129,16 @@ impl StatsFlusher for ServerlessStatsFlusher {
         if let Some(ref concentrator) = self.stats_concentrator {
             match concentrator.flush(force_flush).await {
                 Ok(agent_stats) if !agent_stats.is_empty() => {
+                    // The concentrator reports a hostname only with the agent payload fields,
+                    // as the Go agent does, so keep it.
+                    let hostnames: Vec<String> = agent_stats
+                        .iter()
+                        .map(|stats| stats.hostname.clone())
+                        .collect();
                     let mut payload = stats_utils::construct_stats_payload(agent_stats);
+                    for (stats, hostname) in payload.stats.iter_mut().zip(hostnames) {
+                        stats.hostname = hostname;
+                    }
                     payload.client_computed = false;
                     send_stats_payload(&config, payload).await;
                 }
