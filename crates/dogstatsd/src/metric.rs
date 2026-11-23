@@ -6,6 +6,7 @@ use crate::{constants, datadog};
 use ddsketch_agent::DDSketch;
 use fnv::FnvHasher;
 use protobuf::Chars;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use ustr::Ustr;
 
@@ -31,6 +32,25 @@ pub enum MetricValue {
     Gauge(f64),
     /// Dogstatsd 'distribution' metric type, histogram
     Distribution(DDSketch),
+    /// Dogstatsd 'histogram' and 'timer' metric types, aggregated by the agent
+    Histogram(Histogram),
+    /// Dogstatsd 'set' metric type, the distinct values
+    Set(HashSet<String>),
+}
+
+/// The samples of a histogram in one bucket, each as (value, weight), where the weight is one
+/// divided by the sample rate. Exact samples give the Go agent's median and percentiles.
+#[derive(Clone, Debug, Default)]
+pub struct Histogram {
+    pub(crate) samples: Vec<(f64, f64)>,
+}
+
+/// Which metric types are parsed. The default parses counts, gauges and distributions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ParseOptions {
+    /// Also parse histograms (`h`), timers (`ms`) and sets (`s`), and drop NaN or infinite values
+    /// of every numeric type, as the Go agent does.
+    pub extended_metric_types: bool,
 }
 
 impl MetricValue {
@@ -62,6 +82,29 @@ impl SortedTags {
         self.values.extend_from_slice(&other.values);
         self.values.dedup();
         self.values.sort_unstable();
+    }
+
+    /// Adds `other`'s tags, then removes every duplicate, not only adjacent ones.
+    pub fn extend_unique(&mut self, other: &SortedTags) {
+        self.values.extend_from_slice(&other.values);
+        self.values.sort_unstable();
+        self.values.dedup();
+    }
+
+    /// Builds the tags from a list of whole tags, without splitting them on commas and without
+    /// the `MAX_TAGS` limit of `parse`. A tag's key ends at its first colon.
+    pub fn from_tags<'a>(tags: impl IntoIterator<Item = &'a str>) -> SortedTags {
+        let mut values: Vec<(Ustr, Ustr)> = tags
+            .into_iter()
+            .filter(|tag| !tag.is_empty())
+            .map(|tag| match tag.split_once(':') {
+                Some((key, value)) => (Ustr::from(key), Ustr::from(value)),
+                None => (Ustr::from(tag), Ustr::from("")),
+            })
+            .collect();
+        values.sort_unstable();
+        values.dedup();
+        SortedTags { values }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -246,6 +289,43 @@ pub fn timestamp_to_bucket(timestamp: i64) -> i64 {
 /// limits in [`constants`]. Any non-viable input will be discarded.
 /// example aj-test.increment:1|c|#user:aj-test from 127.0.0.1:50983
 pub fn parse(input: &str) -> Result<Metric, ParseError> {
+    parse_with_options(input, ParseOptions::default())
+}
+
+/// Parses a metric as [`parse`] does, with the metric types that `options` turns on.
+///
+/// # Errors
+///
+/// The same as [`parse`].
+pub fn parse_with_options(input: &str, options: ParseOptions) -> Result<Metric, ParseError> {
+    parse_with_sample_rate(input, options).map(|(metric, _)| metric)
+}
+
+/// Parses a metric as [`parse`] does, and scales a count by its sample rate, as the Go agent
+/// does: `hits:1|c|@0.5` counts 2. A sample rate that is not positive and finite is ignored.
+///
+/// # Errors
+///
+/// The same as [`parse`].
+pub fn parse_applying_sample_rate(
+    input: &str,
+    options: ParseOptions,
+) -> Result<Metric, ParseError> {
+    let (mut metric, sample_rate) = parse_with_sample_rate(input, options)?;
+    if let (MetricValue::Count(value), Some(rate)) = (&mut metric.value, sample_rate)
+        && rate > 0.0
+        && rate.is_finite()
+    {
+        *value /= rate;
+    }
+    Ok(metric)
+}
+
+/// A histogram sample always has its sample rate as its weight, as in the Go agent.
+fn parse_with_sample_rate(
+    input: &str,
+    options: ParseOptions,
+) -> Result<(Metric, Option<f64>), ParseError> {
     // Parse mandatory fields: <name>:<value>|<type>
     let (name_and_value, remaining) = next_field(input);
 
@@ -267,18 +347,31 @@ pub fn parse(input: &str) -> Result<Metric, ParseError> {
         return Err(ParseError::Raw(format!("Invalid metric format {input}")));
     }
 
-    // Parse the first value
-    let val = first_value(values)?;
-
     // Parse metric type and create value
     // Open question: do we allow dup tags?
-    let metric_value = match metric_type {
-        "c" => MetricValue::Count(val),
-        "g" => MetricValue::Gauge(val),
+    // With the extended metric types, a NaN or infinite value is dropped, as the Go agent drops
+    // it before aggregation. Set members are not numbers, so they are kept.
+    let value = || {
+        let value = first_value(values)?;
+        if options.extended_metric_types && !value.is_finite() {
+            return Err(ParseError::Raw(format!("Value is not finite: {value}")));
+        }
+        Ok(value)
+    };
+    let mut metric_value = match metric_type {
+        "c" => MetricValue::Count(value()?),
+        "g" => MetricValue::Gauge(value()?),
         "d" => {
             let sketch = &mut DDSketch::default();
-            sketch.insert(val);
+            sketch.insert(value()?);
             MetricValue::Distribution(sketch.to_owned())
+        }
+        // The weight is set once the sample rate is parsed.
+        "h" | "ms" if options.extended_metric_types => MetricValue::Histogram(Histogram {
+            samples: vec![(value()?, 1.0)],
+        }),
+        "s" if options.extended_metric_types => {
+            MetricValue::Set(HashSet::from([values.to_string()]))
         }
         "h" | "s" | "ms" => {
             return Err(ParseError::UnsupportedType(metric_type.to_string()));
@@ -302,8 +395,8 @@ pub fn parse(input: &str) -> Result<Metric, ParseError> {
     // Parse optional fields in any order
     let mut tags: Option<SortedTags> = None;
     let mut timestamp: Option<i64> = None;
-    // sample_rate and container_id are parsed but currently unused
-    let mut _sample_rate: Option<f64> = None;
+    // container_id is parsed but currently unused
+    let mut sample_rate: Option<f64> = None;
     let mut _container_id: Option<&str> = None;
 
     let mut current = remaining;
@@ -328,7 +421,7 @@ pub fn parse(input: &str) -> Result<Metric, ParseError> {
                 .round() as i64;
             timestamp = Some(sec);
         } else if let Some(sr_str) = field.strip_prefix('@') {
-            _sample_rate = Some(
+            sample_rate = Some(
                 sr_str
                     .parse::<f64>()
                     .map_err(|_| ParseError::Raw(format!("Invalid sample rate: @{}", sr_str)))?,
@@ -341,17 +434,27 @@ pub fn parse(input: &str) -> Result<Metric, ParseError> {
         current = next;
     }
 
+    if let (MetricValue::Histogram(histogram), Some(rate)) = (&mut metric_value, sample_rate)
+        && rate > 0.0
+        && rate.is_finite()
+    {
+        histogram.samples[0].1 = 1.0 / rate;
+    }
+
     let parsed_timestamp = timestamp_to_bucket(timestamp.unwrap_or(now));
     let name_ustr = Ustr::from(name);
     let metric_id = id(name_ustr, &tags, parsed_timestamp);
 
-    Ok(Metric {
-        name: name_ustr,
-        value: metric_value,
-        tags,
-        id: metric_id,
-        timestamp: parsed_timestamp,
-    })
+    Ok((
+        Metric {
+            name: name_ustr,
+            value: metric_value,
+            tags,
+            id: metric_id,
+            timestamp: parsed_timestamp,
+        },
+        sample_rate,
+    ))
 }
 
 fn first_value(values: &str) -> Result<f64, ParseError> {
@@ -409,6 +512,33 @@ mod tests {
     use crate::metric::{MetricValue, SortedTags, id, parse, timestamp_to_bucket};
 
     use super::ParseError;
+
+    /// Whole tags stay whole, duplicates appear once, and there is no tag limit.
+    #[test]
+    fn from_tags_table() {
+        let many: Vec<String> = (0..150).map(|i| format!("tag{i:03}:v")).collect();
+        let cases: [(Vec<&str>, usize, Vec<&str>); 2] = [
+            (
+                vec!["b:x", "a:1,b:2", "", "bare", "b:x", "url:http://host"],
+                4,
+                vec!["a:1,b:2", "b:x", "bare", "url:http://host"],
+            ),
+            (
+                many.iter().map(String::as_str).collect(),
+                150,
+                vec!["tag000:v"],
+            ),
+        ];
+        for (tags, expected_len, expected_first) in cases {
+            let strings = SortedTags::from_tags(tags.iter().copied()).to_strings();
+            assert_eq!(strings.len(), expected_len, "tags {tags:?}");
+            assert_eq!(
+                strings[..expected_first.len()],
+                expected_first,
+                "tags {tags:?}"
+            );
+        }
+    }
 
     fn metric_name() -> impl Strategy<Value = String> {
         string_regex("[a-zA-Z0-9.-]{1,128}").unwrap()
@@ -1124,6 +1254,90 @@ mod tests {
                 assert!(sketch.min().is_some());
             }
             _ => panic!("Expected distribution metric"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn parse_applying_sample_rate_table() {
+        let cases = [
+            ("hits:1|c|@0.5", Some(2.0)),
+            ("hits:3|c|@0.25|#env:prod", Some(12.0)),
+            ("hits:1|c", Some(1.0)),
+            ("hits:1|c|@1", Some(1.0)),
+            ("hits:1|c|@0", Some(1.0)),
+            ("hits:1|c|@-0.5", Some(1.0)),
+            ("hits:1|c|@inf", Some(1.0)),
+            ("level:7|g|@0.5", Some(7.0)),
+            ("latency:7|d|@0.5", None),
+        ];
+        for (input, expected) in cases {
+            let metric = super::parse_applying_sample_rate(input, Default::default()).unwrap();
+            assert_eq!(metric.value.get_value(), expected, "input {input}");
+        }
+    }
+
+    #[test]
+    fn parse_extended_metric_types_table() {
+        use super::{ParseOptions, parse_with_options};
+
+        let extended = ParseOptions {
+            extended_metric_types: true,
+        };
+        let cases = [
+            ("n:1|h", ParseOptions::default(), "unsupported type h"),
+            ("u:alice|s", ParseOptions::default(), "unsupported type s"),
+            ("n:1|h", extended, "histogram [(1.0, 1.0)]"),
+            ("n:3|h|@0.5", extended, "histogram [(3.0, 2.0)]"),
+            ("n:250|ms", extended, "histogram [(250.0, 1.0)]"),
+            ("u:alice|s|@0.5", extended, "set [\"alice\"]"),
+            ("n:1|c|@0.5", extended, "count 1"),
+            ("n:nan|g", ParseOptions::default(), "Gauge(NaN)"),
+            (
+                "n:nan|h",
+                extended,
+                "parse failure: Value is not finite: NaN",
+            ),
+            (
+                "n:inf|ms",
+                extended,
+                "parse failure: Value is not finite: inf",
+            ),
+            (
+                "n:-Infinity|c",
+                extended,
+                "parse failure: Value is not finite: -inf",
+            ),
+            (
+                "n:NaN|g",
+                extended,
+                "parse failure: Value is not finite: NaN",
+            ),
+            (
+                "n:nan|d",
+                extended,
+                "parse failure: Value is not finite: NaN",
+            ),
+            ("u:nan|s", extended, "set [\"nan\"]"),
+        ];
+        for (input, options, expected) in cases {
+            let actual = match parse_with_options(input, options) {
+                Ok(metric) => match metric.value {
+                    MetricValue::Histogram(histogram) => {
+                        format!("histogram {:?}", histogram.samples)
+                    }
+                    MetricValue::Set(set) => {
+                        format!("set {:?}", set.into_iter().collect::<Vec<_>>())
+                    }
+                    MetricValue::Count(count) => format!("count {count}"),
+                    other => format!("{other:?}"),
+                },
+                Err(ParseError::UnsupportedType(metric_type)) => {
+                    format!("unsupported type {metric_type}")
+                }
+                Err(error) => format!("{error}"),
+            };
+            assert_eq!(actual, expected, "input {input}");
         }
     }
 }

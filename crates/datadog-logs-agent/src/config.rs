@@ -7,7 +7,7 @@ use crate::constants::{DEFAULT_COMPRESSION_LEVEL, DEFAULT_FLUSH_TIMEOUT_SECS, DE
 use crate::logs_additional_endpoint::{LogsAdditionalEndpoint, parse_additional_endpoints};
 
 /// Controls where and how logs are shipped.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Destination {
     /// Ship to Datadog Logs API.
     /// Endpoint: `https://http-intake.logs.{site}/api/v2/logs`
@@ -18,6 +18,35 @@ pub enum Destination {
     /// Endpoint: the provided URL.
     /// Headers: `DD-API-KEY` only. Compression is always disabled for OPW.
     ObservabilityPipelinesWorker { url: String },
+
+    /// Ship to a Datadog logs intake at a full URL.
+    /// Endpoint: the provided URL.
+    /// Headers: `DD-API-KEY`, optionally `Content-Encoding: zstd`, and the optional `headers`
+    /// that are set. Compression: as `Datadog`.
+    CustomUrl {
+        url: String,
+        headers: CustomUrlHeaders,
+    },
+}
+
+/// The optional headers of a [`Destination::CustomUrl`]. None is sent by default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CustomUrlHeaders {
+    /// `DD-PROTOCOL`.
+    pub protocol: Option<String>,
+    /// `DD-EVP-ORIGIN` and `DD-EVP-ORIGIN-VERSION`.
+    pub origin: Option<IntakeOrigin>,
+    /// `User-Agent`.
+    pub user_agent: Option<String>,
+    /// `dd-message-timestamp` and `dd-current-timestamp`, in Unix milliseconds.
+    pub timestamps: bool,
+}
+
+/// The product that sends the logs, in the `DD-EVP-ORIGIN` and `DD-EVP-ORIGIN-VERSION` headers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntakeOrigin {
+    pub name: String,
+    pub version: String,
 }
 
 /// Configuration for [`LogFlusher`](crate::flusher::LogFlusher).
@@ -29,7 +58,7 @@ pub struct LogFlusherConfig {
     /// Datadog site (e.g. "datadoghq.com", "datadoghq.eu").
     pub site: String,
 
-    /// Flusher mode — Datadog vs Observability Pipelines Worker.
+    /// Where logs are shipped.
     pub mode: Destination,
 
     /// Additional Datadog intake endpoints to ship each batch to in parallel.

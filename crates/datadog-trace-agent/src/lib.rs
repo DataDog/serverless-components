@@ -11,6 +11,7 @@ pub mod aggregator;
 pub mod config;
 pub mod env_verifier;
 pub mod http_utils;
+mod internal_span_filter;
 pub mod mini_agent;
 pub mod peer_tags;
 pub mod proxy_flusher;

@@ -1,0 +1,15 @@
+# Startup time and peak memory are reported, not compared: the scenario is report-only, so it
+# never passes or fails and the parity bar leaves it out. The spec gives no priority; P2 is the
+# lowest the harness accepts. The span send makes the driver record when the trace receiver first
+# answered, which is the startup time.
+name: performance.startup-and-memory
+priority: P2
+features: []
+mode: in-container
+platform: local
+report_only: true
+workload:
+  - at: 0s
+    send_spans: {fixture: two-traces-v04}
+  - at: 3s
+    exit: 0

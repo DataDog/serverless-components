@@ -29,6 +29,10 @@ pub(crate) enum DdMetricKind {
     Count,
     /// An instantaneous value
     Gauge,
+    /// The series API v2 rate type, a per-second value over the metric's interval
+    V2Rate,
+    /// The series API v2 gauge type
+    V2Gauge,
 }
 
 impl Serialize for DdMetricKind {
@@ -39,6 +43,8 @@ impl Serialize for DdMetricKind {
         match *self {
             DdMetricKind::Count => serializer.serialize_u32(0),
             DdMetricKind::Gauge => serializer.serialize_u32(1),
+            DdMetricKind::V2Rate => serializer.serialize_u32(2),
+            DdMetricKind::V2Gauge => serializer.serialize_u32(3),
         }
     }
 }
@@ -59,6 +65,9 @@ pub(crate) struct Metric {
     pub(crate) tags: Vec<String>,
     /// Optional metadata associated with the metric
     pub(crate) metadata: Option<Metadata>,
+    /// The length in seconds of the bucket that the point covers
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) interval: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Clone)]

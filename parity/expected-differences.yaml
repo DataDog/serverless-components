@@ -1,0 +1,18 @@
+# Differences between Go and Rust that are expected. Only a person changes this file.
+#
+# Each entry names a scenario, an area and a path pattern (internal/compare documents the paths;
+# * matches any run of characters other than "]"), the allowed difference (only_in_actual,
+# only_in_reference or any), and the implementation-specific behavior entry in the
+# serverless-init spec that justifies it. A difference that matches an entry is reported as
+# expected, not as a failure.
+
+differences:
+  - scenario: traces.sampling
+    area: traces
+    path: traces[priority=0,*]
+    allowed: only_in_actual
+    justification: implementation.local-priority-0-drop
+    reason: >-
+      Go drops unsampled priority-0 traces after computing stats. Rust forwards them for the
+      backend to discard, as the compatibility layer does since change #169. Only whole
+      priority-0 chunks that Go did not send are allowed; a priority-0 chunk both send must match.

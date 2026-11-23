@@ -1,0 +1,46 @@
+[package]
+name = "datadog-init"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Rust serverless-init: runs the user's command as a child process, or runs as a sidecar"
+
+[[bin]]
+name = "datadog-init"
+
+[dependencies]
+async-trait = "0.1.64"
+datadog-fips = { path = "../datadog-fips", default-features = false }
+datadog-logs-agent = { path = "../datadog-logs-agent" }
+datadog-agent-trace-sampler = { path = "../datadog-agent-trace-sampler" }
+datadog-serverless-core = { path = "../datadog-serverless-core" }
+datadog-trace-agent = { path = "../datadog-trace-agent" }
+dogstatsd = { path = "../dogstatsd" }
+glob = "0.3.3"
+libdd-common = { workspace = true, features = ["https"] }
+libdd-trace-normalization = "4.3.1"
+libdd-trace-obfuscation = { workspace = true, features = ["https"] }
+libdd-trace-utils = { workspace = true, features = ["https", "mini_agent"] }
+reqwest = { version = "0.12.4", default-features = false }
+serde_json = "1.0"
+tokio = { version = "1", features = ["macros", "io-std", "io-util", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", default-features = false }
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
+uuid = { version = "1", default-features = false, features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
+
+[dev-dependencies]
+datadog-mock-intake = { path = "../datadog-mock-intake" }
+libdd-trace-protobuf = "5.1.1"
+reqwest = { version = "0.12.23", default-features = false }
+rmp-serde = "1.1.1"
+serde_json = "1.0"
+tempfile = "3.3.0"
+zstd = { version = "0.14.3", default-features = false }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

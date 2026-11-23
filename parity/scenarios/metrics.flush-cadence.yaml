@@ -1,0 +1,32 @@
+# A count and a distribution every 3 seconds for 25 seconds, each send with its own tag, so the
+# timing check can measure the flush interval and the delay of each send. The run is long enough
+# for at least two flushes of sketches, which Go puts in 10-second buckets, and the step clock is
+# aligned to the 10-second wall clock so that the sends fall at the same phase of those buckets in
+# every run. The child then exits, and the agent flushes what is left.
+name: metrics.flush-cadence
+priority: P0
+features: [metrics.flush-cadence]
+mode: in-container
+platform: local
+align: {every: 10s, offset: 500ms}
+workload:
+  - at: 1s
+    send_dogstatsd: ["parity.requests:1|c|#send:1", "parity.latency:10|d|#send:1"]
+  - at: 4s
+    send_dogstatsd: ["parity.requests:1|c|#send:2", "parity.latency:20|d|#send:2"]
+  - at: 7s
+    send_dogstatsd: ["parity.requests:1|c|#send:3", "parity.latency:30|d|#send:3"]
+  - at: 10s
+    send_dogstatsd: ["parity.requests:1|c|#send:4", "parity.latency:40|d|#send:4"]
+  - at: 13s
+    send_dogstatsd: ["parity.requests:1|c|#send:5", "parity.latency:50|d|#send:5"]
+  - at: 16s
+    send_dogstatsd: ["parity.requests:1|c|#send:6", "parity.latency:60|d|#send:6"]
+  - at: 19s
+    send_dogstatsd: ["parity.requests:1|c|#send:7", "parity.latency:70|d|#send:7"]
+  - at: 22s
+    send_dogstatsd: ["parity.requests:1|c|#send:8", "parity.latency:80|d|#send:8"]
+  - at: 25s
+    send_dogstatsd: ["parity.requests:1|c|#send:9", "parity.latency:90|d|#send:9"]
+  - at: 26s
+    exit: 0

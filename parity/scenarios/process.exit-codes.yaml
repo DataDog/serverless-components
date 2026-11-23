@@ -1,0 +1,12 @@
+# The child exits 3, and the agent must exit 3 too. The other cases in the spec's test plan (a
+# missing binary, and a child killed by SIGKILL) need workload or runner support that does not
+# exist yet.
+name: process.exit-codes
+priority: P0
+features: [process.exit-codes]
+mode: in-container
+platform: local
+coverage_gap: "Only a child exit code; a missing binary and a child killed by a signal need workload or runner support."
+workload:
+  - at: 1s
+    exit: 3

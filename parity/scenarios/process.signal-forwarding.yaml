@@ -1,0 +1,55 @@
+# Sends at set points across about 24 seconds, so that every area flushes at least twice, then
+# SIGTERM. The child traps SIGTERM, prints a marker and exits 7. Each repeated metric has its own
+# send tag, so the timing check can tell the sends apart.
+name: process.signal-forwarding
+priority: P0
+features: [process.signal-forwarding, process.shutdown-flush]
+coverage_gap: "The workload's metrics fill only two or three 10-second buckets, so timing.interval.series, timing.interval.sketches and timing.flush_interval.sketches are not measurable. A slow DogStatsD path with a normal agent flush is caught only by timing.max_delay of series and sketches, and only when a send lands shortly after a flush, so it can pass: timing.flush_interval.series cannot see it, because the agent's own metrics keep flushing every 3 seconds."
+mode: in-container
+platform: local
+align: {every: 10s, offset: 500ms}
+environment:
+  DD_SERVICE: parity-app
+  DD_LOGS_ENABLED: "true"
+workload:
+  - at: 1s
+    print: {stream: stdout, lines: ["parity-child: started"]}
+  - at: 1s
+    send_spans: {fixture: send-1-v04}
+  - at: 1s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:1", "parity.latency:12|d|#send:1"]
+  - at: 4s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:2", "parity.latency:14|d|#send:2"]
+  - at: 4s
+    print: {stream: stdout, lines: ["parity-child: send 2"]}
+  - at: 7s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:3", "parity.latency:16|d|#send:3"]
+  - at: 7s
+    print: {stream: stdout, lines: ["parity-child: send 3"]}
+  - at: 10s
+    send_spans: {fixture: send-2-v04}
+  - at: 10s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:4", "parity.latency:18|d|#send:4"]
+  - at: 10s
+    print: {stream: stdout, lines: ["parity-child: send 4"]}
+  - at: 13s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:5", "parity.latency:20|d|#send:5"]
+  - at: 13s
+    print: {stream: stdout, lines: ["parity-child: send 5"]}
+  - at: 16s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:6", "parity.latency:22|d|#send:6"]
+  - at: 16s
+    print: {stream: stdout, lines: ["parity-child: send 6"]}
+  - at: 19s
+    send_spans: {fixture: send-3-v04}
+  - at: 19s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:7", "parity.latency:24|d|#send:7"]
+  - at: 19s
+    print: {stream: stdout, lines: ["parity-child: send 7"]}
+  - at: 22s
+    send_dogstatsd: ["parity.requests:1|c|#route:/,send:8", "parity.latency:26|d|#send:8"]
+  - at: 22s
+    print: {stream: stdout, lines: ["parity-child: send 8"]}
+  - wait_for_signal: {signal: SIGTERM, then: [{print: {stream: stdout, lines: ["parity-child: got SIGTERM"]}}, {exit: 7}]}
+stop:
+  send_signal: {signal: SIGTERM, after_seconds: 24}

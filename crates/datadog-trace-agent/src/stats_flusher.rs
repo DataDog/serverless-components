@@ -15,7 +15,11 @@ use crate::config::Config;
 use crate::stats_concentrator_service::StatsConcentratorHandle;
 
 /// Serializes and sends a single `StatsPayload` to the intake.
-async fn send_stats_payload(config: &Arc<Config>, payload: pb::StatsPayload) {
+async fn send_stats_payload(config: &Arc<Config>, mut payload: pb::StatsPayload) {
+    if let Some(fields) = &config.agent_payload_fields {
+        payload.agent_env = config.env.clone();
+        payload.agent_version = fields.agent_version.clone();
+    }
     debug!("Stats payload to be sent: {payload:?}");
     let serialized = match stats_utils::serialize_stats_payload(payload) {
         Ok(res) => res,
@@ -72,8 +76,10 @@ impl StatsFlusher for ServerlessStatsFlusher {
         mut rx: Receiver<pb::ClientStatsPayload>,
         mut shutdown_rx: oneshot::Receiver<()>,
     ) {
-        let mut interval =
-            tokio::time::interval(time::Duration::from_secs(config.stats_flush_interval_secs));
+        // A zero interval would panic in `interval`.
+        let mut interval = tokio::time::interval(time::Duration::from_secs(
+            config.stats_flush_interval_secs.max(1),
+        ));
         let mut buffer: Vec<pb::ClientStatsPayload> = Vec::new();
 
         loop {
@@ -131,5 +137,30 @@ impl StatsFlusher for ServerlessStatsFlusher {
                 Err(e) => error!("Failed to flush concentrator stats: {e}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::test_helpers::create_tcp_test_config;
+
+    #[tokio::test]
+    async fn start_stats_flusher_accepts_a_zero_interval() {
+        let mut config = create_tcp_test_config(0);
+        config.stats_flush_interval_secs = 0;
+        let flusher = ServerlessStatsFlusher {
+            stats_concentrator: None,
+        };
+        let (_stats_sender, stats_receiver) = tokio::sync::mpsc::channel(1);
+        let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+        shutdown_sender.send(()).unwrap();
+
+        tokio::time::timeout(
+            time::Duration::from_secs(2),
+            flusher.start_stats_flusher(Arc::new(config), stats_receiver, shutdown_receiver),
+        )
+        .await
+        .expect("the stats flusher did not return within 2 seconds");
     }
 }

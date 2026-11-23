@@ -1,0 +1,18 @@
+# The local platform only; other platforms get their own scenarios. DD_SOURCE is unset, so the
+# source is the platform origin.
+name: logs.tags-and-source
+priority: P0
+features: [logs.tags-and-source]
+mode: in-container
+platform: local
+environment:
+  DD_LOGS_ENABLED: "true"
+  DD_SERVICE: parity-app
+  DD_ENV: parity-env
+  DD_VERSION: "1.0.0"
+  DD_TAGS: "team:parity"
+workload:
+  - at: 1s
+    print: {stream: stdout, lines: ["parity-child: tagged log"]}
+  - at: 2s
+    exit: 0

@@ -1,0 +1,31 @@
+# Sidecar mode, which turns logs on. The workload appends to a file on the shared volume, which
+# the agent tails through DD_SERVERLESS_LOG_PATH, every 3 seconds for 22 seconds, so that logs
+# flush at least twice.
+name: logs.file-tailing
+priority: P0
+features: [logs.file-tailing]
+mode: sidecar
+platform: local
+align: {every: 10s, offset: 500ms}
+environment:
+  DD_SERVERLESS_LOG_PATH: /parity-shared/app.log
+workload:
+  - at: 1s
+    append_log: {path: /parity-shared/app.log, lines: ["parity-file: line 1"]}
+  - at: 4s
+    append_log: {path: /parity-shared/app.log, lines: ["parity-file: line 2"]}
+  - at: 7s
+    append_log: {path: /parity-shared/app.log, lines: ["parity-file: line 3"]}
+  - at: 10s
+    append_log: {path: /parity-shared/app.log, lines: ["parity-file: line 4"]}
+  - at: 13s
+    append_log: {path: /parity-shared/app.log, lines: ["parity-file: line 5"]}
+  - at: 16s
+    append_log: {path: /parity-shared/app.log, lines: ["parity-file: line 6"]}
+  - at: 19s
+    append_log: {path: /parity-shared/app.log, lines: ["parity-file: line 7"]}
+  - at: 22s
+    append_log: {path: /parity-shared/app.log, lines: ["parity-file: line 8"]}
+  - wait_for_signal: {signal: SIGTERM, then: [{exit: 0}]}
+stop:
+  send_signal: {signal: SIGTERM, after_seconds: 25}

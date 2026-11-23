@@ -1,0 +1,40 @@
+# Google Cloud Run services: the platform variables of platforms/cloud-run-service.env, and the
+# fake metadata server answering at once. The child sends a span, a DogStatsD metric and a log
+# line, so the Cloud Run tags are compared on all three, as are the enhanced metrics Go emits on
+# Cloud Run (gcp.run.container.enhanced.* and the legacy gcp.run.enhanced.* names). The
+# scenario checks tags, not timing, so it sets no align.
+name: platform.cloud-run-service
+priority: P0
+features: [platform.detection, platform.tag-sets, platform.gcp-metadata-server, traces.span-tags-and-origin]
+mode: in-container
+platform: cloud-run-service
+metadata: {mode: answer}
+environment:
+  DD_SERVICE: parity-app
+  DD_LOGS_ENABLED: "true"
+workload:
+  - at: 1s
+    send_spans: {fixture: send-1-v04}
+  - at: 1s
+    send_dogstatsd: ["parity.requests:1|c|#route:/"]
+  - at: 1s
+    print: {stream: stdout, lines: ["parity-child: cloud run log"]}
+  - at: 2s
+    exit: 0
+compare:
+  # As for datadog.serverless_agent.enhanced.cpu.usage in compare-defaults.yaml: the CPU that
+  # serverless-init uses differs between any two runs, so the sketch must be present and every
+  # value above zero.
+  overrides:
+    - path: sketches[metric=gcp.run.container.enhanced.cpu.usage,*].sum
+      comparator: greater_than
+      value: 0
+    - path: sketches[metric=gcp.run.container.enhanced.cpu.usage,*].min
+      comparator: greater_than
+      value: 0
+    - path: sketches[metric=gcp.run.container.enhanced.cpu.usage,*].max
+      comparator: greater_than
+      value: 0
+    - path: sketches[metric=gcp.run.container.enhanced.cpu.usage,*].quantiles[*]
+      comparator: greater_than
+      value: 0

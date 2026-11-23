@@ -1,0 +1,398 @@
+{
+  "scenario": "logs.stdout-capture",
+  "go_binary_sha256": "0dac40f4aa896118dcc40ddd40c200a8d8e2389a3fbe9e155c684bfc70435a80",
+  "inputs": {
+    "compare-defaults.yaml": "083c94571d24858427a78cc6ce76e8809495582b567acdf90ba59211c8a9ed13",
+    "normalize.yaml": "936a76b8175590ba77eccd17404026608869bd521b26d17521bf5cb4a86dbcbf",
+    "platforms/local.env": "ab26271d97666e7caf79076aa91e0b683e191e3c7c60b1d389b79176fce5c2f8",
+    "scenarios/logs.stdout-capture.yaml": "e72c0518f9866f1f446fb4ac3ee35d64d5446453bce688f2a9f3a926dade7cd9"
+  },
+  "normalized": {
+    "series": [
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.instance",
+        "type": "gauge",
+        "interval": 10,
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "instance:\u003cmasked\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "datadog.agent.running",
+        "type": "gauge",
+        "source_type_name": "System",
+        "tags": [
+          "version:\u003cplaceholder\u003e"
+        ],
+        "origin": {
+          "product": 10
+        },
+        "points": [
+          {
+            "timestamp": "in window",
+            "value": 1
+          }
+        ]
+      }
+    ],
+    "sketches": [
+      {
+        "metric": "datadog.serverless_agent.enhanced.cold_start",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.limit",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 3,
+            "min": 4000000000,
+            "max": 4000000000,
+            "avg": 4000000000,
+            "sum": 12000000000,
+            "k": [
+              2764
+            ],
+            "n": [
+              3
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.cpu.usage",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 2,
+            "min": 7459412.583858548,
+            "max": 176604845.57896507,
+            "avg": 92032129.08141181,
+            "sum": 184064258.16282362,
+            "k": [
+              2359,
+              2563
+            ],
+            "n": [
+              1,
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "metric": "datadog.serverless_agent.enhanced.shutdown",
+        "tags": [
+          "datadog_init_version:\u003cplaceholder\u003e",
+          "local:true",
+          "sidecar:false"
+        ],
+        "origin": {
+          "product": 1
+        },
+        "points": [
+          {
+            "timestamp": "in window, aligned",
+            "count": 1,
+            "min": 1,
+            "max": 1,
+            "avg": 1,
+            "sum": 1,
+            "k": [
+              1338
+            ],
+            "n": [
+              1
+            ]
+          }
+        ]
+      }
+    ],
+    "logs": [
+      {
+        "message": "parity-child: stdout log 1",
+        "status": "info",
+        "timestamp": "in window",
+        "service": "agent",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      },
+      {
+        "message": "parity-child: stdout log 2",
+        "status": "info",
+        "timestamp": "in window",
+        "service": "agent",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      },
+      {
+        "message": "parity-child: stdout log 3",
+        "status": "info",
+        "timestamp": "in window",
+        "service": "agent",
+        "ddsource": "unknown",
+        "ddtags": [
+          "_dd.datadog_init_version:\u003cplaceholder\u003e",
+          "instance:\u003cmasked\u003e",
+          "local:true"
+        ]
+      }
+    ],
+    "traces": null,
+    "stats": null,
+    "check_runs": [
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      },
+      {
+        "check": "datadog.agent.up",
+        "timestamp": "in window",
+        "status": 0
+      }
+    ],
+    "process": {
+      "exit_code": 0,
+      "arguments": [
+        "/parity-workload",
+        "--scenario",
+        "/parity/logs.stdout-capture.yaml",
+        "--events",
+        "/parity-shared/events.jsonl"
+      ],
+      "environment": {
+        "DD_API_KEY": "00000000000000000000000000parity",
+        "DD_APM_DD_URL": "http://fakeintake:80",
+        "DD_APM_DEBUGGER_DD_URL": "http://fakeintake:80",
+        "DD_APM_ENABLED": "true",
+        "DD_APM_PROFILING_DD_URL": "http://fakeintake:80/api/v2/profile",
+        "DD_APM_SYMDB_DD_URL": "http://fakeintake:80",
+        "DD_APM_TELEMETRY_DD_URL": "http://fakeintake:80",
+        "DD_DD_URL": "http://fakeintake:80",
+        "DD_EVP_PROXY_CONFIG_DD_URL": "http://fakeintake:80",
+        "DD_HOSTNAME": "none",
+        "DD_INSTRUMENTATION_TELEMETRY_ENABLED": "false",
+        "DD_LOGS_CONFIG_FORCE_USE_HTTP": "true",
+        "DD_LOGS_CONFIG_LOGS_DD_URL": "fakeintake:80",
+        "DD_LOGS_CONFIG_LOGS_NO_SSL": "true",
+        "DD_LOGS_ENABLED": "true",
+        "DD_REMOTE_CONFIGURATION_ENABLED": "false",
+        "DD_SKIP_SSL_VALIDATION": "true",
+        "DD_TRACE_ENABLED": "true"
+      },
+      "stdout": [
+        "parity-child: stdout log 1",
+        "parity-child: stdout log 2",
+        "parity-child: stdout log 3"
+      ]
+    },
+    "timing": {
+      "arrivals": [
+        {
+          "area": "series",
+          "at": "2026-11-23T10:58:23.353376043Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:58:23.353691169Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "logs",
+          "at": "2026-11-23T10:58:23.38373865Z",
+          "items": [
+            "log:parity-child: stdout log 1",
+            "log:parity-child: stdout log 2",
+            "log:parity-child: stdout log 3"
+          ]
+        },
+        {
+          "area": "check_runs",
+          "at": "2026-11-23T10:58:23.384674278Z",
+          "items": [
+            "check:datadog.agent.up"
+          ]
+        },
+        {
+          "area": "series",
+          "at": "2026-11-23T10:58:23.384885321Z",
+          "items": [
+            "metric:datadog.agent.running|version:7.85.2",
+            "metric:datadog.serverless_agent.enhanced.instance|datadog_init_version:parity,instance:c27a6b825446,local:true,sidecar:false"
+          ]
+        },
+        {
+          "area": "sketches",
+          "at": "2026-11-23T10:58:23.385054655Z",
+          "items": [
+            "metric:datadog.serverless_agent.enhanced.cold_start|datadog_init_version:parity,local:true,sidecar:false",
+            "metric:datadog.serverless_agent.enhanced.cpu.limit|datadog_init_version:parity,local:true,sidecar:false",
+            "metric:datadog.serverless_agent.enhanced.cpu.usage|datadog_init_version:parity,local:true,sidecar:false",
+            "metric:datadog.serverless_agent.enhanced.shutdown|datadog_init_version:parity,local:true,sidecar:false"
+          ]
+        }
+      ],
+      "sent": [
+        {
+          "at": "2026-11-23T10:58:21.378538802Z",
+          "items": [
+            "log:parity-child: stdout log 1"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:58:21.380405183Z",
+          "items": [
+            "log:parity-child: stdout log 2"
+          ]
+        },
+        {
+          "at": "2026-11-23T10:58:22.379266844Z",
+          "items": [
+            "log:parity-child: stdout log 3"
+          ]
+        }
+      ],
+      "sigterm": "0001-01-01T00:00:00Z",
+      "exited": "2026-11-23T10:58:23.392895432Z"
+    }
+  },
+  "measures": {
+    "interval_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": false
+      },
+      "series": {
+        "measurable": false
+      },
+      "sketches": {
+        "measurable": false
+      },
+      "stats": {
+        "measurable": false
+      },
+      "traces": {
+        "measurable": false
+      }
+    },
+    "max_delay_by_area": {
+      "check_runs": {
+        "measurable": false
+      },
+      "logs": {
+        "measurable": true,
+        "value": "2.005199848s"
+      },
+      "series": {
+        "measurable": false
+      },
+      "sketches": {
+        "measurable": false
+      },
+      "stats": {
+        "measurable": false
+      },
+      "traces": {
+        "measurable": false
+      }
+    },
+    "missing_after_sigterm": [],
+    "missing_sent_after_sigterm": [],
+    "ambiguous_items": [],
+    "sigterm": false,
+    "shutdown": {
+      "measurable": false
+    }
+  },
+  "resources": {
+    "startup": {
+      "measurable": false
+    },
+    "peak_memory_bytes": 15613296,
+    "peak_memory_known": true
+  }
+}

@@ -1,0 +1,17 @@
+# Posts /v0.5 and /v0.7 payloads. The workload encodes only v04 fixtures so far, so until it
+# encodes these the sends fail and the scenario compares only the failure lines on stderr.
+name: traces.payload-versions-other
+priority: P1
+features: [traces.payload-versions]
+mode: in-container
+platform: local
+coverage_gap: "The workload encodes only v0.4 fixtures, so both binaries only record the failed /v0.5 and /v0.7 sends on stderr."
+environment:
+  DD_SERVICE: parity-app
+workload:
+  - at: 1s
+    send_spans: {fixture: two-traces-v05}
+  - at: 1s
+    send_spans: {fixture: two-traces-v07}
+  - at: 2s
+    exit: 0

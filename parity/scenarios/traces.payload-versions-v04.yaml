@@ -1,0 +1,12 @@
+name: traces.payload-versions-v04
+priority: P0
+features: [traces.payload-versions]
+mode: in-container
+platform: local
+environment:
+  DD_SERVICE: parity-app
+workload:
+  - at: 1s
+    send_spans: {fixture: two-traces-v04}
+  - at: 2s
+    exit: 0

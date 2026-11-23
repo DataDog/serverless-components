@@ -1,0 +1,16 @@
+[package]
+name = "datadog-serverless-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Shared core for the serverless binaries: environment parsing and common building blocks"
+
+[dependencies]
+tracing = { version = "0.1", default-features = false }
+tokio = { version = "1", features = ["signal", "time", "macros", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

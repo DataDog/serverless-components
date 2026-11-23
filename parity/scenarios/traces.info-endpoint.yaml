@@ -1,0 +1,11 @@
+# A request that fails prints a child line on stderr, which is compared. The response body is not
+# captured yet, so the endpoint list, feature_flags, version and client_drop_p0s are not compared.
+name: traces.info-endpoint
+priority: P0
+features: [traces.info-endpoint]
+mode: in-container
+platform: local
+coverage_gap: "A failed request is compared as a child stderr line, but the /info response body is not."
+workload:
+  - at: 1s
+    http_get: http://127.0.0.1:8126/info

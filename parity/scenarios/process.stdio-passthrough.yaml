@@ -1,0 +1,12 @@
+name: process.stdio-passthrough
+priority: P0
+features: [process.stdio-passthrough]
+mode: in-container
+platform: local
+workload:
+  - at: 0s
+    print: {stream: stdout, lines: ["parity-child: stdout line 1", "parity-child: stdout line 2"]}
+  - at: 0s
+    print: {stream: stderr, lines: ["parity-child: stderr line 1", "parity-child: stderr line 2"]}
+  - at: 1s
+    print: {stream: stdout, lines: ["parity-child: stdout line 3"]}

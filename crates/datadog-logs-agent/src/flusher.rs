@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::Write as _;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::future::join_all;
 use reqwest::Client;
@@ -9,7 +10,7 @@ use tracing::{debug, error, warn};
 use zstd::stream::write::Encoder;
 
 use crate::aggregator::AggregatorHandle;
-use crate::config::{Destination, LogFlusherConfig};
+use crate::config::{CustomUrlHeaders, Destination, LogFlusherConfig};
 use crate::errors::FlushError;
 
 /// Maximum number of send attempts before giving up on a batch.
@@ -95,15 +96,25 @@ impl LogFlusher {
 
         debug!("flushing {} log batch(es)", batches.len());
 
-        let (primary_url, primary_use_compression) = self.resolve_endpoint();
+        let (primary_url, primary_use_compression, is_primary_datadog) = self.resolve_endpoint();
+        let primary_headers = match &self.config.mode {
+            Destination::CustomUrl { headers, .. } => Some(headers),
+            _ => None,
+        };
 
         let batch_futures = batches.iter().map(|batch| {
             let primary_url = primary_url.clone();
             async move {
                 // Primary endpoint — failures are tracked for cross-invocation retry.
-                let is_primary_datadog = matches!(self.config.mode, Destination::Datadog);
                 let primary_result = self
-                    .ship_batch(batch, &primary_url, primary_use_compression, &self.config.api_key, is_primary_datadog)
+                    .ship_batch(
+                        batch,
+                        &primary_url,
+                        primary_use_compression,
+                        &self.config.api_key,
+                        is_primary_datadog,
+                        primary_headers,
+                    )
                     .await;
 
                 // Additional endpoints — best-effort; failures are only logged.
@@ -117,7 +128,7 @@ impl LogFlusher {
                     let api_key = endpoint.api_key.clone();
                     async move {
                         if self
-                            .ship_batch(batch, &url, self.config.use_compression, &api_key, true)
+                            .ship_batch(batch, &url, self.config.use_compression, &api_key, true, None)
                             .await
                             .is_err()
                         {
@@ -142,16 +153,19 @@ impl LogFlusher {
         failed
     }
 
-    fn resolve_endpoint(&self) -> (String, bool) {
+    /// The primary URL, whether to compress, and whether to send `DD-PROTOCOL: agent-json`.
+    fn resolve_endpoint(&self) -> (String, bool, bool) {
         match &self.config.mode {
             Destination::Datadog => {
                 let url = format!("https://http-intake.logs.{}/api/v2/logs", self.config.site);
-                (url, self.config.use_compression)
+                (url, self.config.use_compression, true)
             }
             Destination::ObservabilityPipelinesWorker { url } => {
                 // OPW does not support compression
-                (url.clone(), false)
+                (url.clone(), false, false)
             }
+            // The optional headers decide `DD-PROTOCOL`.
+            Destination::CustomUrl { url, .. } => (url.clone(), self.config.use_compression, false),
         }
     }
 
@@ -162,6 +176,7 @@ impl LogFlusher {
         compress: bool,
         api_key: &str,
         is_datadog_intake: bool,
+        custom_headers: Option<&CustomUrlHeaders>,
     ) -> Result<(), Box<reqwest::RequestBuilder>> {
         let (body, content_encoding) = if compress {
             match compress_zstd(batch, self.config.compression_level) {
@@ -184,6 +199,10 @@ impl LogFlusher {
 
         if is_datadog_intake {
             req = req.header("DD-PROTOCOL", "agent-json");
+        }
+
+        if let Some(headers) = custom_headers {
+            req = with_custom_headers(req, headers);
         }
 
         if let Some(enc) = content_encoding {
@@ -270,6 +289,34 @@ impl LogFlusher {
     }
 }
 
+fn with_custom_headers(
+    mut req: reqwest::RequestBuilder,
+    headers: &CustomUrlHeaders,
+) -> reqwest::RequestBuilder {
+    if let Some(protocol) = &headers.protocol {
+        req = req.header("DD-PROTOCOL", protocol);
+    }
+    if let Some(origin) = &headers.origin {
+        req = req
+            .header("DD-EVP-ORIGIN", &origin.name)
+            .header("DD-EVP-ORIGIN-VERSION", &origin.version);
+    }
+    if let Some(user_agent) = &headers.user_agent {
+        req = req.header("User-Agent", user_agent);
+    }
+    if headers.timestamps {
+        // Batches keep no ingestion time, so the message timestamp is the send time too.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis())
+            .to_string();
+        req = req
+            .header("dd-message-timestamp", &now)
+            .header("dd-current-timestamp", &now);
+    }
+    req
+}
+
 fn compress_zstd(data: &[u8], level: i32) -> Result<Vec<u8>, FlushError> {
     let mut encoder =
         Encoder::new(Vec::new(), level).map_err(|e| FlushError::Compression(e.to_string()))?;
@@ -287,7 +334,7 @@ fn compress_zstd(data: &[u8], level: i32) -> Result<Vec<u8>, FlushError> {
 mod tests {
     use super::*;
     use crate::aggregator::AggregatorService;
-    use crate::config::{Destination, LogFlusherConfig};
+    use crate::config::{CustomUrlHeaders, Destination, IntakeOrigin, LogFlusherConfig};
     use crate::intake_entry::IntakeEntry;
     use crate::logs_additional_endpoint::LogsAdditionalEndpoint;
     use mockito::Matcher;
@@ -366,7 +413,7 @@ mod tests {
         let url = format!("{}/api/v2/logs", mock_server.url());
         let batch = b"[{\"message\":\"test\"}]";
         flusher
-            .ship_batch(batch, &url, false, "test-api-key", true)
+            .ship_batch(batch, &url, false, "test-api-key", true, None)
             .await
             .expect("ship_batch should succeed");
 
@@ -887,5 +934,101 @@ mod tests {
             result.is_empty(),
             "additional-endpoint failures are best-effort and must not be tracked for retry"
         );
+    }
+
+    /// A custom URL gets the URL as given, the configured compression and only the optional
+    /// headers that are set.
+    #[tokio::test]
+    async fn test_custom_url_headers_compression_and_path() {
+        let all_headers = CustomUrlHeaders {
+            protocol: None,
+            origin: Some(IntakeOrigin {
+                name: "serverless".to_string(),
+                version: "1.2.3".to_string(),
+            }),
+            user_agent: Some("datadog-agent/1.2.3".to_string()),
+            timestamps: true,
+        };
+        let protocol_only = CustomUrlHeaders {
+            protocol: Some("agent-json".to_string()),
+            ..CustomUrlHeaders::default()
+        };
+        let milliseconds = || Matcher::Regex(r"^\d{13}$".to_string());
+        let cases = [
+            (
+                true,
+                all_headers,
+                vec![
+                    ("Content-Encoding", Matcher::from("zstd")),
+                    ("DD-PROTOCOL", Matcher::Missing),
+                    ("DD-EVP-ORIGIN", Matcher::from("serverless")),
+                    ("DD-EVP-ORIGIN-VERSION", Matcher::from("1.2.3")),
+                    ("User-Agent", Matcher::from("datadog-agent/1.2.3")),
+                    ("dd-message-timestamp", milliseconds()),
+                    ("dd-current-timestamp", milliseconds()),
+                ],
+            ),
+            (
+                false,
+                protocol_only,
+                vec![
+                    ("Content-Encoding", Matcher::Missing),
+                    ("DD-PROTOCOL", Matcher::from("agent-json")),
+                    ("DD-EVP-ORIGIN", Matcher::Missing),
+                    ("DD-EVP-ORIGIN-VERSION", Matcher::Missing),
+                    ("User-Agent", Matcher::Missing),
+                    ("dd-message-timestamp", Matcher::Missing),
+                    ("dd-current-timestamp", Matcher::Missing),
+                ],
+            ),
+        ];
+        for (use_compression, headers, expected_headers) in cases {
+            let (service, handle) = AggregatorService::new();
+            let _task = tokio::spawn(service.run());
+            handle
+                .insert_batch(vec![make_entry("custom")])
+                .expect("insert");
+
+            let mut mock_server = mockito::Server::new_async().await;
+            let mut mock = mock_server
+                .mock("POST", "/proxy/api/v2/logs")
+                .match_header("DD-API-KEY", "test-api-key")
+                .match_header("Content-Type", "application/json");
+            for (name, matcher) in expected_headers {
+                mock = mock.match_header(name, matcher);
+            }
+            let mock = mock
+                .match_request(move |request| {
+                    let body = request.body().expect("body").clone();
+                    let body = if use_compression {
+                        zstd::stream::decode_all(body.as_slice()).expect("zstd body")
+                    } else {
+                        body
+                    };
+                    body == br#"[{"message":"custom","timestamp":1700000000000}]"#
+                })
+                .with_status(202)
+                .expect(1)
+                .create_async()
+                .await;
+
+            let config = LogFlusherConfig {
+                api_key: "test-api-key".to_string(),
+                site: "ignored".to_string(),
+                mode: Destination::CustomUrl {
+                    url: format!("{}/proxy/api/v2/logs", mock_server.url()),
+                    headers,
+                },
+                additional_endpoints: Vec::new(),
+                use_compression,
+                compression_level: 1,
+                flush_timeout: Duration::from_secs(5),
+            };
+            let client = reqwest::Client::builder().build().expect("client");
+            let flusher = LogFlusher::new(config, client, handle);
+
+            assert!(flusher.flush(vec![]).await.is_empty(), "{use_compression}");
+            mock.assert_async().await;
+        }
     }
 }

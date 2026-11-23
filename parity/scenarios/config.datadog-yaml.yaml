@@ -1,0 +1,14 @@
+# Settings only in datadog.yaml, in the agent's working directory. The scenario file cannot add a
+# file to the agent container yet, so until it can, this runs without a datadog.yaml: the same
+# workload as metrics.custom-metric-tags, whose tags datadog.yaml would set.
+name: config.datadog-yaml
+priority: P0
+features: [config.agent-config-surface]
+mode: in-container
+platform: local
+coverage_gap: "A scenario can't add a datadog.yaml to the agent container, so it runs without one."
+workload:
+  - at: 1s
+    send_dogstatsd: ["parity.requests:1|c|#route:/"]
+  - at: 2s
+    exit: 0

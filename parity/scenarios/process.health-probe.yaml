@@ -1,0 +1,15 @@
+# A request that fails prints a child line on stderr, which is compared. The HTTP status itself
+# is only in the event log, which the comparison does not read yet.
+name: process.health-probe
+priority: P1
+features: [process.health-probe]
+mode: in-container
+platform: local
+coverage_gap: "A failed request is compared as a child stderr line, but the HTTP status of a successful one is not."
+environment:
+  DD_HEALTH_PORT: "12345"
+workload:
+  - at: 2s
+    http_get: http://127.0.0.1:12345/live
+  - at: 2s
+    http_get: http://127.0.0.1:12345/ready

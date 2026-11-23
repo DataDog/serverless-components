@@ -1,0 +1,13 @@
+# One trace each with sampling priority -1, 0, 1 and 2, and an errored priority-0 trace.
+name: traces.sampling
+priority: P0
+features: [traces.sampling]
+mode: in-container
+platform: local
+environment:
+  DD_SERVICE: parity-app
+workload:
+  - at: 1s
+    send_spans: {fixture: sampling-priorities-v04}
+  - at: 2s
+    exit: 0

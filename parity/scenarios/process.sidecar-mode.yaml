@@ -1,0 +1,21 @@
+# The agent runs with no arguments. The workload runs in a second container that shares the
+# agent's network, sends to the agent, then waits for SIGTERM, which the harness sends to both.
+name: process.sidecar-mode
+priority: P0
+features: [process.sidecar-mode]
+coverage_gap: "Go flushes only twice before SIGTERM, and a flush interval needs three flushes, so no flush interval is measured; only the delays and the shutdown are timed."
+mode: sidecar
+platform: local
+align: {every: 10s, offset: 500ms}
+environment:
+  DD_SERVICE: parity-app
+workload:
+  - at: 2s
+    send_spans: {fixture: two-traces-v04}
+  - at: 2s
+    send_dogstatsd: ["parity.requests:1|c|#route:/", "parity.latency:12|d"]
+  - at: 2s
+    print: {stream: stdout, lines: ["parity-child: sidecar workload sent"]}
+  - wait_for_signal: {signal: SIGTERM, then: [{exit: 0}]}
+stop:
+  send_signal: {signal: SIGTERM, after_seconds: 6}

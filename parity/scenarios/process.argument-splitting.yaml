@@ -1,0 +1,12 @@
+# The harness starts the child as /datadog-init /parity-workload --scenario <file> --events <file>,
+# so this covers several arguments. The single quoted argument case needs a way to set the
+# agent's command, which the scenario file does not have yet.
+name: process.argument-splitting
+priority: P0
+features: [process.argument-splitting]
+mode: in-container
+platform: local
+coverage_gap: "Only several arguments; one quoted argument needs a way to set the agent's command."
+workload:
+  - at: 0s
+    print: {stream: stdout, lines: ["parity-child: started"]}

@@ -1,0 +1,24 @@
+# Comparator overrides that apply to every scenario. Only a person changes this file, and every
+# entry needs a reason. A scenario's own compare.overrides take precedence over these. The paths
+# are compare paths; internal/compare documents them, and * matches any run of characters other
+# than "]".
+
+overrides:
+  # The CPU that serverless-init uses differs between any two runs, so only the presence of
+  # the sketch (its key and its count) is compared exactly, and every value must be above zero.
+  - path: sketches[metric=datadog.serverless_agent.enhanced.cpu.usage,*].sum
+    comparator: greater_than
+    value: 0
+    reason: CPU usage differs between runs; the spec only requires it to be above zero.
+  - path: sketches[metric=datadog.serverless_agent.enhanced.cpu.usage,*].min
+    comparator: greater_than
+    value: 0
+    reason: CPU usage differs between runs; the spec only requires it to be above zero.
+  - path: sketches[metric=datadog.serverless_agent.enhanced.cpu.usage,*].max
+    comparator: greater_than
+    value: 0
+    reason: CPU usage differs between runs; the spec only requires it to be above zero.
+  - path: sketches[metric=datadog.serverless_agent.enhanced.cpu.usage,*].quantiles[*]
+    comparator: greater_than
+    value: 0
+    reason: CPU usage differs between runs; the spec only requires it to be above zero.

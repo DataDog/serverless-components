@@ -22,7 +22,10 @@ use datadog_trace_agent::{
 };
 use http_body_util::BodyExt;
 use hyper::StatusCode;
+use libdd_trace_protobuf::pb;
 use libdd_trace_utils::test_utils::create_test_json_span;
+use libdd_trace_utils::trace_utils::{SendData, TracerHeaderTags};
+use libdd_trace_utils::tracer_payload::TracerPayloadCollection;
 use serde_json::{Value, json};
 use serial_test::serial;
 use std::sync::Arc;
@@ -564,6 +567,237 @@ async fn test_mini_agent_tcp_with_real_flushers() {
     let _ = shutdown_tx.send(true);
     let _ = agent_handle.await;
     verify_stats_request(&mock_intake).await; // Stats generator should generate stats from trace payload
+}
+
+/// The agent fields of the flushed trace and stats payloads, and the root's `_dd.no_p_sr`, for a
+/// trace without a sampling priority.
+#[tokio::test]
+#[serial]
+async fn test_agent_payload_fields_in_flushed_payloads() {
+    use datadog_trace_agent::config::AgentPayloadFields;
+
+    type Case = (
+        Option<AgentPayloadFields>,
+        (&'static str, &'static str, f64, f64),
+        Option<f64>,
+        (&'static str, &'static str),
+    );
+    let cases: [Case; 2] = [
+        (None, ("", "", 60.0, 60.0), None, ("", "")),
+        (
+            Some(AgentPayloadFields {
+                agent_version: "1.2.3".to_string(),
+                target_tps: 7.0,
+                install_signature: None,
+            }),
+            ("none", "1.2.3", 7.0, 10.0),
+            Some(1.0),
+            ("none", "1.2.3"),
+        ),
+    ];
+    for (fields, expected_trace_fields, expected_no_priority_rate, expected_stats_fields) in cases {
+        let mock_intake = MockIntake::start().await;
+        let mut config = create_tcp_test_config(8140);
+        configure_mock_endpoints(&mut config, &mock_intake.base_url());
+        config.agent_payload_fields = fields.clone();
+        let config = Arc::new(config);
+        let (mini_agent, stats_concentrator_service_handle) =
+            create_mini_agent_with_real_flushers(config);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let agent_handle = tokio::spawn(async move {
+            let _ = mini_agent
+                .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+                .await;
+        });
+        let mut trace_response = None;
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if let Ok(response) = send_tcp_request(
+                8140,
+                "/v0.4/traces",
+                "POST",
+                Some(create_test_trace_payload(None)),
+                &[],
+            )
+            .await
+            {
+                trace_response = Some(response);
+                break;
+            }
+        }
+        assert_eq!(
+            trace_response.map(|response| response.status()),
+            Some(StatusCode::OK)
+        );
+        let _ = shutdown_tx.send(true);
+        let _ = agent_handle.await;
+
+        let trace_payloads = mock_intake.trace_payloads();
+        let payload = &trace_payloads[0];
+        assert_eq!(
+            (
+                payload.env.as_str(),
+                payload.agent_version.as_str(),
+                payload.target_tps,
+                payload.error_tps,
+            ),
+            expected_trace_fields,
+            "fields {fields:?}"
+        );
+        let root = &payload.tracer_payloads[0].chunks[0].spans[0];
+        assert_eq!(
+            root.metrics.get("_dd.no_p_sr").copied(),
+            expected_no_priority_rate,
+            "fields {fields:?}"
+        );
+        let stats_payloads = mock_intake.stats_payloads();
+        let stats = &stats_payloads[0];
+        assert_eq!(
+            (stats.agent_env.as_str(), stats.agent_version.as_str()),
+            expected_stats_fields,
+            "fields {fields:?}"
+        );
+    }
+}
+
+fn send_data_for(config: &Config, service: &str) -> SendData {
+    let tracer_payload = pb::TracerPayload {
+        chunks: vec![pb::TraceChunk {
+            spans: vec![pb::Span {
+                service: service.to_string(),
+                name: "operation".to_string(),
+                resource: "resource".to_string(),
+                trace_id: 1,
+                span_id: 1,
+                start: 1,
+                duration: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    SendData::new(
+        1,
+        TracerPayloadCollection::V07(vec![tracer_payload]),
+        TracerHeaderTags::default(),
+        &config.trace_intake,
+    )
+}
+
+/// A payload sent after shutdown fires, from a sender that is still alive, is still flushed.
+/// The trace processor enqueues in a spawned task, so this happens after an HTTP 200.
+#[tokio::test]
+#[serial]
+async fn test_trace_flusher_drains_channel_on_shutdown() {
+    use datadog_trace_agent::{aggregator::TraceAggregator, trace_flusher::ServerlessTraceFlusher};
+
+    let mock_intake = MockIntake::start().await;
+    let mut config = create_tcp_test_config(0);
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
+    config.trace_flush_interval_secs = 3600;
+    let config = Arc::new(config);
+
+    let trace_flusher = ServerlessTraceFlusher::new(
+        Arc::new(tokio::sync::Mutex::new(TraceAggregator::default())),
+        config.clone(),
+    );
+    let (trace_tx, trace_rx) = tokio::sync::mpsc::channel(10);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let flusher_handle = tokio::spawn(async move {
+        trace_flusher
+            .start_trace_flusher(trace_rx, shutdown_rx)
+            .await
+    });
+
+    trace_tx
+        .send(send_data_for(&config, "before-shutdown"))
+        .await
+        .unwrap();
+    let late_sender = trace_tx.clone();
+    let late_config = config.clone();
+    let late_send = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        late_sender
+            .send(send_data_for(&late_config, "after-shutdown"))
+            .await
+    });
+    drop(trace_tx);
+    shutdown_tx.send(()).unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), flusher_handle)
+        .await
+        .expect("the trace flusher did not return within 2 seconds")
+        .unwrap();
+    late_send.await.unwrap().unwrap();
+
+    let mut services: Vec<String> = mock_intake
+        .trace_payloads()
+        .iter()
+        .flat_map(|payload| payload.tracer_payloads.iter())
+        .flat_map(|tracer_payload| tracer_payload.chunks.iter())
+        .flat_map(|chunk| chunk.spans.iter())
+        .map(|span| span.service.clone())
+        .collect();
+    services.sort();
+    assert_eq!(services, vec!["after-shutdown", "before-shutdown"]);
+    assert_eq!(mock_intake.requests_for_path("/api/v0.2/traces").len(), 1);
+}
+
+/// Shutting down the mini agent flushes the buffered traces before the flush interval.
+#[tokio::test]
+#[serial]
+async fn test_mini_agent_flushes_traces_on_shutdown() {
+    let mock_intake = MockIntake::start().await;
+    let mut config = create_tcp_test_config(8139);
+    configure_mock_endpoints(&mut config, &mock_intake.base_url());
+    config.trace_flush_interval_secs = 3600;
+    let config = Arc::new(config);
+    let test_port = config.dd_apm_receiver_port;
+
+    let (mini_agent, stats_concentrator_service_handle) =
+        create_mini_agent_with_real_flushers(config);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let agent_handle = tokio::spawn(async move {
+        mini_agent
+            .start_mini_agent(shutdown_rx, Some(stats_concentrator_service_handle))
+            .await
+            .map_err(|error| error.to_string())
+    });
+
+    let mut server_ready = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(response) = send_tcp_request(test_port, "/info", "GET", None, &[]).await
+            && response.status().is_success()
+        {
+            server_ready = true;
+            break;
+        }
+    }
+    assert!(
+        server_ready,
+        "Mini agent server failed to start within timeout"
+    );
+
+    let trace_response = send_tcp_request(
+        test_port,
+        "/v0.4/traces",
+        "POST",
+        Some(create_test_trace_payload(None)),
+        &[],
+    )
+    .await
+    .expect("Failed to send /v0.4/traces request");
+    assert_eq!(trace_response.status(), StatusCode::OK);
+
+    shutdown_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), agent_handle)
+        .await
+        .expect("the mini agent did not return within 5 seconds")
+        .unwrap()
+        .unwrap();
+    assert_eq!(mock_intake.requests_for_path("/api/v0.2/traces").len(), 1);
 }
 
 #[cfg(test)]

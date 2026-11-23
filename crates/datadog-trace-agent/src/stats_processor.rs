@@ -143,6 +143,7 @@ mod tests {
             },
             dd_site: "datadoghq.com".to_string(),
             dd_apm_receiver_port: 8126,
+            dd_apm_non_local_traffic: false,
             #[cfg(any(all(windows, feature = "windows-pipes"), test))]
             dd_apm_windows_pipe_name: None,
             dd_dogstatsd_port: 8125,
@@ -166,6 +167,8 @@ mod tests {
             agent_stats_computation_enabled,
             error_sampler: datadog_agent_trace_sampler::ErrorSamplerConfig::default(),
             error_rare_sample_tracer_drop: false,
+            span_tags: None,
+            agent_payload_fields: None,
         }
     }
 

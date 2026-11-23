@@ -1,0 +1,21 @@
+# Every DogStatsD metric type, each with its own name.
+name: metrics.metric-types
+priority: P0
+features: [metrics.dogstatsd-listener, metrics.metric-types]
+mode: in-container
+platform: local
+workload:
+  - at: 1s
+    send_dogstatsd:
+      - "parity.count:2|c|#kind:count"
+      - "parity.count_sampled:1|c|@0.5|#kind:count"
+      - "parity.gauge:7|g|#kind:gauge"
+      - "parity.distribution:12|d|#kind:distribution"
+      - "parity.distribution:30|d|#kind:distribution"
+      - "parity.histogram:5|h|#kind:histogram"
+      - "parity.histogram:15|h|#kind:histogram"
+      - "parity.set:alpha|s|#kind:set"
+      - "parity.set:beta|s|#kind:set"
+      - "parity.timer:250|ms|#kind:timer"
+  - at: 2s
+    exit: 0
