@@ -19,8 +19,6 @@
 #   aws-lc-rs >= 1.18. FIPS clients reject the distrusted keys through the
 #   certificate_distrust wrapper in crates/datadog-fips; other clients use
 #   webpki-roots >= 1.0.10, which removes emSign ECC Root CA - G3.
-# RUSTSEC-2026-0381: flags webpki-roots 0.26.11, which only re-exports the
-#   webpki-roots 1.x list (locked at 1.0.10). hyper-http-proxy requires ^0.26.
 [advisories]
 ignore = [
     "RUSTSEC-2026-0285",
@@ -28,5 +26,4 @@ ignore = [
     "RUSTSEC-2026-0349",
     "RUSTSEC-2026-0346",
     "RUSTSEC-2026-0382",
-    "RUSTSEC-2026-0381",
 ]
