@@ -1,6 +1,8 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+use datadog_protos::metrics::MetricType;
+use protobuf::Enum;
 use serde::{Serialize, Serializer};
 
 #[derive(Debug, Serialize, Clone, Copy)]
@@ -22,11 +24,11 @@ pub(crate) struct Resource {
     pub(crate) kind: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 /// The kinds of metrics the Datadog API supports
 pub(crate) enum DdMetricKind {
-    /// An accumulating sum
-    Count,
+    /// A per-second rate over the point's interval
+    Rate,
     /// An instantaneous value
     Gauge,
 }
@@ -36,10 +38,11 @@ impl Serialize for DdMetricKind {
     where
         S: Serializer,
     {
-        match *self {
-            DdMetricKind::Count => serializer.serialize_u32(0),
-            DdMetricKind::Gauge => serializer.serialize_u32(1),
-        }
+        let metric_type = match *self {
+            DdMetricKind::Rate => MetricType::RATE,
+            DdMetricKind::Gauge => MetricType::GAUGE,
+        };
+        serializer.serialize_i32(metric_type.value())
     }
 }
 
@@ -56,6 +59,8 @@ pub(crate) struct Metric {
     #[serde(rename = "type")]
     /// The kind of metric
     pub(crate) kind: DdMetricKind,
+    /// Seconds covered by each point
+    pub(crate) interval: u32,
     pub(crate) tags: Vec<String>,
     /// Optional metadata associated with the metric
     pub(crate) metadata: Option<Metadata>,

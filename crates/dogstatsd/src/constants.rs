@@ -8,6 +8,9 @@ pub const CONTEXTS: usize = 10_240;
 
 pub static MAX_CONTEXTS: usize = 65_536; // 2**16, arbitrary
 
+/// Width in seconds of the time buckets that metrics are aggregated into.
+pub(crate) const BUCKET_SECONDS: u32 = 10;
+
 const MB: u64 = 1_024 * 1_024;
 
 pub(crate) const MAX_ENTRIES_SINGLE_METRIC: usize = 1_000;
