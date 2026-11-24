@@ -1,6 +1,8 @@
 // Copyright 2023-Present Datadog, Inc. https://www.datadoghq.com/
 // SPDX-License-Identifier: Apache-2.0
 
+use datadog_protos::metrics::MetricType;
+use protobuf::Enum;
 use serde::{Serialize, Serializer};
 
 #[derive(Debug, Serialize, Clone, Copy)]
@@ -36,11 +38,11 @@ impl Serialize for DdMetricKind {
     where
         S: Serializer,
     {
-        // v2 MetricIntakeType: 0=UNSPECIFIED, 1=COUNT, 2=RATE, 3=GAUGE
-        match *self {
-            DdMetricKind::Rate => serializer.serialize_u32(2),
-            DdMetricKind::Gauge => serializer.serialize_u32(3),
-        }
+        let metric_type = match *self {
+            DdMetricKind::Rate => MetricType::RATE,
+            DdMetricKind::Gauge => MetricType::GAUGE,
+        };
+        serializer.serialize_i32(metric_type.value())
     }
 }
 

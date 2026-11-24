@@ -39,6 +39,19 @@ async fn dogstatsd_server_ships_series() {
         .mock("POST", "/api/v2/series")
         .match_header("DD-API-KEY", "mock-api-key")
         .match_header("Content-Type", "application/json")
+        .match_request(|request| {
+            let Ok(body) = request.body() else {
+                return false;
+            };
+            let Ok(json) = zstd::decode_all(body.as_slice()) else {
+                return false;
+            };
+            let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&json) else {
+                return false;
+            };
+            let series = &payload["series"][0];
+            series["type"] == 3 && series["interval"] == 10
+        })
         .with_status(202)
         .create_async()
         .await;
