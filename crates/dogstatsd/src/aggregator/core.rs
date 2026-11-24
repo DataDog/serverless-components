@@ -287,13 +287,17 @@ fn build_metric(entry: &Metric, mut base_tag_vec: SortedTags) -> Option<MetricTo
     } else {
         resources = Vec::new();
     }
-    let kind = match entry.value {
-        MetricValue::Count(_) => datadog::DdMetricKind::Count,
-        MetricValue::Gauge(_) => datadog::DdMetricKind::Gauge,
+    // Counts ship as per-second rates over the bucket, as the Datadog Agent sends them.
+    let (kind, value) = match entry.value {
+        MetricValue::Count(sum) => (
+            datadog::DdMetricKind::Rate,
+            sum / f64::from(constants::BUCKET_SECONDS),
+        ),
+        MetricValue::Gauge(value) => (datadog::DdMetricKind::Gauge, value),
         MetricValue::Distribution(_) => unreachable!(),
     };
     let point = datadog::Point {
-        value: entry.value.get_value()?,
+        value,
         // TODO(astuyve) allow user to specify timestamp
         timestamp: entry.timestamp as u64,
     };
@@ -315,6 +319,7 @@ fn build_metric(entry: &Metric, mut base_tag_vec: SortedTags) -> Option<MetricTo
         metric: entry.name.as_str(),
         resources,
         kind,
+        interval: constants::BUCKET_SECONDS,
         points: [point; 1],
         tags: base_tag_vec.to_strings(),
         metadata,
@@ -334,7 +339,7 @@ pub mod tests {
 
     const PRECISION: f64 = 0.000_000_01;
 
-    const SINGLE_METRIC_SIZE: usize = 209; // taken from the test, size of a serialized metric with one tag and 1 digit counter value
+    const SINGLE_METRIC_SIZE: usize = 223; // taken from the test, size of a serialized metric with one tag and 1 digit counter value
     const SINGLE_DISTRIBUTION_SIZE: u64 = 140;
     const DEFAULT_TAGS: &str =
         "dd_extension_version:63-next,architecture:x86_64,_dd.compute_stats:1";
@@ -496,6 +501,23 @@ pub mod tests {
 
         assert!(aggregator.insert(metric3).is_err());
         assert_eq!(aggregator.to_series().len(), 2);
+    }
+
+    #[test]
+    fn build_metric_sets_intake_type_interval_and_value() {
+        // (aggregated value, v2 MetricIntakeType, shipped point value)
+        let cases = [
+            (metric::MetricValue::count(50.0), 2, 5.0),
+            (metric::MetricValue::gauge(7.0), 3, 7.0),
+        ];
+        for (value, expected_type, expected_value) in cases {
+            let entry = metric::Metric::new("m".into(), value, None, Some(1_656_581_400));
+            let json =
+                serde_json::to_value(super::build_metric(&entry, EMPTY_TAGS).unwrap()).unwrap();
+            assert_eq!(json["type"], expected_type);
+            assert_eq!(json["interval"], 10);
+            assert_eq!(json["points"][0]["value"], expected_value);
+        }
     }
 
     #[test]
@@ -698,7 +720,7 @@ pub mod tests {
     fn consume_metrics_batch_bytes() {
         let expected_metrics_per_batch = 2;
         let total_number_of_metrics = 5;
-        let two_metrics_size = 406;
+        let two_metrics_size = 434;
         let max_bytes = SINGLE_METRIC_SIZE * expected_metrics_per_batch + 13;
         let mut aggregator = Aggregator {
             tags: to_sorted_tags(),

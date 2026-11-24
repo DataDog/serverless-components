@@ -219,9 +219,9 @@ impl Metric {
     }
 }
 
-// Round down to the nearest 10 seconds
-// to form a bucket of metric contexts aggregated per 10s
+// Round down to the start of the `BUCKET_SECONDS` bucket that holds the timestamp
 pub fn timestamp_to_bucket(timestamp: i64) -> i64 {
+    let bucket = i64::from(constants::BUCKET_SECONDS);
     #[allow(clippy::expect_used)]
     let now_seconds: i64 = std::time::UNIX_EPOCH
         .elapsed()
@@ -230,9 +230,9 @@ pub fn timestamp_to_bucket(timestamp: i64) -> i64 {
         .try_into()
         .unwrap_or_default();
     if timestamp > now_seconds {
-        return (now_seconds / 10) * 10;
+        return (now_seconds / bucket) * bucket;
     }
-    (timestamp / 10) * 10
+    (timestamp / bucket) * bucket
 }
 
 /// Parse a metric from given input.

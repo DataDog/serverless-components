@@ -22,11 +22,11 @@ pub(crate) struct Resource {
     pub(crate) kind: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 /// The kinds of metrics the Datadog API supports
 pub(crate) enum DdMetricKind {
-    /// An accumulating sum
-    Count,
+    /// A per-second rate over the point's interval
+    Rate,
     /// An instantaneous value
     Gauge,
 }
@@ -36,9 +36,10 @@ impl Serialize for DdMetricKind {
     where
         S: Serializer,
     {
+        // v2 MetricIntakeType: 0=UNSPECIFIED, 1=COUNT, 2=RATE, 3=GAUGE
         match *self {
-            DdMetricKind::Count => serializer.serialize_u32(0),
-            DdMetricKind::Gauge => serializer.serialize_u32(1),
+            DdMetricKind::Rate => serializer.serialize_u32(2),
+            DdMetricKind::Gauge => serializer.serialize_u32(3),
         }
     }
 }
@@ -56,6 +57,8 @@ pub(crate) struct Metric {
     #[serde(rename = "type")]
     /// The kind of metric
     pub(crate) kind: DdMetricKind,
+    /// Seconds covered by each point
+    pub(crate) interval: u32,
     pub(crate) tags: Vec<String>,
     /// Optional metadata associated with the metric
     pub(crate) metadata: Option<Metadata>,
