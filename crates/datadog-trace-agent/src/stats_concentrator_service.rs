@@ -10,9 +10,11 @@ use crate::config::{Config, resolve_payload_env};
 use libdd_library_config::tracer_metadata::TracerMetadata;
 use libdd_trace_protobuf::pb::{ClientStatsPayload, TraceChunk};
 use libdd_trace_stats::span_concentrator::{CardinalityLimitConfig, SpanConcentrator};
+use libdd_trace_utils::trace_utils;
 use std::time::{Duration, SystemTime};
 use tracing::error;
 
+const GIT_COMMIT_SHA_KEY: &str = "_dd.git.commit.sha";
 const S_TO_NS: u64 = 1_000_000_000;
 const BUCKET_DURATION_NS: u64 = 10 * S_TO_NS; // 10 seconds
 pub const SPAN_KINDS_STATS_COMPUTED: &[&str] = &["server", "client", "producer", "consumer"];
@@ -92,9 +94,24 @@ impl Hash for MetadataKey {
     }
 }
 
+/// Returns the chunk's `_dd.git.commit.sha` from spans.
+fn git_commit_sha(chunk: &TraceChunk) -> String {
+    let root = trace_utils::get_root_span_index(&chunk.spans).ok();
+    root.into_iter()
+        .chain((0..chunk.spans.len()).filter(|&i| Some(i) != root))
+        .find_map(|i| {
+            chunk.spans[i]
+                .meta
+                .get(GIT_COMMIT_SHA_KEY)
+                .filter(|v| !v.is_empty())
+        })
+        .cloned()
+        .unwrap_or_default()
+}
+
 pub struct StatsConcentratorService {
-    /// One concentrator per unique TracerMetadata.
-    concentrators: HashMap<MetadataKey, SpanConcentrator>,
+    /// One concentrator per unique TracerMetadata and Git commit SHA.
+    concentrators: HashMap<(MetadataKey, String), SpanConcentrator>,
     rx: mpsc::UnboundedReceiver<ConcentratorCommand>,
     config: Arc<Config>,
 }
@@ -147,12 +164,12 @@ impl StatsConcentratorService {
                     // A single tracer may produce payloads with different metadata depending on the
                     // integration. For example, the .NET process integration appends `-command` to
                     // the base service and omits the version. A separate concentrator is kept per
-                    // unique metadata so that each payload's stats are flushed with the metadata
-                    // from the originating payload.
+                    // unique metadata and Git commit SHA so that each payload's stats are flushed
+                    // with the metadata and SHA from the originating chunk.
                     let config = Arc::clone(&self.config);
                     let concentrator = self
                         .concentrators
-                        .entry(MetadataKey(Arc::clone(&metadata)))
+                        .entry((MetadataKey(Arc::clone(&metadata)), git_commit_sha(&chunk)))
                         .or_insert_with(|| {
                             Self::new_span_concentrator(
                                 config.peer_tags.clone(),
@@ -180,8 +197,7 @@ impl StatsConcentratorService {
         let payloads = self
             .concentrators
             .iter_mut()
-            .filter_map(|(key, concentrator)| {
-                let metadata = &key.0;
+            .filter_map(|((MetadataKey(metadata), git_commit_sha), concentrator)| {
                 let flush_result = concentrator.flush(SystemTime::now(), force_flush);
                 let stats_buckets = flush_result.unobfuscated_buckets;
                 if stats_buckets.is_empty() {
@@ -209,8 +225,7 @@ impl StatsConcentratorService {
                     container_id: metadata.container_id.clone().unwrap_or_default(),
                     // Not supported yet
                     tags: vec![],
-                    // Not supported yet
-                    git_commit_sha: String::new(),
+                    git_commit_sha: git_commit_sha.clone(),
                     // Not supported yet
                     image_tag: String::new(),
                     stats: stats_buckets,
@@ -231,7 +246,7 @@ impl StatsConcentratorService {
 mod tests {
     use super::*;
     use crate::config::test_helpers::create_tcp_test_config;
-    use libdd_trace_protobuf::pb::TraceChunk;
+    use libdd_trace_protobuf::pb::{Span, TraceChunk};
 
     fn make_metadata(language: &str, service: &str, version: &str) -> Arc<TracerMetadata> {
         Arc::new(TracerMetadata {
@@ -297,5 +312,97 @@ mod tests {
             .unwrap();
 
         assert!(handle.flush(false).await.is_ok());
+    }
+
+    #[test]
+    fn test_git_commit_sha_lookup() {
+        fn span(span_id: u64, parent_id: u64, sha: Option<&str>) -> Span {
+            let meta = sha
+                .map(|s| HashMap::from([(GIT_COMMIT_SHA_KEY.to_string(), s.to_string())]))
+                .unwrap_or_default();
+            Span {
+                span_id,
+                parent_id,
+                meta,
+                ..Default::default()
+            }
+        }
+        let cases = [
+            ("empty chunk", vec![], ""),
+            (
+                "no span has sha",
+                vec![span(1, 0, None), span(2, 1, None)],
+                "",
+            ),
+            (
+                "root wins over other spans",
+                vec![span(2, 1, Some("child-sha")), span(1, 0, Some("root-sha"))],
+                "root-sha",
+            ),
+            (
+                "first span in chunk is not the root",
+                vec![span(2, 1, Some("child-sha")), span(1, 0, None)],
+                "child-sha",
+            ),
+            (
+                "empty root value is skipped",
+                vec![span(1, 0, Some("")), span(2, 1, Some("child-sha"))],
+                "child-sha",
+            ),
+        ];
+        for (name, spans, expected) in cases {
+            let chunk = TraceChunk {
+                spans,
+                ..Default::default()
+            };
+            assert_eq!(git_commit_sha(&chunk), expected, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_git_commit_sha_gets_separate_payloads() {
+        let config = Arc::new(create_tcp_test_config(0));
+        let (service, handle) = StatsConcentratorService::new(config);
+        tokio::spawn(service.run());
+
+        let start = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64;
+        let server_chunk = |sha: Option<&str>| {
+            let mut meta = HashMap::from([("span.kind".to_string(), "server".to_string())]);
+            if let Some(sha) = sha {
+                meta.insert(GIT_COMMIT_SHA_KEY.to_string(), sha.to_string());
+            }
+            TraceChunk {
+                spans: vec![Span {
+                    service: "my-service".to_string(),
+                    name: "op".to_string(),
+                    resource: "res".to_string(),
+                    span_id: 1,
+                    start,
+                    duration: 1,
+                    meta,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+        };
+        let metadata = make_metadata("dotnet", "my-service", "");
+        for sha in [Some("sha-a"), Some("sha-b"), None] {
+            handle
+                .add_chunk(server_chunk(sha), Arc::clone(&metadata))
+                .unwrap();
+        }
+
+        let mut shas: Vec<String> = handle
+            .flush(true)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.git_commit_sha)
+            .collect();
+        shas.sort();
+        assert_eq!(shas, vec!["", "sha-a", "sha-b"]);
     }
 }
