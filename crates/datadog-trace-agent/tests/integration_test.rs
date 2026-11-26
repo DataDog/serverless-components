@@ -1129,38 +1129,57 @@ async fn test_peer_tags_in_flushed_stats() {
     );
 }
 
-/// Verify that a Pub/Sub producer span (topic) and consumer span (subscription) are aggregated
-/// into separate stats groups, each keeping its own resource as a peer tag.
+/// Verify that two Pub/Sub producer spans with the same service, name and span kind, publishing
+/// to different topics, are aggregated into separate stats groups, each keeping its own topic as a
+/// peer tag. Also check that a consumer span keeps its subscription as a separate peer tag.
 #[cfg(test)]
 #[tokio::test]
 #[serial]
 async fn test_pubsub_topic_and_subscription_peer_tags_in_flushed_stats() {
     let groups = flushed_stats_peer_tag_groups(8139, create_pubsub_spans_payload()).await;
 
-    let topic_group = groups
+    let topic_a = "gcp.pubsub.topic.name:projects/my-project/topics/a".to_string();
+    let topic_b = "gcp.pubsub.topic.name:projects/my-project/topics/b".to_string();
+    let topic_groups: Vec<&Vec<String>> = groups
         .iter()
-        .find(|tags| tags.contains(&"gcp.pubsub.topic.name:my-topic".to_string()))
-        .unwrap_or_else(|| panic!("Expected a stats group with the topic peer tag: {groups:?}"));
+        .filter(|tags| tags.iter().any(|t| t.starts_with("gcp.pubsub.topic.name:")))
+        .collect();
+    assert_eq!(
+        topic_groups.len(),
+        2,
+        "Expected one stats group per topic: {groups:?}"
+    );
+    let topic_a_group = topic_groups
+        .iter()
+        .find(|tags| tags.contains(&topic_a))
+        .unwrap_or_else(|| panic!("Expected a stats group with {topic_a}: {groups:?}"));
+    let topic_b_group = topic_groups
+        .iter()
+        .find(|tags| tags.contains(&topic_b))
+        .unwrap_or_else(|| panic!("Expected a stats group with {topic_b}: {groups:?}"));
+    assert!(
+        !topic_a_group.contains(&topic_b) && !topic_b_group.contains(&topic_a),
+        "Each topic stats group should only carry its own topic: {groups:?}"
+    );
+
     let subscription_group = groups
         .iter()
-        .find(|tags| tags.contains(&"gcp.pubsub.subscription.name:my-sub".to_string()))
+        .find(|tags| {
+            tags.contains(
+                &"gcp.pubsub.subscription.name:projects/my-project/subscriptions/my-sub"
+                    .to_string(),
+            )
+        })
         .unwrap_or_else(|| {
             panic!("Expected a stats group with the subscription peer tag: {groups:?}")
         });
-
-    assert!(
-        !topic_group
-            .iter()
-            .any(|t| t.starts_with("gcp.pubsub.subscription.name:")),
-        "Topic stats group should not carry a subscription peer tag: {topic_group:?}"
-    );
     assert!(
         !subscription_group
             .iter()
             .any(|t| t.starts_with("gcp.pubsub.topic.name:")),
         "Subscription stats group should not carry a topic peer tag: {subscription_group:?}"
     );
-    for group in [topic_group, subscription_group] {
+    for group in [*topic_a_group, *topic_b_group, subscription_group] {
         assert!(
             group.contains(&"gcloud.project_id:my-project".to_string()),
             "Expected gcloud.project_id peer tag in {group:?}"

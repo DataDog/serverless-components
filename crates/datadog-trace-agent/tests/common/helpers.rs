@@ -52,21 +52,28 @@ pub fn create_client_span_with_peer_tag_payload() -> Vec<u8> {
     rmp_serde::to_vec(&vec![vec![span]]).expect("Failed to serialize client peer tag trace")
 }
 
-/// Create a trace payload with two root spans for one Pub/Sub project: a `"producer"` span
-/// publishing to a topic and a `"consumer"` span pulling from a subscription.
+/// Create a trace payload with three root spans for one Pub/Sub project: two `"producer"`
+/// spans with the same service and name publishing to different topics, and a `"consumer"`
+/// span pulling from a subscription. The two producer spans only differ by their topic.
 pub fn create_pubsub_spans_payload() -> Vec<u8> {
     let start = UNIX_EPOCH.elapsed().unwrap().as_nanos() as i64;
-    let mut producer = create_test_json_span(500, 501, 0, start, false);
-    producer["name"] = json!("pubsub.publish");
-    producer["meta"]["span.kind"] = json!("producer");
-    producer["meta"]["gcloud.project_id"] = json!("my-project");
-    producer["meta"]["gcp.pubsub.topic.name"] = json!("my-topic");
+    let producer = |trace_id, span_id, topic: &str| {
+        let mut span = create_test_json_span(trace_id, span_id, 0, start, false);
+        span["name"] = json!("pubsub.publish");
+        span["meta"]["span.kind"] = json!("producer");
+        span["meta"]["gcloud.project_id"] = json!("my-project");
+        span["meta"]["gcp.pubsub.topic.name"] = json!(topic);
+        span
+    };
+    let producer_a = producer(500, 501, "projects/my-project/topics/a");
+    let producer_b = producer(505, 506, "projects/my-project/topics/b");
     let mut consumer = create_test_json_span(510, 511, 0, start, false);
     consumer["name"] = json!("pubsub.receive");
     consumer["meta"]["span.kind"] = json!("consumer");
     consumer["meta"]["gcloud.project_id"] = json!("my-project");
-    consumer["meta"]["gcp.pubsub.subscription.name"] = json!("my-sub");
-    rmp_serde::to_vec(&vec![vec![producer], vec![consumer]])
+    consumer["meta"]["gcp.pubsub.subscription.name"] =
+        json!("projects/my-project/subscriptions/my-sub");
+    rmp_serde::to_vec(&vec![vec![producer_a], vec![producer_b], vec![consumer]])
         .expect("Failed to serialize Pub/Sub trace")
 }
 
