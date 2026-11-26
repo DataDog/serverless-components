@@ -4,8 +4,9 @@
 mod common;
 
 use common::helpers::{
-    create_client_span_with_peer_tag_payload, create_test_client_stats_payload,
-    create_test_trace_payload, create_trace_with_span_kind_children_payload, send_tcp_request,
+    create_client_span_with_peer_tag_payload, create_pubsub_spans_payload,
+    create_test_client_stats_payload, create_test_trace_payload,
+    create_trace_with_span_kind_children_payload, send_tcp_request,
 };
 use common::mocks::{MockEnvVerifier, MockStatsFlusher, MockStatsProcessor, MockTraceFlusher};
 use datadog_mock_intake::{
@@ -1046,15 +1047,12 @@ async fn test_internal_span_kind_does_not_produce_stats() {
     );
 }
 
-/// Verify that peer tags are present in the flushed stats payload when a client span carries a
-/// peer tag (`peer.service`).
-#[cfg(test)]
-#[tokio::test]
-#[serial]
-async fn test_peer_tags_in_flushed_stats() {
+/// Send `trace_payload` to a mini agent with agent-side stats computation enabled and return the
+/// peer tags of each stats group in the first flushed stats payload.
+async fn flushed_stats_peer_tag_groups(port: u16, trace_payload: Vec<u8>) -> Vec<Vec<String>> {
     let mock_intake = MockIntake::start().await;
 
-    let mut config = create_tcp_test_config(8131);
+    let mut config = create_tcp_test_config(port);
     configure_mock_endpoints(&mut config, &mock_intake.base_url());
     config.agent_stats_computation_enabled = true;
     let config = Arc::new(config);
@@ -1085,15 +1083,10 @@ async fn test_peer_tags_in_flushed_stats() {
         "Mini agent server failed to start within timeout"
     );
 
-    let trace_response = send_tcp_request(
-        test_port,
-        "/v0.4/traces",
-        "POST",
-        Some(create_client_span_with_peer_tag_payload()),
-        &[],
-    )
-    .await
-    .expect("Failed to send /v0.4/traces request");
+    let trace_response =
+        send_tcp_request(test_port, "/v0.4/traces", "POST", Some(trace_payload), &[])
+            .await
+            .expect("Failed to send /v0.4/traces request");
     assert_eq!(trace_response.status(), StatusCode::OK);
 
     tokio::time::sleep(FLUSH_WAIT_DURATION).await;
@@ -1111,18 +1104,87 @@ async fn test_peer_tags_in_flushed_stats() {
     let payload = stats_payloads
         .first()
         .expect("at least one decoded stats payload");
-    let all_peer_tags: Vec<&str> = payload
+    payload
         .stats
         .iter()
         .flat_map(|csp| &csp.stats)
         .flat_map(|bucket| &bucket.stats)
-        .flat_map(|group| group.peer_tags.iter().map(String::as_str))
-        .collect();
+        .map(|group| group.peer_tags.clone())
+        .collect()
+}
+
+/// Verify that peer tags are present in the flushed stats payload when a client span carries a
+/// peer tag (`peer.service`).
+#[cfg(test)]
+#[tokio::test]
+#[serial]
+async fn test_peer_tags_in_flushed_stats() {
+    let groups =
+        flushed_stats_peer_tag_groups(8131, create_client_span_with_peer_tag_payload()).await;
+    let all_peer_tags: Vec<&str> = groups.iter().flatten().map(String::as_str).collect();
 
     assert!(
         all_peer_tags.contains(&"peer.service:my-db"),
         "Expected peer.service:my-db in stats peer_tags, got: {all_peer_tags:?}"
     );
+}
+
+/// Verify that two Pub/Sub producer spans with the same service, name and span kind, publishing
+/// to different topics, are aggregated into separate stats groups, each keeping its own topic as a
+/// peer tag. Also check that a consumer span keeps its subscription as a separate peer tag.
+#[cfg(test)]
+#[tokio::test]
+#[serial]
+async fn test_pubsub_topic_and_subscription_peer_tags_in_flushed_stats() {
+    let groups = flushed_stats_peer_tag_groups(8139, create_pubsub_spans_payload()).await;
+
+    let topic_a = "gcp.pubsub.topic.name:projects/my-project/topics/a".to_string();
+    let topic_b = "gcp.pubsub.topic.name:projects/my-project/topics/b".to_string();
+    let topic_groups: Vec<&Vec<String>> = groups
+        .iter()
+        .filter(|tags| tags.iter().any(|t| t.starts_with("gcp.pubsub.topic.name:")))
+        .collect();
+    assert_eq!(
+        topic_groups.len(),
+        2,
+        "Expected one stats group per topic: {groups:?}"
+    );
+    let topic_a_group = topic_groups
+        .iter()
+        .find(|tags| tags.contains(&topic_a))
+        .unwrap_or_else(|| panic!("Expected a stats group with {topic_a}: {groups:?}"));
+    let topic_b_group = topic_groups
+        .iter()
+        .find(|tags| tags.contains(&topic_b))
+        .unwrap_or_else(|| panic!("Expected a stats group with {topic_b}: {groups:?}"));
+    assert!(
+        !topic_a_group.contains(&topic_b) && !topic_b_group.contains(&topic_a),
+        "Each topic stats group should only carry its own topic: {groups:?}"
+    );
+
+    let subscription_group = groups
+        .iter()
+        .find(|tags| {
+            tags.contains(
+                &"gcp.pubsub.subscription.name:projects/my-project/subscriptions/my-sub"
+                    .to_string(),
+            )
+        })
+        .unwrap_or_else(|| {
+            panic!("Expected a stats group with the subscription peer tag: {groups:?}")
+        });
+    assert!(
+        !subscription_group
+            .iter()
+            .any(|t| t.starts_with("gcp.pubsub.topic.name:")),
+        "Subscription stats group should not carry a topic peer tag: {subscription_group:?}"
+    );
+    for group in [*topic_a_group, *topic_b_group, subscription_group] {
+        assert!(
+            group.contains(&"gcloud.project_id:my-project".to_string()),
+            "Expected gcloud.project_id peer tag in {group:?}"
+        );
+    }
 }
 
 #[cfg(all(test, windows, feature = "windows-pipes"))]
